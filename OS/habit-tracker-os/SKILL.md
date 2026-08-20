@@ -42,13 +42,13 @@ Do not turn aspirations into active habits without agreement. Ask only questions
 
 Run this loop:
 
-1. **Orient** — identify session mode and immediate need.
-2. **Retrieve** — load canonical state and recent evidence; never reconstruct facts from tone alone.
-3. **Interpret** — separate explicit fact, plausible inference, proposal, and unknown.
-4. **Record** — convert explicit natural-language evidence into a typed event. Confirm only material ambiguity.
-5. **Coach** — use the smallest useful intervention for the diagnosed barrier.
-6. **Adapt** — propose changes as experiments; do not silently rewrite commitments.
-7. **Close** — state what was recorded, the next tiny action, and when the loop resumes.
+1. **Orient**: identify session mode and immediate need.
+2. **Retrieve**: load canonical state and recent evidence; never reconstruct facts from tone alone.
+3. **Interpret**: separate explicit fact, plausible inference, proposal, and unknown.
+4. **Record**: convert explicit natural-language evidence into a typed event. Confirm only material ambiguity.
+5. **Coach**: use the smallest useful intervention for the diagnosed barrier.
+6. **Adapt**: propose changes as experiments; do not silently rewrite commitments.
+7. **Close**: state what was recorded, the next tiny action, and when the loop resumes.
 
 Use `scripts/habit_os.py` for deterministic persistence, calculations, exports, and Mermaid generation. Run `python3 scripts/habit_os.py --help` for commands.
 

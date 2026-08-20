@@ -1,0 +1,114 @@
+{
+  "schema_version": "2.0.0",
+  "id": "process-sop-os",
+  "num": 47,
+  "name": "Process & SOP {OS}",
+  "version": "0.1.0",
+  "status": "scaffold",
+  "group": {
+    "key": "operate",
+    "label": "05 · OPERATE",
+    "purpose": "Turn chaos into repeatable execution"
+  },
+  "tagline": "Turn a thing you do well into a thing anyone can do.",
+  "inherits_from": null,
+  "commands": [
+    {
+      "name": "/sop-capture",
+      "mode": "CAPTURE",
+      "summary": "Extract the real procedure from the expert, including the judgement calls."
+    },
+    {
+      "name": "/sop-decisions",
+      "mode": "CAPTURE",
+      "summary": "Turn every it-depends into named branches with their criteria."
+    },
+    {
+      "name": "/sop-write",
+      "mode": "DRAFT",
+      "summary": "Draft the SOP in the house shape, every step an instruction to act."
+    },
+    {
+      "name": "/sop-test",
+      "mode": "TEST",
+      "summary": "Run the novice test and record every stall, question and guess."
+    },
+    {
+      "name": "/sop-fix",
+      "mode": "FIX",
+      "summary": "Repair the SOP at the cause of each recorded stall."
+    },
+    {
+      "name": "/sop-release",
+      "mode": "RELEASE",
+      "summary": "Version it, confirm the owner accepts, set the review date, publish it."
+    },
+    {
+      "name": "/sop-review",
+      "mode": "MAINTAIN",
+      "summary": "Confirm or amend the SOP against the work as it is done now."
+    },
+    {
+      "name": "/sop-retire",
+      "mode": "RETIRE",
+      "summary": "Archive a procedure whose work is gone or has been automated."
+    }
+  ],
+  "dependencies": {
+    "requires": [
+      "context-memory-os"
+    ],
+    "emits": [
+      "sop.captured",
+      "sop.drafted",
+      "sop.novice.tested",
+      "sop.published",
+      "sop.version.bumped",
+      "sop.retired",
+      "sop.process.defect"
+    ],
+    "consumes_from": [
+      "operations-os",
+      "team-delegation-os",
+      "documentation-os",
+      "quality-evaluation-os"
+    ]
+  },
+  "targets": {
+    "claude": {
+      "supported": true
+    },
+    "chatgpt": {
+      "supported": true
+    },
+    "gemini": {
+      "supported": true
+    },
+    "codex": {
+      "supported": true
+    }
+  },
+  "entrypoints": {
+    "spec": "OS.md",
+    "system": "SYSTEM.md",
+    "skill": "SKILL.md",
+    "setup": "SETUP.md",
+    "workflows": "WORKFLOWS/",
+    "commands": "COMMANDS/",
+    "prompts": "PROMPTS/",
+    "references": "REFERENCES/",
+    "memory": "MEMORY/",
+    "tools": "TOOLS/",
+    "evals": "EVALS/",
+    "examples": "EXAMPLES/",
+    "interfaces": "INTERFACES/",
+    "adapters": "ADAPTERS/"
+  },
+  "requires_human_approval_for": [
+    "publishing a procedure other people will be measured against",
+    "changing a step that touches money, safety, compliance or a client commitment",
+    "retiring a procedure that anyone still runs",
+    "naming an owner",
+    "recording an individual's performance in a novice test record"
+  ]
+}

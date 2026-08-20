@@ -1,0 +1,101 @@
+{
+  "schema_version": "2.0.0",
+  "id": "validation-os",
+  "num": 19,
+  "name": "Validation {OS}",
+  "version": "0.1.0",
+  "status": "authored",
+  "group": {
+    "key": "discover",
+    "label": "02 · DISCOVER & DECIDE",
+    "purpose": "Find what is worth building"
+  },
+  "tagline": "Kill or confirm an idea with the cheapest sufficient test.",
+  "inherits_from": null,
+  "commands": [
+    "/validate",
+    "/claims",
+    "/rank",
+    "/design",
+    "/sample",
+    "/sign",
+    "/run",
+    "/verdict",
+    "/kill",
+    "/audit",
+    "/queue"
+  ],
+  "dependencies": {
+    "requires": [
+      "agentik-runtime",
+      "context-memory-os"
+    ],
+    "consumes": [
+      "brainstorm.concept.selected",
+      "discovery.insight.confirmed",
+      "market.validation.completed",
+      "research.evidence.compiled"
+    ],
+    "emits": [
+      "validation.claim.registered",
+      "validation.test.signed",
+      "validation.verdict.issued",
+      "validation.claim.killed"
+    ],
+    "consumes_from": [
+      "brainstorm-os",
+      "customer-discovery-os",
+      "market-research-os",
+      "research-os"
+    ],
+    "emits_to": [
+      "context-memory-os",
+      "review-governance-os",
+      "strategy-portfolio-os",
+      "business-model-os",
+      "blueprint-os",
+      "market-research-os",
+      "brainstorm-os"
+    ]
+  },
+  "targets": {
+    "claude": {
+      "supported": true
+    },
+    "chatgpt": {
+      "supported": true
+    },
+    "gemini": {
+      "supported": true
+    },
+    "codex": {
+      "supported": true
+    }
+  },
+  "entrypoints": {
+    "spec": "OS.md",
+    "system": "SYSTEM.md",
+    "skill": "SKILL.md",
+    "setup": "SETUP.md",
+    "workflows": "WORKFLOWS/",
+    "commands": "COMMANDS/",
+    "prompts": "PROMPTS/",
+    "references": "REFERENCES/",
+    "memory": "MEMORY/",
+    "tools": "TOOLS/",
+    "evals": "EVALS/",
+    "examples": "EXAMPLES/",
+    "interfaces": "INTERFACES/",
+    "adapters": "ADAPTERS/"
+  },
+  "requires_human_approval_for": [
+    "contacting any real person, including a single recruitment message",
+    "publishing a public surface: landing page, ad, waitlist, pre-order page, listing or post",
+    "spending money, including ad budget and participant incentives",
+    "taking money, including pre-sales, deposits and letters of intent",
+    "using an existing customer or subscriber list for a test",
+    "storing personal data, and any retention beyond the stated test window",
+    "recording a call",
+    "running a test on a live production surface visible to paying users"
+  ]
+}

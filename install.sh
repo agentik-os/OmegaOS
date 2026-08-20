@@ -468,23 +468,35 @@ maybe_install_prebuilt() {
     if ! curl -fsSL "$base/$tarball" -o "$tmp/$tarball"; then
         info "Prebuilt $tarball not in release $tag — building from source"; rm -rf "$tmp"; return 0
     fi
-    # Checksum: if the .sha256 sidecar exists it MUST match (tamper/partial guard).
-    if curl -fsSL "$base/$tarball.sha256" -o "$tmp/$tarball.sha256" 2>/dev/null; then
-        local want got
-        want="$(awk '{print $1}' "$tmp/$tarball.sha256" 2>/dev/null)" || true
-        got="$( { sha256sum "$tmp/$tarball" 2>/dev/null || shasum -a 256 "$tmp/$tarball" 2>/dev/null; } | awk '{print $1}')" || true
-        if [[ -n "$want" && "$want" != "$got" ]]; then
-            err "Prebuilt checksum mismatch — refusing prebuilt, building from source"; rm -rf "$tmp"; return 0
-        fi
+    # Provenance is fail-closed for the prebuilt lane. A missing or malformed
+    # sidecar is not evidence; fall back to the reproducible source build.
+    if ! curl -fsSL "$base/$tarball.sha256" -o "$tmp/$tarball.sha256" 2>/dev/null; then
+        warn "Prebuilt checksum sidecar missing — refusing prebuilt, building from source"
+        rm -rf "$tmp"
+        return 0
+    fi
+    local want got
+    want="$(awk 'NF {print $1; exit}' "$tmp/$tarball.sha256" 2>/dev/null)" || true
+    got="$( { sha256sum "$tmp/$tarball" 2>/dev/null || shasum -a 256 "$tmp/$tarball" 2>/dev/null; } | awk 'NF {print $1; exit}')" || true
+    if [[ ! "$want" =~ ^[0-9a-fA-F]{64}$ || ! "$got" =~ ^[0-9a-fA-F]{64}$ || "$want" != "$got" ]]; then
+        err "Prebuilt checksum is missing, malformed, or mismatched — refusing prebuilt"
+        rm -rf "$tmp"
+        return 0
     fi
     if ! tar xzf "$tmp/$tarball" -C "$tmp" 2>/dev/null; then
         info "Prebuilt extract failed — building from source"; rm -rf "$tmp"; return 0
     fi
-    [[ -f "$tmp/omega" && -f "$tmp/rmux" ]] || { info "Prebuilt missing binaries — building from source"; rm -rf "$tmp"; return 0; }
+    [[ -f "$tmp/omega" && -f "$tmp/rmux" && -f "$tmp/BUILD-INFO.json" ]] || {
+        info "Prebuilt missing binaries or BUILD-INFO.json — building from source"
+        rm -rf "$tmp"
+        return 0
+    }
 
     mkdir -p "$INSTALL_DIR"
     install_binary "$tmp/omega" "$INSTALL_DIR/omega" || { rm -rf "$tmp"; return 0; }
     install_binary "$tmp/rmux"  "$INSTALL_DIR/rmux"  || { rm -rf "$tmp"; return 0; }
+    mkdir -p "$OMEGA_DIR/state"
+    install -m 0644 "$tmp/BUILD-INFO.json" "$OMEGA_DIR/state/installed-build-info.json"
     ln -sf "$INSTALL_DIR/omega" "$INSTALL_DIR/omg"
     rm -rf "$tmp"
 
@@ -501,6 +513,26 @@ maybe_install_prebuilt() {
 }
 maybe_install_prebuilt
 
+# Every later phase consumes repository assets, and the rmux binary must be
+# built from the exact revision in this checkout. Resolve the source before
+# Phase 3 so curl|bash cannot race `main` between two independent clones.
+if [[ -z "$OMEGA_SRC" ]]; then
+    OMEGA_SRC="/tmp/omega-build-$(id -u)"
+    if [[ -d "$OMEGA_SRC" ]]; then
+        rm -rf "$OMEGA_SRC" 2>/dev/null \
+            || OMEGA_SRC="$(mktemp -d /tmp/omega-build-XXXXXX)"
+    fi
+    info "Cloning OmegaOS..."
+    git clone --depth 1 "$REPO_URL" "$OMEGA_SRC"
+fi
+
+RMUX_REV="$(sed -nE 's/.*rmux-sdk.*rev *= *"([0-9a-f]+)".*/\1/p' "$OMEGA_SRC/Cargo.toml" | head -1)"
+if [[ ! "$RMUX_REV" =~ ^[0-9a-f]{7,40}$ ]]; then
+    err "Could not resolve the pinned rmux revision from $OMEGA_SRC/Cargo.toml"
+    exit 1
+fi
+ACTUAL_RMUX_REV="$RMUX_REV"
+
 # ─── Phase 3: Build rmux ─────────────────────────────────────────────────────
 
 step "Phase 3: Building rmux"
@@ -511,21 +543,36 @@ step "Phase 3: Building rmux"
 # dir still cannot be removed (e.g. leftover root-owned files), fall back to a
 # fresh mktemp dir so the clone never fails.
 RMUX_BUILD_DIR="/tmp/omega-rmux-build-$(id -u)"
-if [[ -f "$INSTALL_DIR/rmux" ]]; then
-    ok "rmux already installed at $INSTALL_DIR/rmux"
+RMUX_REV_STAMP="$OMEGA_DIR/state/rmux-source-rev"
+if [[ -n "${PREBUILT_OK:-}" ]]; then
+    mkdir -p "$(dirname "$RMUX_REV_STAMP")"
+    printf '%s\n' "$RMUX_REV" > "$RMUX_REV_STAMP"
+fi
+if [[ -x "$INSTALL_DIR/rmux" && -f "$RMUX_REV_STAMP" ]] \
+    && [[ "$(tr -d '[:space:]' < "$RMUX_REV_STAMP")" = "$RMUX_REV" ]] \
+    && "$INSTALL_DIR/rmux" -V >/dev/null 2>&1; then
+    ok "rmux already matches pinned revision $RMUX_REV"
 else
     if [[ -d "$RMUX_BUILD_DIR" ]]; then
         rm -rf "$RMUX_BUILD_DIR" 2>/dev/null \
             || RMUX_BUILD_DIR="$(mktemp -d /tmp/omega-rmux-build-XXXXXX)"
     fi
     ensure_build_toolchain
-    info "Cloning rmux..."
-    git clone --depth 1 "$RMUX_REPO" "$RMUX_BUILD_DIR"
+    info "Fetching pinned rmux revision $RMUX_REV..."
+    git clone --filter=blob:none --no-checkout "$RMUX_REPO" "$RMUX_BUILD_DIR"
+    git -C "$RMUX_BUILD_DIR" checkout --detach -q "$RMUX_REV"
+    ACTUAL_RMUX_REV="$(git -C "$RMUX_BUILD_DIR" rev-parse HEAD)"
+    [[ "$ACTUAL_RMUX_REV" == "$RMUX_REV"* ]] || {
+        err "rmux checkout mismatch: expected $RMUX_REV, got $ACTUAL_RMUX_REV"
+        exit 1
+    }
     info "Building rmux (this may take a few minutes)..."
     cd "$RMUX_BUILD_DIR"
     cargo_build_live
     mkdir -p "$INSTALL_DIR"
     install_binary target/release/rmux "$INSTALL_DIR/rmux"
+    mkdir -p "$(dirname "$RMUX_REV_STAMP")"
+    printf '%s\n' "$RMUX_REV" > "$RMUX_REV_STAMP"
     cd -
     rm -rf "$RMUX_BUILD_DIR"
     ok "rmux installed to $INSTALL_DIR/rmux"
@@ -810,17 +857,6 @@ EOF
 
 step "Phase 4: Building OmegaOS"
 
-if [[ -z "$OMEGA_SRC" ]]; then
-    # Per-user build dir (same multi-user /tmp collision fix as rmux above).
-    OMEGA_SRC="/tmp/omega-build-$(id -u)"
-    if [[ -d "$OMEGA_SRC" ]]; then
-        rm -rf "$OMEGA_SRC" 2>/dev/null \
-            || OMEGA_SRC="$(mktemp -d /tmp/omega-build-XXXXXX)"
-    fi
-    info "Cloning OmegaOS..."
-    git clone --depth 1 "$REPO_URL" "$OMEGA_SRC"
-fi
-
 cd "$OMEGA_SRC"
 # curl|bash path: the version parse at the top of the script ran before the
 # clone existed — re-derive from the cloned Cargo.toml (still the single source
@@ -832,13 +868,21 @@ if [[ -n "${PREBUILT_OK:-}" ]]; then
 else
     ensure_build_toolchain
     info "Building omega CLI..."
-    # --locked: build against the committed Cargo.lock so a fresh clone resolves the
-    # exact same transitive deps (reproducible builds). Falls back to an unlocked
-    # build only if the lockfile is somehow absent/out of sync.
-    cargo_build_live --locked || cargo_build_live
+    # The committed lockfile is part of the release contract. An out-of-sync
+    # lockfile aborts instead of silently resolving a different dependency set.
+    cargo_build_live --locked
     mkdir -p "$INSTALL_DIR"
     install_binary target/release/omega "$INSTALL_DIR/omega"
     ln -sf "$INSTALL_DIR/omega" "$INSTALL_DIR/omg"   # short alias: omg == omega
+    mkdir -p "$OMEGA_DIR/state"
+    OMEGA_COMMIT="$(git rev-parse HEAD)"
+    CARGO_LOCK_SHA="$( { sha256sum Cargo.lock 2>/dev/null || shasum -a 256 Cargo.lock; } | awk '{print $1}')"
+    BUILD_TARGET="$(rustc -vV | sed -n 's/^host: //p')"
+    DIRTY=false
+    [[ -z "$(git status --porcelain --untracked-files=no)" ]] || DIRTY=true
+    printf '{"schema_version":1,"omega_commit":"%s","rmux_commit":"%s","cargo_lock_sha256":"%s","target":"%s","dirty":%s}\n' \
+        "$OMEGA_COMMIT" "$ACTUAL_RMUX_REV" "$CARGO_LOCK_SHA" "$BUILD_TARGET" "$DIRTY" \
+        > "$OMEGA_DIR/state/installed-build-info.json"
     ok "omega CLI installed to $INSTALL_DIR/omega"
 fi
 
@@ -1002,9 +1046,11 @@ else
 fi
 
 # ─── OS suite — the AgentikOS operative systems (OS/ → ~/.omega/os) ─────────
-# The 24 value-chain operative systems (Personal / Build chain 01..08 / Growth
-# / Systems), surfaced in the TUI's OS tab. The registry is compiled into
-# omega-core (os_products.rs); the payloads + READMEs are installed here so the
+# The 72 AGENTIK {OS} operative systems in 9 groups (Runtime / Personal /
+# Discover & Decide / Build / Grow / Operate / Own / Capital / AI & Systems),
+# surfaced in the TUI's OS tab. The registry is generated from
+# OS/_registry.json into omega-core (os_products.rs) by OS/_tools; the payloads
+# + READMEs are installed here so the
 # tab resolves a suite root even on a box with no checkout. The recursive copy
 # below (`cp -rf "$OSS_SRC/."`) picks up EVERY OS/<slug>/ automatically, so a
 # new OS needs no edit here. Payloads arrive as Deposit zips and are integrated
@@ -2052,7 +2098,7 @@ fi
 # the canonical stack (Next.js + Convex + Clerk + Stripe + Stax). /stack pulls the
 # live Stax checkout at ~/.omega/repos/stax before every scaffold — installed by
 # the Stax block just above, so this block deliberately runs after it.
-for BSK in blueprint-os builder-os market-research-os mindset-os brainstorm-os habit-tracker-os design-os execution-os storyteller-os alignment-os ai-logic-os stack; do
+for BSK in blueprint-os builder-os market-research-os mindset-os brainstorm-os habit-tracker-os design-os execution-os storyteller-os alignment-os seductive-os ai-logic-os stack; do
     BSK_SRC="$OMEGA_SRC/skills/$BSK"
     BSK_DST="$OMEGA_DIR/skills/$BSK"
     if [[ -d "$BSK_SRC" ]]; then
@@ -2187,6 +2233,30 @@ Protocols: /morning /evening /weekly /decision /true_north /virtue_check
 /dichotomy_control /wu_wei /reframe /shadow /belief_audit /fear /meaning
 /manifestation /quantum_truth /personal_philosophy /anti_dependency /reset.
 Labels every claim E1..E5. Anti-dependency: ends in a concrete next action.
+MREOF
+            done; unset _c
+        fi
+        # Seductive OS (personal magnetism) registers /seduction + /charisma
+        # aliases. Consent-first by construction: the ethical spine is loaded
+        # with the skill, never as an optional reference.
+        if [[ "$BSK" == "seductive-os" ]]; then
+            for _c in seduction charisma; do
+                cat > "$BCMD/$_c.md" <<MREOF
+# /$_c
+
+Seductive {OS} — the personal magnetism coach (presence, conversation craft,
+warmth, style, social calibration, romantic confidence and the inner game
+underneath). Read and follow the complete instructions in:
+
+\`$BSK_DST/SKILL.md\`
+
+Modes: /presence /conversation /innergame /style /calibrate /flirt /date
+/apps /rejection /desire /audit /practice /debrief /reset.
+Builds a more compelling PERSON, never scripts, lines or routines.
+Consent is the product, not the constraint: references/ethics-and-consent.md
+and references/refusals.md are ALWAYS in force. Labels every claim
+E1(replicated) / E2(thin) / E3(craft) / P(personal) / C(clinical → route to a
+professional). safety-and-boundaries.md routes real distress to a professional.
 MREOF
             done; unset _c
         fi
@@ -2948,7 +3018,7 @@ RMUX_SOURCE_LINE="source-file $OMEGA_DIR/rmux.conf.omega"
 if [[ -f "$RMUX_CONF" ]]; then
     if ! grep -qF "rmux.conf.omega" "$RMUX_CONF" 2>/dev/null; then
         echo "" >> "$RMUX_CONF"
-        echo "# OmegaOS keybindings (Option+Z launches session manager)" >> "$RMUX_CONF"
+        echo "# OmegaOS keybindings (Ctrl+Space opens the session manager)" >> "$RMUX_CONF"
         echo "$RMUX_SOURCE_LINE" >> "$RMUX_CONF"
         ok "Added OmegaOS source line to $RMUX_CONF"
     else
@@ -2961,7 +3031,7 @@ else
 fi
 
 # System-wide rmux config so EVERY user — root and any future account — gets the
-# same hardened session (mouse/scroll/clipboard/escape-time/truecolor + Option+Z),
+# same hardened session (mouse/scroll/clipboard/escape-time/truecolor + Ctrl+Space),
 # not just the installing user. rmux reads /etc/rmux.conf on server start (proven
 # empirically), so we drop a world-readable copy under /etc/omega and source it
 # from /etc/rmux.conf idempotently. Best-effort: needs root; if unavailable the

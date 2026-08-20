@@ -33,13 +33,25 @@ pub struct Check {
 
 impl Check {
     fn ok(name: &str, detail: impl Into<String>) -> Self {
-        Self { name: name.into(), health: Health::Ok, detail: detail.into() }
+        Self {
+            name: name.into(),
+            health: Health::Ok,
+            detail: detail.into(),
+        }
     }
     fn warn(name: &str, detail: impl Into<String>) -> Self {
-        Self { name: name.into(), health: Health::Warn, detail: detail.into() }
+        Self {
+            name: name.into(),
+            health: Health::Warn,
+            detail: detail.into(),
+        }
     }
     fn fail(name: &str, detail: impl Into<String>) -> Self {
-        Self { name: name.into(), health: Health::Fail, detail: detail.into() }
+        Self {
+            name: name.into(),
+            health: Health::Fail,
+            detail: detail.into(),
+        }
     }
 }
 
@@ -202,8 +214,137 @@ fn check_hooks(config: &OmegaConfig) -> Check {
     }
     Check::ok(
         "hooks",
-        format!("{} hooks present + registered (finish-guard armed)", REQUIRED.len()),
+        format!(
+            "{} hooks present + registered (finish-guard armed)",
+            REQUIRED.len()
+        ),
     )
+}
+
+fn effective_containment(
+    config: &OmegaConfig,
+    providers: &crate::providers::ProvidersConfig,
+) -> Check {
+    use crate::agents::Agent;
+    let Some(agent) = Agent::from_name(&config.agent_command) else {
+        return Check::fail(
+            "agent containment",
+            format!(
+                "unknown provider {:?}; runtime launch is blocked",
+                config.agent_command
+            ),
+        );
+    };
+    match agent {
+        Agent::Claude => {
+            if providers.claude.dangerously_skip_permissions {
+                Check::warn(
+                    "agent containment",
+                    "Claude: explicit HIGH-RISK permission bypass enabled in providers.toml",
+                )
+            } else {
+                Check::ok(
+                    "agent containment",
+                    "Claude: permission-mode auto, inline TTY, project trust preflight",
+                )
+            }
+        }
+        Agent::Codex => Check::ok(
+            "agent containment",
+            format!(
+                "Codex: strict config, workspace-write sandbox, approve-for-me; state+locks and {} configured extra writable root(s)",
+                providers.codex.additional_writable_dirs.len()
+            ),
+        ),
+        Agent::Glm => {
+            if providers.glm.dangerously_skip_permissions {
+                Check::warn(
+                    "agent containment",
+                    "GLM/Claude adapter: explicit HIGH-RISK permission bypass enabled",
+                )
+            } else {
+                Check::ok(
+                    "agent containment",
+                    "GLM/Claude adapter: permission-mode auto, inline TTY, scoped endpoint redirect",
+                )
+            }
+        }
+        Agent::Kimi => Check::warn(
+            "agent containment",
+            "Kimi Code: auto approval mode uses provider-native controls; OmegaOS adds no separate filesystem sandbox; direct credentials stay in KIMI_MODEL_*",
+        ),
+        Agent::Gemini => Check::warn(
+            "agent containment",
+            "Gemini: provider-native policy applies; OmegaOS adds no separate filesystem sandbox",
+        ),
+        Agent::Pi | Agent::Hermes => Check::warn(
+            "agent containment",
+            format!(
+                "{}: provider-native tool policy applies; OmegaOS adds no separate filesystem sandbox",
+                agent.name()
+            ),
+        ),
+        Agent::Shell => Check::warn(
+            "agent containment",
+            "shell: unrestricted local shell selected; no model/tool sandbox applies",
+        ),
+    }
+}
+
+fn agents_override_files(
+    cwd: &std::path::Path,
+    codex_home: &std::path::Path,
+) -> Vec<std::path::PathBuf> {
+    let mut found = std::collections::BTreeSet::new();
+    let global = codex_home.join("AGENTS.override.md");
+    if global.is_file() {
+        found.insert(global);
+    }
+    for directory in cwd.ancestors() {
+        let candidate = directory.join("AGENTS.override.md");
+        if candidate.is_file() {
+            found.insert(candidate);
+        }
+    }
+    found.into_iter().collect()
+}
+
+fn check_agents_override_shadowing() -> Check {
+    let cwd = match std::env::current_dir() {
+        Ok(path) => path,
+        Err(error) => {
+            return Check::warn(
+                "AGENTS override",
+                format!("cannot inspect current directory: {error}"),
+            )
+        }
+    };
+    let codex_home = std::env::var("CODEX_HOME")
+        .map(std::path::PathBuf::from)
+        .ok()
+        .or_else(|| dirs::home_dir().map(|home| home.join(".codex")));
+    let Some(codex_home) = codex_home else {
+        return Check::warn("AGENTS override", "home directory unavailable");
+    };
+    let overrides = agents_override_files(&cwd, &codex_home);
+    if overrides.is_empty() {
+        Check::ok(
+            "AGENTS override",
+            "no active AGENTS.override.md shadowing detected",
+        )
+    } else {
+        Check::warn(
+            "AGENTS override",
+            format!(
+                "override precedence active at {}; files were inspected only, never modified",
+                overrides
+                    .iter()
+                    .map(|path| path.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        )
+    }
 }
 
 /// Run every health check. Each is independent and never panics.
@@ -211,7 +352,64 @@ pub async fn run_all(config: &OmegaConfig) -> Vec<Check> {
     let mut checks = Vec::new();
 
     // 1. Binary version.
-    checks.push(Check::ok("binary", format!("omega {}", env!("CARGO_PKG_VERSION"))));
+    checks.push(Check::ok(
+        "binary",
+        format!("omega {}", env!("CARGO_PKG_VERSION")),
+    ));
+
+    // Configuration integrity is checked independently from the caller. Older
+    // entry points may have constructed a diagnostic default after a load
+    // failure; doctor must still expose that negative state.
+    match OmegaConfig::load() {
+        Ok(_) => checks.push(Check::ok(
+            "runtime config",
+            format!(
+                "{} parsed and validated",
+                OmegaConfig::config_path().display()
+            ),
+        )),
+        Err(error) => checks.push(Check::fail(
+            "runtime config",
+            format!("runtime authority blocked: {error:#}"),
+        )),
+    }
+
+    let providers = crate::providers::ProvidersConfig::try_load();
+    match &providers {
+        Ok(provider_config) => {
+            checks.push(Check::ok(
+                "provider config",
+                format!(
+                    "{} parsed, {} typed providers available",
+                    crate::providers::ProvidersConfig::path().display(),
+                    crate::providers::ProvidersConfig::all_providers().len()
+                ),
+            ));
+            checks.push(effective_containment(config, provider_config));
+        }
+        Err(error) => {
+            checks.push(Check::fail(
+                "provider config",
+                format!("agent launch blocked: {error:#}"),
+            ));
+            checks.push(Check::fail(
+                "agent containment",
+                "effective launch profile unavailable because providers.toml is invalid",
+            ));
+        }
+    }
+
+    match crate::providers::ActiveModel::try_load() {
+        Ok(model) => checks.push(Check::ok(
+            "active model state",
+            format!("{} / {}", model.active_provider, model.active_model),
+        )),
+        Err(error) => checks.push(Check::fail(
+            "active model state",
+            format!("model routing state invalid: {error:#}"),
+        )),
+    }
+    checks.push(check_agents_override_shadowing());
 
     // 1b. Binary PROVENANCE — is the installed binary built from the checkout
     // that is on disk right now?
@@ -228,7 +426,10 @@ pub async fn run_all(config: &OmegaConfig) -> Vec<Check> {
     match SessionManager::connect().await {
         Ok(mgr) => {
             let n = mgr.list_sessions().await.map(|s| s.len()).unwrap_or(0);
-            checks.push(Check::ok("rmux daemon", format!("connected, {} live session(s)", n)));
+            checks.push(Check::ok(
+                "rmux daemon",
+                format!("connected, {} live session(s)", n),
+            ));
         }
         Err(e) => checks.push(Check::fail("rmux daemon", format!("unreachable: {}", e))),
     }
@@ -258,7 +459,10 @@ pub async fn run_all(config: &OmegaConfig) -> Vec<Check> {
     let laws = crate::rules::laws().len();
     let ops = crate::rules::operational_rules().len();
     if laws >= MIN_LAWS && ops >= MIN_OPS {
-        checks.push(Check::ok("doctrine", format!("{} Laws + {} Rules", laws, ops)));
+        checks.push(Check::ok(
+            "doctrine",
+            format!("{} Laws + {} Rules", laws, ops),
+        ));
     } else {
         checks.push(Check::warn(
             "doctrine",
@@ -312,12 +516,19 @@ pub async fn run_all(config: &OmegaConfig) -> Vec<Check> {
 
     // 4. Agent CLI available.
     match crate::agents::Agent::from_name(&config.agent_command) {
-        Some(agent) if agent.is_available() => {
-            checks.push(Check::ok("agent CLI", format!("{} available", agent.name())))
-        }
+        Some(agent) if agent.is_available() => checks.push(Check::ok(
+            "agent CLI",
+            format!("{} available", agent.name()),
+        )),
         Some(agent) => {
-            let hint = agent.install_command().map(|c| format!(" — {}", c)).unwrap_or_default();
-            checks.push(Check::warn("agent CLI", format!("{} not on PATH{}", agent.name(), hint)))
+            let hint = agent
+                .install_command()
+                .map(|c| format!(" — {}", c))
+                .unwrap_or_default();
+            checks.push(Check::warn(
+                "agent CLI",
+                format!("{} not on PATH{}", agent.name(), hint),
+            ))
         }
         None => checks.push(Check::warn(
             "agent CLI",
@@ -424,7 +635,10 @@ pub async fn run_all(config: &OmegaConfig) -> Vec<Check> {
     // 5. State dir writable.
     let probe = config.state_dir.join(".doctor-probe");
     match std::fs::write(&probe, b"ok").and_then(|_| std::fs::remove_file(&probe)) {
-        Ok(()) => checks.push(Check::ok("state dir", config.state_dir.display().to_string())),
+        Ok(()) => checks.push(Check::ok(
+            "state dir",
+            config.state_dir.display().to_string(),
+        )),
         Err(e) => checks.push(Check::fail(
             "state dir",
             format!("{} not writable: {}", config.state_dir.display(), e),
@@ -438,7 +652,11 @@ pub async fn run_all(config: &OmegaConfig) -> Vec<Check> {
         }
         Some(other) => checks.push(Check::warn(
             "telegram service",
-            format!("omega-tg-bot {} (start: {})", other, crate::service::tg_bot_start_hint()),
+            format!(
+                "omega-tg-bot {} (start: {})",
+                other,
+                crate::service::tg_bot_start_hint()
+            ),
         )),
         None => checks.push(Check::warn(
             "telegram service",
@@ -457,9 +675,15 @@ pub async fn run_all(config: &OmegaConfig) -> Vec<Check> {
                 .map(|mut e| e.next().is_some())
                 .unwrap_or(false);
             if has_any {
-                checks.push(Check::ok("secrets dir", format!("{} present", dir.display())));
+                checks.push(Check::ok(
+                    "secrets dir",
+                    format!("{} present", dir.display()),
+                ));
             } else {
-                checks.push(Check::warn("secrets dir", format!("{} empty", dir.display())));
+                checks.push(Check::warn(
+                    "secrets dir",
+                    format!("{} empty", dir.display()),
+                ));
             }
         }
         _ => checks.push(Check::warn("secrets dir", "~/.omega not found")),
@@ -468,7 +692,10 @@ pub async fn run_all(config: &OmegaConfig) -> Vec<Check> {
     // 8. Memory headroom.
     let ram = ram_available_mb();
     if ram == 0 {
-        checks.push(Check::warn("memory", "memory stats unreadable (/proc/meminfo or vm_stat)"));
+        checks.push(Check::warn(
+            "memory",
+            "memory stats unreadable (/proc/meminfo or vm_stat)",
+        ));
     } else if ram < 400 {
         checks.push(Check::warn(
             "memory",
@@ -492,10 +719,16 @@ pub async fn run_all(config: &OmegaConfig) -> Vec<Check> {
                 if age > 900 {
                     checks.push(Check::warn(
                         "usage cache",
-                        format!("usage cache stale ({} min) — omega usage cron may be failing", mins),
+                        format!(
+                            "usage cache stale ({} min) — omega usage cron may be failing",
+                            mins
+                        ),
                     ));
                 } else {
-                    checks.push(Check::ok("usage cache", format!("usage cache {} min old", mins)));
+                    checks.push(Check::ok(
+                        "usage cache",
+                        format!("usage cache {} min old", mins),
+                    ));
                 }
             }
             Err(_) => checks.push(Check::warn(
@@ -514,15 +747,17 @@ pub async fn run_all(config: &OmegaConfig) -> Vec<Check> {
             .map(|d| d.as_millis() as i128)
             .unwrap_or(0);
         let parse_expires = |content: &str| {
-            serde_json::from_str::<serde_json::Value>(content).ok().and_then(|v| {
-                // The Claude credential nests the token under `claudeAiOauth`;
-                // fall back to a top-level field for older/alternate formats.
-                v.get("claudeAiOauth")
-                    .and_then(|o| o.get("expiresAt"))
-                    .or_else(|| v.get("expiresAt"))
-                    .and_then(|e| e.as_i64())
-                    .map(|n| n as i128)
-            })
+            serde_json::from_str::<serde_json::Value>(content)
+                .ok()
+                .and_then(|v| {
+                    // The Claude credential nests the token under `claudeAiOauth`;
+                    // fall back to a top-level field for older/alternate formats.
+                    v.get("claudeAiOauth")
+                        .and_then(|o| o.get("expiresAt"))
+                        .or_else(|| v.get("expiresAt"))
+                        .and_then(|e| e.as_i64())
+                        .map(|n| n as i128)
+                })
         };
         let file_expires = cred
             .and_then(|p| std::fs::read_to_string(&p).ok())
@@ -539,7 +774,12 @@ pub async fn run_all(config: &OmegaConfig) -> Vec<Check> {
             None => {
                 let keychain_expires = if cfg!(target_os = "macos") {
                     std::process::Command::new("security")
-                        .args(["find-generic-password", "-s", "Claude Code-credentials", "-w"])
+                        .args([
+                            "find-generic-password",
+                            "-s",
+                            "Claude Code-credentials",
+                            "-w",
+                        ])
                         .output()
                         .ok()
                         .filter(|o| o.status.success())
@@ -622,7 +862,12 @@ pub async fn run_all(config: &OmegaConfig) -> Vec<Check> {
                 .filter_map(parse_export_kv)
                 .map(|(k, v)| (k, !v.is_empty()))
                 .collect();
-            let watched = ["VERCEL_TOKEN", "CONVEX_TEAM_TOKEN", "GITHUB_TOKEN", "STRIPE_SECRET_KEY"];
+            let watched = [
+                "VERCEL_TOKEN",
+                "CONVEX_TEAM_TOKEN",
+                "GITHUB_TOKEN",
+                "STRIPE_SECRET_KEY",
+            ];
             let set: Vec<&str> = watched
                 .iter()
                 .copied()
@@ -675,7 +920,10 @@ pub async fn run_all(config: &OmegaConfig) -> Vec<Check> {
                     )),
                 }
             }
-            Err(_) => checks.push(Check::warn("telegram bot parity", "live bot missing from ~/.omega/telegram-bot")),
+            Err(_) => checks.push(Check::warn(
+                "telegram bot parity",
+                "live bot missing from ~/.omega/telegram-bot",
+            )),
         }
     }
 
@@ -710,9 +958,7 @@ pub async fn probe_codex_auth() -> Check {
         crate::codex_login::AuthProbe::QuotaLimited => {
             Check::warn("codex real auth", "provider quota is unavailable")
         }
-        crate::codex_login::AuthProbe::Unknown { reason } => {
-            Check::warn("codex real auth", reason)
-        }
+        crate::codex_login::AuthProbe::Unknown { reason } => Check::warn("codex real auth", reason),
     }
 }
 
@@ -724,7 +970,9 @@ fn parse_export_kv(line: &str) -> Option<(String, String)> {
     let (k, v) = rest.split_once('=')?;
     let key = k.trim().to_string();
     if key.is_empty()
-        || !key.chars().all(|c| c.is_ascii_uppercase() || c == '_' || c.is_ascii_digit())
+        || !key
+            .chars()
+            .all(|c| c.is_ascii_uppercase() || c == '_' || c.is_ascii_digit())
     {
         return None;
     }
@@ -751,7 +999,11 @@ fn service_main_pid() -> Option<u32> {
     if cfg!(target_os = "macos") {
         // `launchctl print gui/<uid>/os.omega.tg-bot` emits a `pid = <N>`
         // line while the job is running (absent when stopped).
-        let target = format!("gui/{}/{}", current_uid(), crate::service::TG_BOT_LAUNCHD_LABEL);
+        let target = format!(
+            "gui/{}/{}",
+            current_uid(),
+            crate::service::TG_BOT_LAUNCHD_LABEL
+        );
         let out = std::process::Command::new("launchctl")
             .args(["print", &target])
             .output()
@@ -761,7 +1013,11 @@ fn service_main_pid() -> Option<u32> {
         }
         String::from_utf8_lossy(&out.stdout)
             .lines()
-            .find_map(|l| l.trim().strip_prefix("pid =").and_then(|v| v.trim().parse::<u32>().ok()))
+            .find_map(|l| {
+                l.trim()
+                    .strip_prefix("pid =")
+                    .and_then(|v| v.trim().parse::<u32>().ok())
+            })
             .filter(|p| *p != 0)
     } else {
         let out = systemctl_user(&["show", "omega-tg-bot.service", "-p", "MainPID", "--value"])?;
@@ -973,7 +1229,8 @@ fn fix_duplicate_pollers() -> Vec<String> {
             log.push(format!(
                 "killed duplicate Telegram poller pid {}{}",
                 pid,
-                keep.map(|k| format!(" (kept service-managed {})", k)).unwrap_or_default()
+                keep.map(|k| format!(" (kept service-managed {})", k))
+                    .unwrap_or_default()
             ));
         }
     }
@@ -1055,12 +1312,69 @@ pub fn overall(checks: &[Check]) -> Health {
 mod tests {
     use super::*;
 
+    #[test]
+    fn agents_override_detection_is_layered_and_read_only() {
+        let tmp = tempfile::tempdir().unwrap();
+        let codex_home = tmp.path().join("codex-home");
+        let project = tmp.path().join("workspace/project/src");
+        std::fs::create_dir_all(&codex_home).unwrap();
+        std::fs::create_dir_all(&project).unwrap();
+        let global = codex_home.join("AGENTS.override.md");
+        let local = tmp.path().join("workspace/project/AGENTS.override.md");
+        std::fs::write(&global, "global").unwrap();
+        std::fs::write(&local, "local").unwrap();
+
+        let before_global = std::fs::read(&global).unwrap();
+        let before_local = std::fs::read(&local).unwrap();
+        let found = agents_override_files(&project, &codex_home);
+        assert_eq!(found.len(), 2);
+        assert!(found.contains(&global));
+        assert!(found.contains(&local));
+        assert_eq!(std::fs::read(global).unwrap(), before_global);
+        assert_eq!(std::fs::read(local).unwrap(), before_local);
+    }
+
+    #[test]
+    fn containment_reports_safe_codex_defaults_and_explicit_claude_risk() {
+        let mut config = OmegaConfig {
+            agent_command: "codex".to_string(),
+            ..Default::default()
+        };
+        let providers = crate::providers::ProvidersConfig::default();
+        let codex = effective_containment(&config, &providers);
+        assert_eq!(codex.health, Health::Ok);
+        assert!(codex.detail.contains("workspace-write"));
+
+        config.agent_command = "claude".to_string();
+        let mut risky = providers;
+        risky.claude.dangerously_skip_permissions = true;
+        let claude = effective_containment(&config, &risky);
+        assert_eq!(claude.health, Health::Warn);
+        assert!(claude.detail.contains("HIGH-RISK"));
+
+        config.agent_command = "kimi".to_string();
+        let kimi = effective_containment(&config, &risky);
+        assert_eq!(kimi.health, Health::Warn);
+        assert!(kimi.detail.contains("no separate filesystem sandbox"));
+
+        config.agent_command = "codxe".to_string();
+        let unknown = effective_containment(&config, &risky);
+        assert_eq!(unknown.health, Health::Fail);
+        assert!(unknown.detail.contains("runtime launch is blocked"));
+    }
+
     // fix8-T1: the pure decision behind doctor check #11 (telegram poller).
     #[test]
     fn poller_verdict_excludes_agent_bots() {
         let excl: std::collections::HashSet<u32> = [20, 30].into_iter().collect();
-        assert_eq!(poller_verdict(&[10, 20, 30], Some(&excl)), PollerVerdict::Single(1));
-        assert_eq!(poller_verdict(&[10, 11, 20], Some(&excl)), PollerVerdict::Duplicates(2));
+        assert_eq!(
+            poller_verdict(&[10, 20, 30], Some(&excl)),
+            PollerVerdict::Single(1)
+        );
+        assert_eq!(
+            poller_verdict(&[10, 11, 20], Some(&excl)),
+            PollerVerdict::Duplicates(2)
+        );
         assert_eq!(poller_verdict(&[], Some(&excl)), PollerVerdict::Single(0));
     }
 
@@ -1069,7 +1383,10 @@ mod tests {
         // Headless Mac: no GUI launchctl domain → no exclusion list. Several
         // pids may all be legitimate agent bots — undeterminable, never
         // Duplicates (the fix8-T1 false-warning bug).
-        assert_eq!(poller_verdict(&[10, 20, 30], None), PollerVerdict::Undeterminable);
+        assert_eq!(
+            poller_verdict(&[10, 20, 30], None),
+            PollerVerdict::Undeterminable
+        );
         assert_eq!(poller_verdict(&[10], None), PollerVerdict::Single(1));
         assert_eq!(poller_verdict(&[], None), PollerVerdict::Single(0));
     }

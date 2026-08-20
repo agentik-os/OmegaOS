@@ -165,7 +165,7 @@ Do not renumber existing IDs across revisions. Mark retired IDs and preserve the
 For every material decision record:
 
 ```text
-DDEC-### — Decision title
+DDEC-###: Decision title
 Status: proposed | approved | superseded | rejected
 Problem: what must be resolved
 Evidence: Blueprint/research/analytics IDs

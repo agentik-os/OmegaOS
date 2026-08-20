@@ -1,0 +1,153 @@
+{
+  "schema_version": "2.0.0",
+  "id": "affiliate-os",
+  "num": 36,
+  "name": "Affiliate {OS}",
+  "version": "0.1.0",
+  "status": "scaffold",
+  "group": {
+    "key": "grow",
+    "label": "04 · GROW",
+    "purpose": "Turn value into distribution and revenue"
+  },
+  "tagline": "Learn distribution by selling someone else's real product.",
+  "inherits_from": null,
+  "commands": [
+    {
+      "name": "/affiliate",
+      "does": "Opens the partner portfolio with terms, stop conditions and trust cost.",
+      "returns": "One line per live partner, unresolved disclosure and missing stop conditions first."
+    },
+    {
+      "name": "/partner-vet",
+      "does": "Vets a candidate product on evidence of use, before the commission rate is read.",
+      "returns": "A vetting record with the harm case, the coherence check and an accept or reject verdict."
+    },
+    {
+      "name": "/partner-terms",
+      "does": "Records commission, attribution window, payout schedule, claim restrictions and the exit clause.",
+      "returns": "A terms record marking every term the partner can change unilaterally."
+    },
+    {
+      "name": "/trust-cost",
+      "does": "Scores what a recommendation would cost in audience trust, independently of projected income.",
+      "returns": "Who is harmed, how visibly, and what recovering that trust would take."
+    },
+    {
+      "name": "/disclosure",
+      "does": "Drafts the disclosure text and states where it must be published for this audience.",
+      "returns": "Disclosure text, required placement per surface, and an unresolved flag when the rules are ambiguous."
+    },
+    {
+      "name": "/promotion",
+      "does": "Builds the promotion plan and writes its stop condition before launch.",
+      "returns": "A plan pending human approval, with the stop condition stated as a threshold."
+    },
+    {
+      "name": "/promo-copy",
+      "does": "Drafts promotional copy in which every claim traces to recorded use evidence.",
+      "returns": "Unapproved draft copy plus the claims dropped for lack of evidence."
+    },
+    {
+      "name": "/attribution",
+      "does": "Reconciles own tracking against the partner report for a payout period.",
+      "returns": "Both numbers, the gap, and the gap as a named finding with an amount."
+    },
+    {
+      "name": "/affiliate-revenue",
+      "does": "Emits a reconciled period as an affiliate revenue event to Revenue {OS}.",
+      "returns": "The revenue event, or a refusal when the period is not reconciled."
+    },
+    {
+      "name": "/partner-exit",
+      "does": "Withdraws from a partnership and drafts the notice to the audience.",
+      "returns": "A withdrawal record, the assets to take down, and an unapproved audience notice."
+    },
+    {
+      "name": "/affiliate-review",
+      "does": "Reviews the portfolio against trust cost and return.",
+      "returns": "Keep, pause or exit per partner, each with its evidence."
+    }
+  ],
+  "dependencies": {
+    "consumes_from": [
+      "positioning-os",
+      "content-os",
+      "network-os",
+      "growth-os"
+    ],
+    "emits_to": [
+      "content-os",
+      "growth-os",
+      "revenue-os"
+    ],
+    "handoffs": [
+      {
+        "to": "positioning-os",
+        "artifact": "what fits the claim"
+      },
+      {
+        "to": "content-os",
+        "artifact": "distribution surfaces"
+      },
+      {
+        "to": "network-os",
+        "artifact": "audience trust and consent"
+      },
+      {
+        "to": "growth-os",
+        "artifact": "channel data"
+      },
+      {
+        "to": "content-os",
+        "artifact": "partner selection and disclosure record"
+      },
+      {
+        "to": "growth-os",
+        "artifact": "partner selection and disclosure record"
+      },
+      {
+        "to": "revenue-os",
+        "artifact": "affiliate revenue event"
+      }
+    ]
+  },
+  "targets": {
+    "claude": {
+      "supported": true
+    },
+    "chatgpt": {
+      "supported": true
+    },
+    "gemini": {
+      "supported": true
+    },
+    "codex": {
+      "supported": true
+    }
+  },
+  "entrypoints": {
+    "spec": "OS.md",
+    "system": "SYSTEM.md",
+    "skill": "SKILL.md",
+    "setup": "SETUP.md",
+    "workflows": "WORKFLOWS/",
+    "commands": "COMMANDS/",
+    "prompts": "PROMPTS/",
+    "references": "REFERENCES/",
+    "memory": "MEMORY/",
+    "tools": "TOOLS/",
+    "evals": "EVALS/",
+    "examples": "EXAMPLES/",
+    "interfaces": "INTERFACES/",
+    "adapters": "ADAPTERS/"
+  },
+  "requires_human_approval_for": [
+    "signing or accepting any partner agreement or programme terms",
+    "promoting anything to an owned audience, on any surface",
+    "publishing any promotional copy, in the exact wording that will ship",
+    "publishing a promotion whose disclosure text is not already live",
+    "making any performance or outcome claim about a partner product",
+    "ending a promotion in a way the audience will notice"
+  ]
+}

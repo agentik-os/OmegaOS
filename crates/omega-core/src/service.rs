@@ -158,7 +158,10 @@ pub fn tg_bot_start_hint() -> String {
 /// The one-liner the operator should run to restart the service by hand.
 pub fn tg_bot_restart_hint() -> String {
     if is_darwin() {
-        format!("launchctl kickstart -k gui/$(id -u)/{}", TG_BOT_LAUNCHD_LABEL)
+        format!(
+            "launchctl kickstart -k gui/$(id -u)/{}",
+            TG_BOT_LAUNCHD_LABEL
+        )
     } else {
         format!("systemctl --user restart {}", TG_BOT_SYSTEMD_UNIT)
     }

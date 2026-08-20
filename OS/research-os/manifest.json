@@ -1,0 +1,96 @@
+{
+  "schema_version": "2.0.0",
+  "id": "research-os",
+  "num": 13,
+  "name": "Research {OS}",
+  "version": "0.1.0",
+  "status": "authored",
+  "group": {
+    "key": "discover",
+    "label": "02 · DISCOVER & DECIDE",
+    "purpose": "Find what is worth building"
+  },
+  "tagline": "General-purpose evidence gathering with sources you can defend.",
+  "inherits_from": "researcher-os",
+  "commands": [
+    "/research",
+    "/question",
+    "/plan",
+    "/gather",
+    "/vet",
+    "/verify",
+    "/contradictions",
+    "/confidence",
+    "/memo",
+    "/research-audit"
+  ],
+  "dependencies": {
+    "requires": [
+      "agentik-runtime",
+      "context-memory-os"
+    ],
+    "consumes": [
+      "librarian.extract.delivered",
+      "memory.context.compiled"
+    ],
+    "emits": [
+      "research.question.framed",
+      "research.evidence.compiled",
+      "research.claim.contested",
+      "research.memo.published"
+    ],
+    "consumes_from": [
+      "librarian-os",
+      "context-memory-os"
+    ],
+    "emits_to": [
+      "context-memory-os",
+      "market-research-os",
+      "trend-opportunity-os",
+      "validation-os",
+      "business-model-os",
+      "strategy-portfolio-os"
+    ]
+  },
+  "targets": {
+    "claude": {
+      "supported": true
+    },
+    "chatgpt": {
+      "supported": true
+    },
+    "gemini": {
+      "supported": true
+    },
+    "codex": {
+      "supported": true
+    }
+  },
+  "entrypoints": {
+    "spec": "OS.md",
+    "system": "SYSTEM.md",
+    "skill": "SKILL.md",
+    "setup": "SETUP.md",
+    "workflows": "WORKFLOWS/",
+    "commands": "COMMANDS/",
+    "prompts": "PROMPTS/",
+    "references": "REFERENCES/",
+    "memory": "MEMORY/",
+    "tools": "TOOLS/",
+    "evals": "EVALS/",
+    "examples": "EXAMPLES/",
+    "interfaces": "INTERFACES/",
+    "adapters": "ADAPTERS/"
+  },
+  "requires_human_approval_for": [
+    "paying for a source, report, database seat, archive fee or metered API call",
+    "accessing a source whose terms of use forbid automated retrieval, or scraping a site beyond ordinary reading",
+    "contacting a human for expert input, including a single email to an author or analyst",
+    "collecting, storing or processing personal data about identifiable people",
+    "using credentials, an institutional subscription or another person's account to reach a source",
+    "publishing or sending a memo outside the organisation",
+    "quoting a source beyond fair use inside a distributed document",
+    "retrieving material on a legally sensitive subject where the search itself carries risk",
+    "filing a memo as canonical when it supersedes an existing memo other OS units depend on"
+  ]
+}

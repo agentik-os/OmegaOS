@@ -1,0 +1,48 @@
+version: 4.0.0
+workflow_id: builder.os_build_ultimate
+trigger:
+  command: /os-build
+  minimum_input: [os_name]
+mode_default: ultimate
+workspace_creator: scripts/create_build_workspace.py
+state_file: 00_control/BUILD_STATE.json
+artifact_index: 00_control/ARTIFACT_INDEX.json
+phases:
+  - {id: '00', key: intake, owner: build_orchestrator, gate: build_contract_pass}
+  - {id: '01', key: domain, owner: domain_framer, depends_on: ['00'], gate: domain_coverage_pass}
+  - {id: '02', key: outcomes, owner: outcome_mapper, depends_on: ['01'], gate: outcomes_pass}
+  - {id: '03', key: research_design, owner: evidence_researcher, depends_on: ['02'], gate: research_protocol_pass}
+  - {id: '04', key: discovery, owner: bestseller_scout, depends_on: ['03'], strategy: parallel_discovery, gate: discovery_coverage_pass}
+  - {id: '05', key: corpus, owner: corpus_curator, depends_on: ['04'], gate: corpus_coverage_pass}
+  - {id: '06', key: book_deep, owner: book_deep_analyst_pool, depends_on: ['05'], strategy: parallel_per_retained_book, gate: all_retained_books_validated}
+  - {id: '07', key: evidence, owner: evidence_researcher, depends_on: ['05'], strategy: parallel_by_subdomain, gate: evidence_mix_pass}
+  - {id: '08', key: source_normalization, owner: provenance_engineer, depends_on: ['06','07'], gate: provenance_pass}
+  - {id: '09', key: claims, owner: claim_auditor, depends_on: ['08'], gate: claim_integrity_pass}
+  - {id: '10', key: conflicts, owner: contradiction_analyst, depends_on: ['09'], gate: contradiction_visibility_pass}
+  - {id: '11', key: synthesis, owner: knowledge_synthesizer, depends_on: ['10'], gate: synthesis_pass}
+  - {id: '12', key: model, owner: ontology_architect, depends_on: ['11'], gate: model_pass}
+  - {id: '13', key: logic, owner: decision_logic_engineer, depends_on: ['12'], gate: logic_traceability_pass}
+  - {id: '14', key: architecture, owner: os_architect, depends_on: ['13'], gate: architecture_pass}
+  - {id: '15', key: interfaces, owner: workflow_command_engineer, depends_on: ['14'], gate: interface_pass}
+  - {id: '16', key: runtime_design, owner: runtime_architect, depends_on: ['15'], gate: runtime_design_pass}
+  - {id: '17', key: handoffs, owner: orchestration_architect, depends_on: ['16'], gate: handoff_safety_pass}
+  - {id: '18', key: implementation, owner: implementation_pool, depends_on: ['16','17'], strategy: parallel_by_module, gate: implementation_pass}
+  - {id: '19', key: validation, owner: validation_engineer, depends_on: ['18'], gate: static_validation_pass}
+  - {id: '20', key: evals, owner: eval_engineer, depends_on: ['19'], gate: critical_evals_pass}
+  - {id: '21', key: audit, owner: red_team_auditor, depends_on: ['20'], gate: no_unresolved_blockers}
+  - {id: '22', key: repair, owner: build_orchestrator, depends_on: ['21'], loop_until: release_gates_pass}
+  - {id: '23', key: docs, owner: documentation_release_engineer, depends_on: ['22'], gate: docs_match_runtime}
+  - {id: '24', key: release, owner: release_engineer, depends_on: ['23'], gate: package_validation_pass}
+  - {id: '25', key: update_baseline, owner: maintenance_engineer, depends_on: ['24'], gate: update_baseline_pass}
+failure_policy:
+  blocker: stop_phase_and_repair
+  critical: block_release
+  high: repair_before_release_unless_explicitly_accepted
+  medium: record_and_prioritize
+  low: record
+  worker_failure: retry_then_reassign
+observability:
+  append_events_to: 00_control/BUILD_EVENT_LOG.jsonl
+  events: [build_initialized, phase_started, artifact_written, source_added, claim_changed, gate_passed, gate_failed, repair_applied, release_created]
+traceability:
+  invariant: job_to_source_to_claim_to_synthesis_to_rule_to_capability_to_interface_to_eval_to_release

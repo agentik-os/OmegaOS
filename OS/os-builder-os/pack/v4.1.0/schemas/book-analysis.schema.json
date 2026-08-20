@@ -1,0 +1,182 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "book-analysis.schema.json",
+  "title": "BookDeepAnalysis",
+  "type": "object",
+  "required": [
+    "book_id",
+    "identity",
+    "access_basis",
+    "thesis",
+    "concepts",
+    "mechanisms",
+    "principles",
+    "procedures",
+    "limitations",
+    "os_candidates",
+    "confidence"
+  ],
+  "properties": {
+    "book_id": {
+      "type": "string"
+    },
+    "identity": {
+      "type": "object",
+      "required": [
+        "title",
+        "author"
+      ],
+      "properties": {
+        "title": {
+          "type": "string"
+        },
+        "author": {
+          "type": "string"
+        },
+        "edition": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "publication_date": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "access_basis": {
+      "type": "string"
+    },
+    "thesis": {
+      "type": "string"
+    },
+    "problem_definition": {
+      "type": "string"
+    },
+    "target_reader": {
+      "type": "string"
+    },
+    "concepts": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "mechanisms": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "principles": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "diagnostics": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "decision_rules": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "procedures": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "exercises": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "metrics": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "failure_modes": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "limitations": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "biases": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "unique_contributions": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "contradictions": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "os_candidates": {
+      "type": "object",
+      "properties": {
+        "capabilities": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "commands": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "workflows": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "states": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "eval_cases": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "confidence": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    }
+  },
+  "additionalProperties": true
+}

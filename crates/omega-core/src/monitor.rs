@@ -68,7 +68,11 @@ impl UsageSnapshot {
     /// over-reports (showed 89% when the real 5h was 36%).
     fn omega_usage_path() -> std::path::PathBuf {
         dirs::home_dir()
-            .unwrap_or_else(|| std::env::var("HOME").map(std::path::PathBuf::from).unwrap_or_else(|_| std::path::PathBuf::from("/tmp")))
+            .unwrap_or_else(|| {
+                std::env::var("HOME")
+                    .map(std::path::PathBuf::from)
+                    .unwrap_or_else(|_| std::path::PathBuf::from("/tmp"))
+            })
             .join(".omega/state/usage.json")
     }
 
@@ -145,11 +149,19 @@ pub fn connected_account() -> Option<ConnectedAccount> {
         return None;
     }
     let json: serde_json::Value = serde_json::from_slice(&out.stdout).ok()?;
-    if !json.get("loggedIn").and_then(|v| v.as_bool()).unwrap_or(false) {
+    if !json
+        .get("loggedIn")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+    {
         return None;
     }
     Some(ConnectedAccount {
-        email: json.get("email").and_then(|v| v.as_str()).unwrap_or("?").to_string(),
+        email: json
+            .get("email")
+            .and_then(|v| v.as_str())
+            .unwrap_or("?")
+            .to_string(),
         plan: json
             .get("subscriptionType")
             .and_then(|v| v.as_str())
@@ -356,8 +368,7 @@ impl OmegaTelegramConfig {
         if !path.exists() {
             return Ok(false);
         }
-        std::fs::remove_file(&path)
-            .with_context(|| format!("removing {}", path.display()))?;
+        std::fs::remove_file(&path).with_context(|| format!("removing {}", path.display()))?;
         Ok(true)
     }
 

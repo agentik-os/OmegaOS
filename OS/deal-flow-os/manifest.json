@@ -1,0 +1,84 @@
+{
+  "schema_version": "2.0.0",
+  "id": "deal-flow-os",
+  "num": 59,
+  "name": "Deal Flow {OS}",
+  "version": "0.1.0",
+  "status": "scaffold",
+  "group": {
+    "key": "capital",
+    "label": "07 · CAPITAL",
+    "purpose": "Turn assets into capital allocation"
+  },
+  "tagline": "Source, filter and track opportunities at the top of the funnel.",
+  "inherits_from": null,
+  "commands": [
+    "/dealflow",
+    "/dealflow screen write",
+    "/dealflow intake",
+    "/dealflow screen <id>",
+    "/dealflow track <id>",
+    "/dealflow pass <id>",
+    "/dealflow handoff <id>",
+    "/dealflow source",
+    "/dealflow sweep",
+    "/dealflow report",
+    "/dealflow sources report"
+  ],
+  "dependencies": {
+    "requires": [
+      "agentik-runtime",
+      "context-memory-os"
+    ],
+    "consumes": [
+      "capital.policy.set",
+      "capital.pacing.reported",
+      "thesis.invalidated",
+      "acquisition.abandoned"
+    ],
+    "emits": [
+      "dealflow.opportunity.sourced",
+      "dealflow.opportunity.qualified",
+      "dealflow.opportunity.passed",
+      "dealflow.pipeline.reported"
+    ]
+  },
+  "targets": {
+    "claude": {
+      "supported": true
+    },
+    "chatgpt": {
+      "supported": true
+    },
+    "gemini": {
+      "supported": true
+    },
+    "codex": {
+      "supported": true
+    }
+  },
+  "entrypoints": {
+    "spec": "OS.md",
+    "system": "SYSTEM.md",
+    "skill": "SKILL.md",
+    "setup": "SETUP.md",
+    "workflows": "WORKFLOWS/",
+    "commands": "COMMANDS/",
+    "prompts": "PROMPTS/",
+    "references": "REFERENCES/",
+    "memory": "MEMORY/",
+    "tools": "TOOLS/",
+    "evals": "EVALS/",
+    "examples": "EXAMPLES/",
+    "interfaces": "INTERFACES/",
+    "adapters": "ADAPTERS/"
+  },
+  "requires_human_approval_for": [
+    "sending any outbound approach or introduction request",
+    "sending a pass message to a counterparty",
+    "changing the written screen",
+    "recording an opportunity as qualified",
+    "sharing the opportunity register outside the operator",
+    "entering any fee or introduction agreement with an intermediary"
+  ]
+}

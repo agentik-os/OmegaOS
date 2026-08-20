@@ -1,0 +1,45 @@
+version: 3.0.0
+os: builder-os
+handoffs:
+  - to: research-os
+    capability: research.systematic
+    input_schema: research_request.v1
+    output_schema: evidence_bundle.v1
+    optional: false
+    fallback: local_research_adapter
+    user_controlled: true
+  - to: librarian-os
+    capability: corpus.discover_and_deep_analyze
+    input_schema: corpus_request.v1
+    output_schema: book_intelligence_bundle.v1
+    optional: false
+    fallback: local_librarian_adapter
+    user_controlled: true
+  - to: quality-evaluation-os
+    capability: eval.design_and_run
+    input_schema: eval_request.v1
+    output_schema: eval_report.v1
+    optional: true
+    fallback: local_eval_engine
+    user_controlled: true
+  - to: review-governance-os
+    capability: audit.release
+    input_schema: audit_request.v1
+    output_schema: audit_report.v1
+    optional: true
+    fallback: local_governance_audit
+    user_controlled: true
+  - to: documentation-os
+    capability: docs.complete
+    input_schema: docs_request.v1
+    output_schema: docs_bundle.v1
+    optional: true
+    fallback: local_docs_generator
+    user_controlled: true
+  - to: release-os
+    capability: release.package
+    input_schema: release_request.v1
+    output_schema: release_bundle.v1
+    optional: true
+    fallback: local_release_packager
+    user_controlled: true

@@ -1,0 +1,190 @@
+{
+  "schema_version": "2.0.0",
+  "id": "positioning-os",
+  "num": 29,
+  "name": "Positioning {OS}",
+  "version": "0.1.0",
+  "status": "scaffold",
+  "group": {
+    "key": "grow",
+    "label": "04 · GROW",
+    "purpose": "Turn value into distribution and revenue"
+  },
+  "tagline": "The category you compete in and the claim you own inside it.",
+  "inherits_from": null,
+  "commands": [
+    {
+      "name": "/positioning",
+      "does": "Orients: reads the claim ledger and names the next decision.",
+      "returns": "Current statement, live and contested claims, one next action."
+    },
+    {
+      "name": "/position-map",
+      "does": "Builds the competitive set with each rival's claim quoted from source.",
+      "returns": "The competitive map with sources, capture dates and uncontested ground."
+    },
+    {
+      "name": "/position-language",
+      "does": "Extracts the customer's own vocabulary for the problem.",
+      "returns": "Ranked verbatim terms with counts and the utterance each came from."
+    },
+    {
+      "name": "/position-category",
+      "does": "Decides the category, or declares an invented one with its demand cost.",
+      "returns": "The category decision, its demand verdict and what moves downstream."
+    },
+    {
+      "name": "/position-claim",
+      "does": "Drafts a candidate claim and forces the exclusion it must name.",
+      "returns": "The candidate claim, its exclusion and the proof it must carry."
+    },
+    {
+      "name": "/position-test",
+      "does": "Tests a candidate against customer language and published rival claims.",
+      "returns": "Pass or fail per test, naming the utterance or rival claim that killed it."
+    },
+    {
+      "name": "/position-statement",
+      "does": "Assembles the positioning statement from a tested claim.",
+      "returns": "Category, target, claim, exclusion and proof in one paragraph."
+    },
+    {
+      "name": "/position-ledger",
+      "does": "Reads, writes and audits the claim ledger.",
+      "returns": "Ledger entries with evidence, expiry condition, last tester and date."
+    },
+    {
+      "name": "/position-conflict",
+      "does": "Detects claims that contradict each other and marks the pair contested.",
+      "returns": "Contested pairs with the evidence on each side and the human decision needed."
+    },
+    {
+      "name": "/position-review",
+      "does": "Retests every claim that reached its expiry window.",
+      "returns": "Per claim: holds, contested or expired, with the retest evidence."
+    },
+    {
+      "name": "/position-retire",
+      "does": "Retires a claim and lists every surface and unit still using it.",
+      "returns": "A retirement record and the downstream notification list."
+    },
+    {
+      "name": "/position-brief",
+      "does": "Packages the statement and claim subset one downstream unit needs.",
+      "returns": "The unit specific brief and what that unit is expected to do with it."
+    }
+  ],
+  "dependencies": {
+    "consumes_from": [
+      "market-research-os",
+      "customer-discovery-os",
+      "business-model-os",
+      "validation-os"
+    ],
+    "emits_to": [
+      "brand-os",
+      "offer-os",
+      "content-os",
+      "sales-os",
+      "growth-os",
+      "storyteller-os",
+      "affiliate-os"
+    ],
+    "handoffs": [
+      {
+        "to": "market-research-os",
+        "artifact": "demand and competitor evidence"
+      },
+      {
+        "to": "customer-discovery-os",
+        "artifact": "the customer's own language"
+      },
+      {
+        "to": "business-model-os",
+        "artifact": "how value is captured"
+      },
+      {
+        "to": "validation-os",
+        "artifact": "evidence a claim survived contact"
+      },
+      {
+        "to": "brand-os",
+        "artifact": "positioning statement"
+      },
+      {
+        "to": "offer-os",
+        "artifact": "positioning statement"
+      },
+      {
+        "to": "content-os",
+        "artifact": "positioning statement"
+      },
+      {
+        "to": "sales-os",
+        "artifact": "positioning statement"
+      },
+      {
+        "to": "growth-os",
+        "artifact": "positioning statement"
+      },
+      {
+        "to": "storyteller-os",
+        "artifact": "positioning statement"
+      },
+      {
+        "to": "affiliate-os",
+        "artifact": "positioning statement"
+      },
+      {
+        "to": "content-os",
+        "artifact": "claim ledger"
+      },
+      {
+        "to": "sales-os",
+        "artifact": "claim ledger"
+      },
+      {
+        "to": "storyteller-os",
+        "artifact": "claim ledger"
+      }
+    ]
+  },
+  "targets": {
+    "claude": {
+      "supported": true
+    },
+    "chatgpt": {
+      "supported": true
+    },
+    "gemini": {
+      "supported": true
+    },
+    "codex": {
+      "supported": true
+    }
+  },
+  "entrypoints": {
+    "spec": "OS.md",
+    "system": "SYSTEM.md",
+    "skill": "SKILL.md",
+    "setup": "SETUP.md",
+    "workflows": "WORKFLOWS/",
+    "commands": "COMMANDS/",
+    "prompts": "PROMPTS/",
+    "references": "REFERENCES/",
+    "memory": "MEMORY/",
+    "tools": "TOOLS/",
+    "evals": "EVALS/",
+    "examples": "EXAMPLES/",
+    "interfaces": "INTERFACES/",
+    "adapters": "ADAPTERS/"
+  },
+  "requires_human_approval_for": [
+    "publishing any claim on an external surface",
+    "changing the category, or retiring a category already in market",
+    "writing or releasing any claim that names a competitor",
+    "overriding recorded customer language with the operator's wording",
+    "marking a contested claim resolved",
+    "retiring a live claim that downstream units are currently using"
+  ]
+}

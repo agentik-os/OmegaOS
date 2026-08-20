@@ -1,7 +1,8 @@
 use anyhow::{Context, Result};
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use omega_core::config::OmegaConfig;
 use omega_core::done::{DoneSignal, DoneStatus};
+use omega_core::orchestration::V3_ACCEPTANCE_PENDING;
 use omega_core::session::SessionManager;
 
 mod forwarder;
@@ -51,16 +52,16 @@ enum Commands {
     },
 
     /// Bootstrap a brand-new project (provision + scaffold + vision/PRD/plan) via the
-    /// workflow-driven /omega-new-project pipeline. Spawns a Claude session in the
+    /// workflow-driven /omega-new-project pipeline. Spawns a Codex session in the
     /// resolved category dir. Use --dry-run to print the plan without spawning.
     NewProject {
         /// Project name (lowercase [a-z0-9-])
         name: String,
-        /// Stack (default: nextstack — the only stack today)
+        /// Implemented strategy: nextstack or custom
         #[arg(default_value = "nextstack")]
         stack: String,
-        /// Category: works | client | 1-life | AgentikOS
-        #[arg(default_value = "works")]
+        /// Category: customer | side-business | tools
+        #[arg(default_value = "side-business")]
         category: String,
         /// Provisioning credential group (client projects)
         #[arg(long, default_value = "default")]
@@ -146,9 +147,12 @@ enum Commands {
         dry_run: bool,
     },
 
-    /// Attach to the Master AISB session (auto-spawns if missing)
-    #[command(alias = "aisb")]
-    Master,
+    /// Open the read-only AISB Telegram conversation viewer.
+    ///
+    /// `master` and `aisb` remain compatibility aliases; neither starts an
+    /// agent. Use `omega aisb-chat` for interactive local chat.
+    #[command(name = "aisb-view", visible_aliases = ["master", "aisb"])]
+    AisbView,
 
     /// Get or set provider configuration values (propagates to all sessions)
     Config {
@@ -301,7 +305,7 @@ enum Commands {
         record_installed: bool,
     },
 
-    /// Install Option+Z / Option+/ rmux keybindings (apply now, no daemon restart)
+    /// Install Ctrl+Space and prefix o/z rmux menu bindings (applies immediately)
     InstallBindings,
 
     /// List all sessions
@@ -363,9 +367,8 @@ enum Commands {
     /// executes it, turns its exit status into a `NodeReport`, and hands the
     /// batch back to `advance`.
     ///
-    /// Deliberately NOT wired into oracle dispatch. That path runs on other
-    /// people's installs and already has its own DAG (`mission::PlanContract`);
-    /// this is additive and drives the graphs you hand it.
+    /// Standalone runs remain supported. Oracle/team workflows can additionally
+    /// bind a run to an immutable mission plan and task-attempt identity.
     Graph {
         #[command(subcommand)]
         action: GraphAction,
@@ -474,8 +477,13 @@ enum Commands {
         /// Working directory
         #[arg(short, long)]
         dir: Option<String>,
-        /// Team member specs (name:prompt, ...)
+        /// Team member specs (name:prompt, ...). A member without an explicit
+        /// --scope is read-only; OmegaOS never invents a writable scope.
         members: Vec<String>,
+        /// Writable scope for one named member, as MEMBER=PATH[,PATH...]. Repeat
+        /// for additional writers. Overlapping writers are rejected by the core.
+        #[arg(long = "scope", value_name = "MEMBER=PATH[,PATH...]")]
+        scopes: Vec<String>,
     },
 
     /// Signal task completion (called by workers)
@@ -634,10 +642,8 @@ enum Commands {
         action: ProvisionAction,
     },
 
-    /// Interactive AISB Master chat REPL (runs inside the aisb-master
-    /// pane). Each line you type is injected into the running bot exactly
-    /// as if it had arrived from Telegram — same brain, same response,
-    /// which also lands in your Telegram chat.
+    /// Interactive AISB/Atlas chat REPL. Each line is injected into the
+    /// running Telegram service. This is distinct from the read-only viewer.
     AisbChat,
 
     /// Check quality gate for an oracle
@@ -784,6 +790,13 @@ enum Commands {
     /// Show plan progress from .planner/tracker.json (read-only)
     PlanStatus {
         /// Project directory containing .planner/tracker.json
+        #[arg(default_value = ".")]
+        path: String,
+    },
+
+    /// Create a project plan by opening /omg-planner in an agent session
+    PlanCreate {
+        /// Project directory in which the planner should run
         #[arg(default_value = ".")]
         path: String,
     },
@@ -961,7 +974,7 @@ async fn main() -> Result<()> {
         Some(Commands::Marketing(action)) => cmd_marketing(action),
         Some(Commands::TrustDir { dir }) => cmd_trust_dir(dir.as_deref()),
         Some(Commands::Install { agent, dry_run }) => cmd_install(&agent, dry_run),
-        Some(Commands::Master) => cmd_master().await,
+        Some(Commands::AisbView) => cmd_aisb_view().await,
         Some(Commands::Config { action }) => cmd_config(action),
         // Two features, one command word. A bare `omega monitor` is the
         // billing view it has always been; a target routes to the session
@@ -1039,7 +1052,33 @@ async fn main() -> Result<()> {
                 unattended,
                 dry_run,
                 max_steps,
-            } => cmd_graph_run(&graph, state.as_deref(), unattended, dry_run, max_steps).await,
+                oracle,
+            } => {
+                cmd_graph_run_for_oracle(
+                    &graph,
+                    state.as_deref(),
+                    unattended,
+                    dry_run,
+                    max_steps,
+                    oracle.as_deref(),
+                )
+                .await
+            }
+            GraphAction::Reconcile {
+                graph,
+                node,
+                state,
+                result,
+                reason,
+                approver,
+            } => cmd_graph_reconcile(
+                &graph,
+                &node,
+                state.as_deref(),
+                result,
+                reason.as_deref(),
+                &approver,
+            ),
         },
         Some(Commands::InstallBindings) => cmd_install_bindings().await,
         Some(Commands::List) => cmd_list().await,
@@ -1087,7 +1126,8 @@ async fn main() -> Result<()> {
             count,
             dir,
             members,
-        }) => cmd_team(&project, count, dir.as_deref(), &members).await,
+            scopes,
+        }) => cmd_team(&project, count, dir.as_deref(), &members, &scopes).await,
         Some(Commands::Done {
             session,
             status,
@@ -1211,6 +1251,7 @@ async fn main() -> Result<()> {
         Some(Commands::Completions { shell }) => cmd_completions(&shell),
         Some(Commands::Init) => cmd_init().await,
         Some(Commands::PlanStatus { path }) => cmd_plan_status(&path),
+        Some(Commands::PlanCreate { path }) => cmd_plan_create(&path).await,
         Some(Commands::PlanRun { path }) => cmd_plan_run(&path).await,
         Some(Commands::ClaudeLogin) => cmd_claude_login().await,
         Some(Commands::ClaudeLoginCode { code }) => cmd_claude_login_code(&code).await,
@@ -1279,7 +1320,8 @@ fn restore_terminal(out: &mut impl std::io::Write) {
 async fn run_menu() -> Result<()> {
     use omega_tui::app::App;
 
-    let config = OmegaConfig::load().unwrap_or_default();
+    let config =
+        OmegaConfig::load().context("cannot load OmegaOS config for the interactive runtime")?;
     // Apply the persisted TUI theme before the first frame renders.
     omega_tui::theme::set_active_slug(&config.theme);
     let mut app = App::new(config);
@@ -1288,29 +1330,25 @@ async fn run_menu() -> Result<()> {
         eprintln!("Warning: could not refresh sessions: {}", e);
     }
 
-    // Auto-spawn Master AISB on first launch (if enabled and not already present)
-    let cfg = OmegaConfig::load().unwrap_or_default();
-    if cfg.auto_spawn_master {
+    // Optional legacy viewer auto-start. This is a read-only conversation
+    // mirror, not an agent and not the Telegram orchestrator.
+    if app.config.auto_spawn_master {
         if let Ok(mgr) = SessionManager::connect().await {
-            if let Some(agent) = omega_core::agents::Agent::from_name(&cfg.aisb_agent) {
-                let cwd = std::env::current_dir()
-                    .ok()
-                    .and_then(|p| p.to_str().map(String::from))
-                    .unwrap_or_else(|| "/home".to_string());
-                match omega_core::aisb::ensure_master(&mgr, agent, &cwd).await {
-                    Ok(true) => {
-                        app.status_message = Some(
-                            "Master AISB session spawned automatically — ready to delegate"
-                                .to_string(),
-                        )
-                    }
-                    Ok(false) => {
-                        app.status_message = Some("Master AISB already running".to_string())
-                    }
-                    Err(e) => eprintln!("Warning: Master AISB auto-spawn failed: {}", e),
+            let cwd = std::env::current_dir()
+                .ok()
+                .and_then(|p| p.to_str().map(String::from))
+                .unwrap_or_else(|| "/home".to_string());
+            match omega_core::aisb::ensure_viewer(&mgr, &cwd).await {
+                Ok(true) => {
+                    app.status_message =
+                        Some("AISB conversation viewer opened (read-only)".to_string())
                 }
-                let _ = app.refresh().await;
+                Ok(false) => {
+                    app.status_message = Some("AISB conversation viewer already open".to_string())
+                }
+                Err(e) => eprintln!("Warning: AISB viewer auto-start failed: {}", e),
             }
+            let _ = app.refresh().await;
         }
     }
 
@@ -1451,27 +1489,28 @@ fn shell_escape_for_bash(s: &str) -> String {
 fn toggle_bool_config(key: &str) -> Result<()> {
     match key {
         "general.auto_spawn_master" => {
-            let mut c = OmegaConfig::load().unwrap_or_default();
+            let mut c = OmegaConfig::load().context("cannot load OmegaOS config for mutation")?;
             c.auto_spawn_master = !c.auto_spawn_master;
             save_omega_config(&c)?;
         }
         "general.auto_naming" => {
-            let mut c = OmegaConfig::load().unwrap_or_default();
+            let mut c = OmegaConfig::load().context("cannot load OmegaOS config for mutation")?;
             c.auto_naming = !c.auto_naming;
             save_omega_config(&c)?;
         }
         "general.session_shortcuts" => {
-            let mut c = OmegaConfig::load().unwrap_or_default();
+            let mut c = OmegaConfig::load().context("cannot load OmegaOS config for mutation")?;
             c.session_shortcuts = !c.session_shortcuts;
             save_omega_config(&c)?;
         }
         "general.theme_background" => {
-            let mut c = OmegaConfig::load().unwrap_or_default();
+            let mut c = OmegaConfig::load().context("cannot load OmegaOS config for mutation")?;
             c.theme_background = !c.theme_background;
             save_omega_config(&c)?;
         }
         "claude.dangerously_skip_permissions" => {
-            let mut p = omega_core::providers::ProvidersConfig::load();
+            let mut p = omega_core::providers::ProvidersConfig::try_load()
+                .context("cannot load provider config for mutation")?;
             p.claude.dangerously_skip_permissions = !p.claude.dangerously_skip_permissions;
             p.save()?;
         }
@@ -1481,13 +1520,7 @@ fn toggle_bool_config(key: &str) -> Result<()> {
 }
 
 fn save_omega_config(c: &OmegaConfig) -> Result<()> {
-    let path = OmegaConfig::config_path();
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let content = toml::to_string_pretty(c)?;
-    std::fs::write(&path, content)?;
-    Ok(())
+    c.save()
 }
 
 /// keep-set for a TUI-initiated kill-all / nuclear cleanup: infrastructure
@@ -2013,34 +2046,31 @@ async fn run_tui_loop(
                 }
                 Action::KillSession(name) => {
                     let mgr = SessionManager::connect().await?;
-                    let cfg = OmegaConfig::load().unwrap_or_default();
-                    let is_master = omega_core::aisb::is_master(&name);
+                    let cfg = app.config.clone();
+                    let is_master = omega_core::aisb::is_viewer(&name);
                     match mgr.kill_session(&name).await {
                         Ok(()) => {
                             let _ = omega_core::scope::ScopeClaim::release(&cfg.state_dir, &name);
-                            // Master auto-respawns: killing it just re-spawns
-                            // a fresh process. The Telegram bridge is unaffected
+                            // The optional viewer auto-respawns. The Telegram bridge is unaffected
                             // (its persistent claude_stream subprocess handles
                             // chat independently of the rmux session).
                             if is_master && cfg.auto_spawn_master {
-                                if let Some(agent) =
-                                    omega_core::agents::Agent::from_name(&cfg.aisb_agent)
-                                {
-                                    let cwd = std::env::current_dir()
-                                        .ok()
-                                        .and_then(|p| p.to_str().map(String::from))
-                                        .unwrap_or_else(|| "/home".to_string());
-                                    match omega_core::aisb::ensure_master(&mgr, agent, &cwd).await {
-                                        Ok(_) => {
-                                            app.status_message =
-                                                Some(format!("Killed {} → auto-respawned", name))
-                                        }
-                                        Err(e) => {
-                                            app.status_message = Some(format!(
-                                                "Killed {} but respawn failed: {}",
-                                                name, e
-                                            ))
-                                        }
+                                let cwd = std::env::current_dir()
+                                    .ok()
+                                    .and_then(|p| p.to_str().map(String::from))
+                                    .unwrap_or_else(|| "/home".to_string());
+                                match omega_core::aisb::ensure_viewer(&mgr, &cwd).await {
+                                    Ok(_) => {
+                                        app.status_message = Some(format!(
+                                            "Stopped {} -> viewer auto-reopened",
+                                            name
+                                        ))
+                                    }
+                                    Err(e) => {
+                                        app.status_message = Some(format!(
+                                            "Stopped {} but viewer reopen failed: {}",
+                                            name, e
+                                        ))
                                     }
                                 }
                             } else {
@@ -2055,7 +2085,15 @@ async fn run_tui_loop(
                 }
                 Action::KillAllSessions => {
                     let mgr = SessionManager::connect().await?;
-                    let sessions = mgr.list_sessions().await.unwrap_or_default();
+                    let sessions = match mgr.list_sessions().await {
+                        Ok(sessions) => sessions,
+                        Err(error) => {
+                            app.status_message = Some(format!(
+                                "Kill-all refused: live sessions cannot be enumerated: {error}"
+                            ));
+                            continue;
+                        }
+                    };
                     let keep = tui_cleanup_keep(app, &sessions);
                     match omega_core::cleanup::kill_all(&mgr, &keep).await {
                         Ok(killed) => {
@@ -2068,8 +2106,16 @@ async fn run_tui_loop(
                 }
                 Action::NuclearCleanup => {
                     let mgr = SessionManager::connect().await?;
-                    let cfg = OmegaConfig::load().unwrap_or_default();
-                    let sessions = mgr.list_sessions().await.unwrap_or_default();
+                    let cfg = app.config.clone();
+                    let sessions = match mgr.list_sessions().await {
+                        Ok(sessions) => sessions,
+                        Err(error) => {
+                            app.status_message = Some(format!(
+                                "Nuclear cleanup refused: live sessions cannot be enumerated: {error}"
+                            ));
+                            continue;
+                        }
+                    };
                     let keep = tui_cleanup_keep(app, &sessions);
                     match omega_core::cleanup::nuclear_cleanup(&mgr, &cfg, &keep).await {
                         Ok(report) => {
@@ -2152,7 +2198,7 @@ async fn run_tui_loop(
                 } => {
                     // Cross-user: resolve the category dir from config (projects_dir),
                     // NEVER a hardcoded ~/VibeCoding. The skill creates <base>/<name>.
-                    let cfg = OmegaConfig::load().unwrap_or_default();
+                    let cfg = app.config.clone();
                     let base = cfg.resolve_category_path(&category);
                     let _ = std::fs::create_dir_all(&base);
                     let session = format!("{}-setup", name);
@@ -2212,11 +2258,13 @@ async fn run_tui_loop(
                     // keystrokes, no preview. The result lands in async_status,
                     // which the top of the loop drains into the status bar, and
                     // the session list is refreshed by the periodic tick.
-                    app.status_message =
-                        Some(format!("◆ Dispatching to {} — briefing the oracle…", project));
+                    app.status_message = Some(format!(
+                        "◆ Dispatching to {} — briefing the oracle…",
+                        project
+                    ));
                     let sink = async_status.clone();
+                    let cfg = app.config.clone();
                     tokio::spawn(async move {
-                        let cfg = OmegaConfig::load().unwrap_or_default();
                         let msg = match SessionManager::connect().await {
                             Ok(mgr) => {
                                 let dispatcher =
@@ -2403,7 +2451,7 @@ async fn run_tui_loop(
                                  ━━━━━━━━━━\n\n\
                                  <b>Chat:</b> <code>{}</code>\n\
                                  <b>Filter:</b> {}\n\n\
-                                 <i>Messages are relayed to AISB Master.\n\
+                                 <i>Messages are handled by the Atlas service and mirrored in the AISB viewer.\n\
                                  Type /help for commands.</i>",
                                 chat_id,
                                 if user_ids.is_empty() {
@@ -2451,27 +2499,19 @@ async fn run_tui_loop(
                             // user manually refreshed. Create the mirror SYNCHRONOUSLY
                             // here so the auto-refresh at the end of the wizard
                             // immediately shows the master (no manual refresh needed).
-                            let omega_cfg = OmegaConfig::load().unwrap_or_default();
+                            let omega_cfg = app.config.clone();
                             if omega_cfg.auto_spawn_master {
-                                if let Some(agent) =
-                                    omega_core::agents::Agent::from_name(&omega_cfg.aisb_agent)
-                                {
-                                    let cwd = std::env::current_dir()
-                                        .ok()
-                                        .and_then(|p| p.to_str().map(String::from))
-                                        .unwrap_or_else(|| "/home".to_string());
-                                    let _ =
-                                        omega_core::aisb::ensure_master(&mgr, agent, &cwd).await;
-                                }
+                                let cwd = std::env::current_dir()
+                                    .ok()
+                                    .and_then(|p| p.to_str().map(String::from))
+                                    .unwrap_or_else(|| "/home".to_string());
+                                let _ = omega_core::aisb::ensure_viewer(&mgr, &cwd).await;
                             }
                             let _ = app.refresh().await;
-                            // Close the loop: drop the user onto the master's live
-                            // mirror so they immediately SEE the confirmation
-                            // message streaming in — all via Enter, no command.
+                            // Return to Sessions. The optional legacy viewer is
+                            // intentionally hidden from this list and remains
+                            // available through `omega aisb-view`.
                             app.tab = omega_tui::app::Tab::Sessions;
-                            if app.select_by_name(omega_core::aisb::MASTER_SESSION_NAME) {
-                                app.session_focus = omega_tui::app::SessionFocus::Chat;
-                            }
                         }
                         Err(e) => {
                             app.status_message = Some(format!("Telegram setup failed: {}", e));
@@ -2542,7 +2582,14 @@ async fn run_tui_loop(
                     } else {
                         app.status_message = Some(format!("Toggled {} — saved [+]", config_key));
                         // Reload the app's config so the change is reflected
-                        app.config = OmegaConfig::load().unwrap_or_default();
+                        match OmegaConfig::load() {
+                            Ok(config) => app.config = config,
+                            Err(error) => {
+                                app.status_message = Some(format!(
+                                    "Toggle saved, but strict config reload failed: {error}"
+                                ));
+                            }
+                        }
                         // Bust the providers cache so Settings re-reads fresh.
                         app.invalidate_providers();
                     }
@@ -2560,13 +2607,20 @@ async fn run_tui_loop(
                         // values, so there is no invalid path to handle here.
                         let policy = omega_core::config::AutoUpdatePolicy::parse(&value);
                         match OmegaConfig::set_auto_update(policy) {
-                            Ok(()) => {
-                                app.config = OmegaConfig::load().unwrap_or_default();
-                                app.status_message = Some(format!(
-                                    "Auto-update set to '{}' — saved [+]",
-                                    policy.as_str()
-                                ));
-                            }
+                            Ok(()) => match OmegaConfig::load() {
+                                Ok(config) => {
+                                    app.config = config;
+                                    app.status_message = Some(format!(
+                                        "Auto-update set to '{}' — saved [+]",
+                                        policy.as_str()
+                                    ));
+                                }
+                                Err(error) => {
+                                    app.status_message = Some(format!(
+                                            "Auto-update saved, but strict config reload failed: {error}"
+                                        ));
+                                }
+                            },
                             Err(e) => {
                                 app.status_message = Some(format!("Save failed: {}", e));
                             }
@@ -2574,31 +2628,48 @@ async fn run_tui_loop(
                     } else if config_key == "general.theme" {
                         // Same reason as above: the theme lives in
                         // ~/.omega/config.toml, not providers.toml.
-                        let mut c = OmegaConfig::load().unwrap_or_default();
-                        c.theme = value.clone();
-                        if let Err(e) = save_omega_config(&c) {
-                            app.status_message = Some(format!("Save failed: {}", e));
-                        } else {
-                            omega_tui::theme::set_active_slug(&value);
-                            app.config = OmegaConfig::load().unwrap_or_default();
-                            let label = omega_tui::theme::ThemeId::from_slug(&value)
-                                .map(|t| t.label())
-                                .unwrap_or(value.as_str());
-                            app.status_message =
-                                Some(format!("Theme '{}' applied — saved [+]", label));
+                        match OmegaConfig::load() {
+                            Err(error) => {
+                                app.status_message =
+                                    Some(format!("Save failed: cannot load config: {error}"));
+                            }
+                            Ok(mut config) => {
+                                config.theme = value.clone();
+                                if let Err(error) = save_omega_config(&config) {
+                                    app.status_message = Some(format!("Save failed: {error}"));
+                                } else {
+                                    omega_tui::theme::set_active_slug(&value);
+                                    app.config = config;
+                                    let label = omega_tui::theme::ThemeId::from_slug(&value)
+                                        .map(|theme| theme.label())
+                                        .unwrap_or(value.as_str());
+                                    app.status_message =
+                                        Some(format!("Theme '{}' applied — saved [+]", label));
+                                }
+                            }
                         }
                     } else {
-                        let mut providers = omega_core::providers::ProvidersConfig::load();
-                        if let Err(e) = set_config_value(&mut providers, &config_key, &value) {
-                            app.status_message = Some(format!("Save failed: {}", e));
-                        } else if let Err(e) = providers.save() {
-                            app.status_message = Some(format!("Save failed: {}", e));
-                        } else {
-                            app.status_message =
-                                Some(format!("Saved {} to providers.toml [+]", config_key));
-                            // Bust the cache so the Settings panel reflects the
-                            // value just typed (not the stale in-memory copy).
-                            app.invalidate_providers();
+                        match omega_core::providers::ProvidersConfig::try_load() {
+                            Err(error) => {
+                                app.status_message = Some(format!(
+                                    "Save failed: cannot load provider config: {error}"
+                                ));
+                            }
+                            Ok(mut providers) => {
+                                if let Err(error) =
+                                    set_config_value(&mut providers, &config_key, &value)
+                                {
+                                    app.status_message = Some(format!("Save failed: {error}"));
+                                } else if let Err(error) = providers.save() {
+                                    app.status_message = Some(format!("Save failed: {error}"));
+                                } else {
+                                    app.status_message =
+                                        Some(format!("Saved {} to providers.toml [+]", config_key));
+                                    // Bust the cache so the Settings panel reflects the
+                                    // value just typed (not the stale in-memory copy).
+                                    app.invalidate_providers();
+                                }
+                            }
                         }
                     }
                 }
@@ -2777,7 +2848,12 @@ async fn run_tui_loop(
                         }
                     }
                 }
-                Action::OpenMarketingSession { name, cwd, prompt, agent } => {
+                Action::OpenMarketingSession {
+                    name,
+                    cwd,
+                    prompt,
+                    agent,
+                } => {
                     let mgr = SessionManager::connect().await?;
                     // The marketing/ dir may not exist yet on a project that
                     // never did marketing — create it so the session lands in
@@ -2841,8 +2917,7 @@ async fn run_tui_loop(
                                 auto_focus_chat(app, &name).await;
                             }
                             Err(e) => {
-                                app.status_message =
-                                    Some(format!("OS session failed: {}", e));
+                                app.status_message = Some(format!("OS session failed: {}", e));
                             }
                         }
                     }
@@ -2881,24 +2956,10 @@ async fn run_tui_loop(
                     }
                 }
                 Action::RunPlannerForProject { name, path } => {
-                    let mgr = SessionManager::connect().await?;
-                    let safe = name
-                        .chars()
-                        .filter(|c| c.is_alphanumeric() || *c == '-')
-                        .take(24)
-                        .collect::<String>();
-                    let session = format!("{}-planner", safe);
-                    let cmd = format!(
-                        "bash -c {}",
-                        shell_escape_for_bash(&format!(
-                            "cd {} 2>/dev/null; omega planner; echo; echo '─── planner done ───'; exec bash",
-                            path
-                        ))
-                    );
-                    match mgr.create_session(&session, Some(&path), Some(&cmd)).await {
-                        Ok(_) => {
+                    match spawn_planner_session(&path, Some(&name)).await {
+                        Ok(session) => {
                             app.status_message =
-                                Some(format!("Running planner for {} ({})", name, session));
+                                Some(format!("Opened /omg-planner for {} ({})", name, session));
                             auto_focus_chat(app, &session).await;
                         }
                         Err(e) => {
@@ -3137,7 +3198,7 @@ async fn cmd_new(
     prompt: Option<&str>,
     files: Option<Vec<String>>,
 ) -> Result<()> {
-    let config = OmegaConfig::load().unwrap_or_default();
+    let config = OmegaConfig::load().context("cannot load OmegaOS config for session creation")?;
     config.ensure_dirs()?;
 
     if let Some(ref files) = files {
@@ -3168,7 +3229,12 @@ async fn cmd_new(
         println!("Agent: {}", agent_enum.display_name());
     } else {
         let default_agent = omega_core::agents::Agent::from_name(&config.agent_command)
-            .unwrap_or(omega_core::agents::Agent::Codex);
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "configured agent {:?} is unknown; choose a supported provider",
+                    config.agent_command
+                )
+            })?;
         let _session = mgr
             .create_session_with_agent(name, dir, default_agent, prompt)
             .await?;
@@ -3200,7 +3266,8 @@ async fn cmd_new_project(
     build: bool,
     dry_run: bool,
 ) -> Result<()> {
-    let cfg = OmegaConfig::load().unwrap_or_default();
+    validate_new_project_stack(stack)?;
+    let cfg = OmegaConfig::load().context("cannot load OmegaOS config for project bootstrap")?;
     let base = cfg.resolve_category_path(category);
     let project_dir = base.join(name);
 
@@ -3256,6 +3323,30 @@ async fn cmd_new_project(
     Ok(())
 }
 
+/// Keep the CLI contract locked to the same strategy registry rendered by the
+/// TUI wizard. Unknown values used to be accepted and forwarded to a skill
+/// branch that did not exist, leaving a plausible-looking but dead session.
+fn validate_new_project_stack(stack: &str) -> Result<()> {
+    if omega_tui::app::NEW_PROJECT_STACKS
+        .iter()
+        .any(|(id, _)| *id == stack)
+    {
+        return Ok(());
+    }
+    let supported = omega_tui::app::NEW_PROJECT_STACKS
+        .iter()
+        .map(|(id, _)| *id)
+        .collect::<Vec<_>>()
+        .join(", ");
+    anyhow::bail!("unsupported project strategy '{stack}'; choose one of: {supported}")
+}
+
+const OMEGA_MENU_ROOT_BINDINGS: &[(&str, &str)] = &[("C-Space", "Open OmegaOS menu (Ctrl+Space)")];
+const OMEGA_MENU_PREFIX_BINDINGS: &[(&str, &str)] = &[
+    ("o", "Open OmegaOS menu (prefix + o)"),
+    ("z", "Open OmegaOS menu (prefix + z)"),
+];
+
 async fn cmd_install_bindings() -> Result<()> {
     // Option+Z / Option+/ have been REMOVED — they didn't toggle (popup spawned
     // a nested omega instead of returning to the main one). Use Tab-Tab in the
@@ -3263,18 +3354,10 @@ async fn cmd_install_bindings() -> Result<()> {
     let popup_cmd = "display-popup -E -w 100% -h 100% \"omega menu\"";
 
     // Root-table bindings (no prefix required) — single reliable shortcut
-    let root_bindings: Vec<(&str, &str)> = vec![("C-Space", "Open OmegaOS menu (Ctrl+Space)")];
-
-    // Prefix-table bindings (Ctrl-B then key)
-    let prefix_bindings: Vec<(&str, &str)> = vec![
-        ("o", "Open OmegaOS menu (prefix + o)"),
-        ("z", "Open OmegaOS menu (prefix + z)"),
-    ];
-
     let mut installed = 0usize;
     let mut failed = Vec::new();
 
-    for (key, desc) in &root_bindings {
+    for (key, desc) in OMEGA_MENU_ROOT_BINDINGS {
         let result = std::process::Command::new("rmux")
             .args(["bind-key", "-n", key])
             .arg(popup_cmd)
@@ -3293,7 +3376,7 @@ async fn cmd_install_bindings() -> Result<()> {
         }
     }
 
-    for (key, desc) in &prefix_bindings {
+    for (key, desc) in OMEGA_MENU_PREFIX_BINDINGS {
         let result = std::process::Command::new("rmux")
             .args(["bind-key", key])
             .arg(popup_cmd)
@@ -3347,7 +3430,10 @@ async fn cmd_install_bindings() -> Result<()> {
         let same = std::fs::read(&shipped).ok() == std::fs::read(&conf_path).ok();
         if !same {
             std::fs::copy(&shipped, &conf_path)?;
-            println!("[+] Shipped rmux config installed → {}", conf_path.display());
+            println!(
+                "[+] Shipped rmux config installed → {}",
+                conf_path.display()
+            );
         } else {
             println!("[+] rmux config already current → {}", conf_path.display());
         }
@@ -3990,7 +4076,43 @@ enum GraphAction {
         /// bounds, which already guarantee termination (R-LOOP).
         #[arg(long, default_value_t = 1000)]
         max_steps: usize,
+        /// Bind this run to the exact active V3 plan owned by an Oracle. The
+        /// binding is immutable, audited in MissionLedger, and required again
+        /// on every resume. Omit for a standalone graph.
+        #[arg(long)]
+        oracle: Option<String>,
     },
+    /// Resolve a crash-unknown dispatch without executing its effect again.
+    ///
+    /// This only accepts a reservation already journaled as dispatched with no
+    /// durable result. The operator must attribute the decision. A successful
+    /// reconciliation reruns every declared verifier check before recording a
+    /// result; the node command itself is never replayed.
+    Reconcile {
+        /// Path to the graph JSON.
+        graph: String,
+        /// Node whose unresolved dispatch is being reconciled.
+        node: String,
+        /// Run state holding the unresolved reservation. Defaults to
+        /// `<graph>.state.json` beside the graph.
+        #[arg(long)]
+        state: Option<String>,
+        /// Observed outcome of the already-dispatched effect.
+        #[arg(long, value_enum)]
+        result: GraphReconcileResult,
+        /// Required explanation when recording a failed effect.
+        #[arg(long)]
+        reason: Option<String>,
+        /// Human or external system making the reconciliation decision.
+        #[arg(long)]
+        approver: String,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+enum GraphReconcileResult {
+    Succeeded,
+    Failed,
 }
 
 #[derive(Subcommand)]
@@ -4090,9 +4212,11 @@ enum RiskGateAction {
         /// invented for itself.
         #[arg(long)]
         approver: String,
-        /// Path to the run-state JSON to update. Created if absent.
+        /// Existing run-state JSON containing the active reservation to approve.
+        /// Run `omega graph run ... --state <path>` first so consent is bound to
+        /// the exact reserved attempt rather than to a node name in the abstract.
         #[arg(long)]
-        state: Option<String>,
+        state: String,
     },
     /// Record an attributed human DENIAL, held to the same attribution standard:
     /// an operator reading the run later needs to know who blocked it.
@@ -4104,9 +4228,10 @@ enum RiskGateAction {
         /// WHO denies.
         #[arg(long)]
         approver: String,
-        /// Path to the run-state JSON to update. Created if absent.
+        /// Existing run-state JSON containing the active reservation to deny.
+        /// Run `omega graph run ... --state <path>` first.
         #[arg(long)]
-        state: Option<String>,
+        state: String,
     },
 }
 
@@ -4175,7 +4300,7 @@ enum TelegramAction {
     Disable,
     /// Remove the Telegram config (~/.omega/telegram.toml) — bot can be re-configured afterwards
     Disconnect,
-    /// Run the bot in foreground (polls Telegram, relays messages to AISB Master)
+    /// Run the bot in foreground (polls Telegram through the Atlas service)
     Run,
 }
 
@@ -4381,10 +4506,10 @@ enum ConfigAction {
 
 fn cmd_config(action: ConfigAction) -> Result<()> {
     use omega_core::providers::ProvidersConfig;
-    let mut cfg = ProvidersConfig::load();
 
     match action {
         ConfigAction::Show => {
+            let cfg = ProvidersConfig::load();
             let toml = toml::to_string_pretty(&cfg)?;
             println!("{}", toml);
         }
@@ -4397,6 +4522,7 @@ fn cmd_config(action: ConfigAction) -> Result<()> {
                 println!("{}", cfg.auto_update.as_str());
                 return Ok(());
             }
+            let cfg = ProvidersConfig::load();
             let value = get_config_value(&cfg, &key)?;
             println!("{}", value);
         }
@@ -4418,6 +4544,8 @@ fn cmd_config(action: ConfigAction) -> Result<()> {
                 );
                 return Ok(());
             }
+            let mut cfg =
+                ProvidersConfig::try_load().context("cannot load provider config for mutation")?;
             set_config_value(&mut cfg, &key, &value)?;
             cfg.save()?;
             println!("[+] Set {} = {}", key, value);
@@ -4550,23 +4678,21 @@ fn cmd_monitor() -> Result<()> {
     Ok(())
 }
 
-async fn cmd_master() -> Result<()> {
-    let config = OmegaConfig::load().unwrap_or_default();
+async fn cmd_aisb_view() -> Result<()> {
+    let config = OmegaConfig::load().context("cannot load OmegaOS config for AISB viewer")?;
     config.ensure_dirs()?;
     let mgr = SessionManager::connect().await?;
 
-    let agent = omega_core::agents::Agent::from_name(&config.aisb_agent)
-        .unwrap_or(omega_core::agents::Agent::Codex);
     let cwd = std::env::current_dir()?
         .to_str()
         .unwrap_or("/home")
         .to_string();
 
-    let created = omega_core::aisb::ensure_master(&mgr, agent, &cwd).await?;
+    let created = omega_core::aisb::ensure_viewer(&mgr, &cwd).await?;
     if created {
-        println!("★ Master AISB spawned");
+        println!("AISB conversation viewer opened (read-only)");
     } else {
-        println!("★ Master AISB already running — attaching");
+        println!("AISB conversation viewer already open; attaching");
     }
 
     // Attach (use switch-client if inside rmux, else attach-session)
@@ -4580,7 +4706,7 @@ async fn cmd_master() -> Result<()> {
         .args([arg, "-t", omega_core::aisb::MASTER_SESSION_NAME])
         .status()?;
     if !status.success() {
-        anyhow::bail!("Failed to attach to Master AISB");
+        anyhow::bail!("failed to attach to AISB conversation viewer");
     }
     Ok(())
 }
@@ -5176,6 +5302,336 @@ fn clear_oracle_state(state_dir: &std::path::Path, name: &str) {
     }
 }
 
+fn authoritative_attempt_for_runtime(
+    config: &OmegaConfig,
+    runtime: &omega_core::worker_runtime::WorkerRuntimeManifest,
+) -> Result<(
+    omega_core::mission_ledger::MissionLedger,
+    omega_core::orchestration::AuthoritativeTaskAttempt,
+)> {
+    let ledger = omega_core::mission_ledger::MissionLedger::open(
+        omega_core::oracle_lifecycle::mission_ledger_path(&config.state_dir),
+    )?;
+    let plan = ledger
+        .active_plan(&runtime.attempt().mission_id)?
+        .ok_or_else(|| anyhow::anyhow!("worker runtime mission has no active plan"))?;
+    if plan.revision != runtime.attempt().plan_revision
+        || plan.content_digest != runtime.attempt().plan_digest
+        || !plan
+            .tasks
+            .iter()
+            .any(|task| task.task_id.as_str() == runtime.attempt().task_id)
+    {
+        anyhow::bail!("worker runtime differs from its exact active plan");
+    }
+    let projection = ledger
+        .task_attempt(&runtime.attempt().attempt_id)?
+        .ok_or_else(|| anyhow::anyhow!("worker runtime attempt disappeared"))?;
+    if projection.mission_id != runtime.attempt().mission_id
+        || projection.task_id != runtime.attempt().task_id
+        || projection.plan_revision != runtime.attempt().plan_revision
+    {
+        anyhow::bail!("worker runtime attempt differs from ledger authority");
+    }
+    let leases = ledger.active_leases_for_attempt(
+        &runtime.attempt().mission_id,
+        &runtime.attempt().task_id,
+        &runtime.attempt().attempt_id,
+    )?;
+    let scope_receipt = runtime.scope().map(|scope| {
+        let receipt = scope.receipt();
+        omega_core::orchestration::AuthoritativeScopeReceipt {
+            schema_version: receipt.schema_version,
+            mission_id: receipt.mission_id.clone(),
+            task_id: receipt.task_id.clone(),
+            attempt_id: receipt.attempt_id.clone(),
+            plan_revision: receipt.plan_revision,
+            owner: receipt.owner.clone(),
+            claim: receipt.claim.clone(),
+        }
+    });
+    match runtime.scope() {
+        Some(scope)
+            if leases.len() == scope.resources().len()
+                && leases.iter().all(|lease| {
+                    lease.owner == runtime.attempt().owner
+                        && scope.resources().iter().any(|resource| {
+                            resource.resource_key == lease.resource_key
+                                && resource.fencing_token == lease.fencing_token
+                        })
+                }) => {}
+        Some(_) => anyhow::bail!("worker runtime leases differ from frozen scope fences"),
+        None if !leases.is_empty() => {
+            anyhow::bail!("read-only worker runtime unexpectedly has active leases")
+        }
+        None => {}
+    }
+    Ok((
+        ledger,
+        omega_core::orchestration::AuthoritativeTaskAttempt {
+            mission_id: runtime.attempt().mission_id.clone(),
+            task_id: runtime.attempt().task_id.clone(),
+            attempt_id: runtime.attempt().attempt_id.clone(),
+            plan_revision: runtime.attempt().plan_revision,
+            owner: Some(runtime.attempt().owner.clone()),
+            leases,
+            scope_receipt,
+        },
+    ))
+}
+
+fn block_mismatched_worker_runtime(
+    config: &OmegaConfig,
+    runtime: &omega_core::worker_runtime::WorkerRuntimeManifest,
+    reason: &str,
+) -> Result<()> {
+    let (ledger, _) = authoritative_attempt_for_runtime(config, runtime)?;
+    let mission = ledger
+        .mission(&runtime.attempt().mission_id)?
+        .ok_or_else(|| anyhow::anyhow!("worker runtime mission disappeared"))?;
+    match mission.state {
+        omega_core::mission::MissionState::Running => {
+            omega_core::orchestration::transition_authoritative_mission(
+                &ledger,
+                &runtime.attempt().mission_id,
+                omega_core::mission::MissionState::Verifying,
+                "omega-worker-containment",
+            )?;
+            omega_core::orchestration::transition_authoritative_mission(
+                &ledger,
+                &runtime.attempt().mission_id,
+                omega_core::mission::MissionState::Blocked,
+                "omega-worker-containment",
+            )?;
+        }
+        omega_core::mission::MissionState::Verifying => {
+            omega_core::orchestration::transition_authoritative_mission(
+                &ledger,
+                &runtime.attempt().mission_id,
+                omega_core::mission::MissionState::Blocked,
+                "omega-worker-containment",
+            )?;
+        }
+        omega_core::mission::MissionState::Blocked
+        | omega_core::mission::MissionState::Failed
+        | omega_core::mission::MissionState::Cancelled
+        | omega_core::mission::MissionState::Delivered => {}
+        state => anyhow::bail!(
+            "cannot durably block mismatched worker runtime from mission state {state:?}: {reason}"
+        ),
+    }
+    Ok(())
+}
+
+fn terminalize_worker_runtime_authority(
+    config: &OmegaConfig,
+    runtime: &omega_core::worker_runtime::WorkerRuntimeManifest,
+) -> Result<()> {
+    let (ledger, authority) = authoritative_attempt_for_runtime(config, runtime)?;
+    let actor = "omega-worker-closure";
+    let attempt = ledger
+        .task_attempt(&authority.attempt_id)?
+        .ok_or_else(|| anyhow::anyhow!("worker runtime attempt disappeared during closure"))?;
+    use omega_core::mission::TaskAttemptState;
+    match attempt.state {
+        TaskAttemptState::Queued
+        | TaskAttemptState::Running
+        | TaskAttemptState::CorrectionRequired
+        | TaskAttemptState::Blocked => {
+            omega_core::orchestration::transition_authoritative_attempt(
+                &ledger,
+                &authority,
+                TaskAttemptState::Cancelled,
+                actor,
+            )?;
+        }
+        TaskAttemptState::CandidateDone => {
+            omega_core::orchestration::transition_authoritative_attempt(
+                &ledger,
+                &authority,
+                TaskAttemptState::Verifying,
+                actor,
+            )?;
+            omega_core::orchestration::transition_authoritative_attempt(
+                &ledger,
+                &authority,
+                TaskAttemptState::Blocked,
+                actor,
+            )?;
+            omega_core::orchestration::transition_authoritative_attempt(
+                &ledger,
+                &authority,
+                TaskAttemptState::Cancelled,
+                actor,
+            )?;
+        }
+        TaskAttemptState::Verifying => {
+            omega_core::orchestration::transition_authoritative_attempt(
+                &ledger,
+                &authority,
+                TaskAttemptState::Blocked,
+                actor,
+            )?;
+            omega_core::orchestration::transition_authoritative_attempt(
+                &ledger,
+                &authority,
+                TaskAttemptState::Cancelled,
+                actor,
+            )?;
+        }
+        TaskAttemptState::Accepted | TaskAttemptState::Failed | TaskAttemptState::Cancelled => {}
+    }
+
+    use omega_core::mission::MissionState;
+    let mission = ledger
+        .mission(&runtime.attempt().mission_id)?
+        .ok_or_else(|| anyhow::anyhow!("worker mission disappeared during closure"))?;
+    match mission.state {
+        MissionState::Created
+        | MissionState::Classified
+        | MissionState::Planned
+        | MissionState::Running
+        | MissionState::CorrectionRequired
+        | MissionState::Blocked => {
+            omega_core::orchestration::transition_authoritative_mission(
+                &ledger,
+                &runtime.attempt().mission_id,
+                MissionState::Cancelled,
+                actor,
+            )?;
+        }
+        MissionState::Verifying => {
+            omega_core::orchestration::transition_authoritative_mission(
+                &ledger,
+                &runtime.attempt().mission_id,
+                MissionState::Failed,
+                actor,
+            )?;
+        }
+        MissionState::Accepted => {
+            omega_core::orchestration::transition_authoritative_mission(
+                &ledger,
+                &runtime.attempt().mission_id,
+                MissionState::Reporting,
+                actor,
+            )?;
+            omega_core::orchestration::transition_authoritative_mission(
+                &ledger,
+                &runtime.attempt().mission_id,
+                MissionState::Delivered,
+                actor,
+            )?;
+        }
+        MissionState::Reporting => {
+            omega_core::orchestration::transition_authoritative_mission(
+                &ledger,
+                &runtime.attempt().mission_id,
+                MissionState::Delivered,
+                actor,
+            )?;
+        }
+        MissionState::Failed | MissionState::Delivered | MissionState::Cancelled => {}
+    }
+    omega_core::orchestration::release_authoritative_scopes(
+        &ledger,
+        &config.state_dir,
+        &authority,
+    )?;
+    if !ledger
+        .active_leases_for_attempt(
+            &authority.mission_id,
+            &authority.task_id,
+            &authority.attempt_id,
+        )?
+        .is_empty()
+        || omega_core::scope::ScopeClaim::read_strict(
+            &config.state_dir,
+            runtime.attempt().owner.as_str(),
+        )?
+        .is_some()
+    {
+        anyhow::bail!("worker authority remained active after terminal closure");
+    }
+    Ok(())
+}
+
+async fn close_worker_runtime_exact(
+    manager: &SessionManager,
+    config: &OmegaConfig,
+    runtime: &omega_core::worker_runtime::WorkerRuntimeManifest,
+) -> Result<omega_core::worker_runtime::WorkerRuntimeArchive> {
+    let absence = if let Some(started) = runtime.started() {
+        match manager
+            .validate_live_worker_process(&started.observed)
+            .await
+        {
+            Ok(_) => {
+                manager.contain_worker_process(&started.observed).await?;
+                manager.confirm_worker_runtime_absence(runtime).await?
+            }
+            Err(validation) => match manager.confirm_worker_runtime_absence(runtime).await {
+                Ok(absence) => absence,
+                Err(_) => {
+                    let reason = format!(
+                        "activated worker process generation mismatch during closure: {validation:#}"
+                    );
+                    block_mismatched_worker_runtime(config, runtime, &reason)?;
+                    anyhow::bail!(
+                        "{reason}; mission is durably Blocked and scope authority remains retained"
+                    );
+                }
+            },
+        }
+    } else {
+        match manager.confirm_worker_runtime_absence(runtime).await {
+            Ok(absence) => absence,
+            Err(_) => manager.contain_worker_runtime_session(runtime).await?,
+        }
+    };
+    terminalize_worker_runtime_authority(config, runtime)?;
+    let archive = runtime.retire_terminal(&config.state_dir, &absence)?;
+    archive.cleanup_launch_artifacts(&config.state_dir)?;
+    Ok(archive)
+}
+
+fn require_legacy_containment_evidence(
+    session: &str,
+    kill_was_required: bool,
+    kill_succeeded: bool,
+    absence_observed: bool,
+) -> Result<()> {
+    if kill_was_required && !kill_succeeded {
+        anyhow::bail!(
+            "legacy worker {session} could not be contained; scope authority and worktree are retained"
+        );
+    }
+    if !absence_observed {
+        anyhow::bail!(
+            "legacy worker {session} is still observable after containment; scope authority and worktree are retained"
+        );
+    }
+    Ok(())
+}
+
+async fn contain_legacy_session_by_name(
+    manager: &SessionManager,
+    session: &str,
+    kill_was_required: bool,
+) -> Result<()> {
+    if kill_was_required {
+        if let Err(error) = manager.kill_session(session).await {
+            return require_legacy_containment_evidence(session, true, false, false)
+                .context(format!("rmux kill failed: {error}"));
+        }
+    }
+    let after = manager
+        .list_sessions()
+        .await
+        .with_context(|| format!("cannot prove legacy worker {session} is absent"))?;
+    let absence_observed = !after.iter().any(|candidate| candidate.name == session);
+    require_legacy_containment_evidence(session, kill_was_required, true, absence_observed)
+}
+
 /// `omega kill <session> [--force]` — a controlled mission closure.
 ///
 /// Before this, killing an oracle killed exactly one pane and released exactly
@@ -5188,17 +5644,20 @@ fn clear_oracle_state(state_dir: &std::path::Path, name: &str) {
 /// not skip the scope release, and a git probe that fails must not skip the
 /// state cleanup: a half-run closure leaks exactly the thing being fixed.
 async fn cmd_kill(name: &str, force: bool) -> Result<()> {
-    let config = OmegaConfig::load().unwrap_or_default();
+    let config = OmegaConfig::load().context("cannot load OmegaOS config for session closure")?;
     let omega_dir = config
         .state_dir
         .parent()
         .map(|p| p.to_path_buf())
-        .unwrap_or_default();
+        .ok_or_else(|| anyhow::anyhow!("state directory has no parent; kill refused"))?;
     let mgr = SessionManager::connect().await?;
     // Snapshot the live sessions ONCE, before anything is killed: the working
     // dir recorded here is the only handle on a worker's worktree, and it is
     // gone the moment the session is.
-    let live = mgr.list_sessions().await.unwrap_or_default();
+    let live = mgr
+        .list_sessions()
+        .await
+        .context("kill refused because live session enumeration failed")?;
 
     // Resolve the mission-key spelling FIRST. `omega kill dentistrygpt-3` used to
     // classify as a plain session, find nothing live, take the `AlreadyClosed`
@@ -5215,6 +5674,61 @@ async fn cmd_kill(name: &str, force: bool) -> Result<()> {
     }
     let name: &str = &resolved;
     let target_live = live.iter().any(|s| s.name == name);
+
+    // A Team-* runtime has one real aggregate rmux session but multiple
+    // virtual, ledger-owned attempts/scopes. Generic kill only knows the
+    // aggregate name and would leak every member authority. Kill first, prove
+    // the aggregate is absent, then reconcile exact member generations.
+    let is_team_aggregate = if name.starts_with("Team-") {
+        omega_core::team::list_team_runtime_manifests(&config.state_dir)?
+            .iter()
+            .any(|manifest| manifest.aggregate_session == name)
+    } else {
+        false
+    };
+    if is_team_aggregate {
+        if target_live {
+            mgr.kill_session(name).await.with_context(|| {
+                format!("team kill failed before authority reconciliation for {name}")
+            })?;
+        }
+        let after = mgr
+            .list_sessions()
+            .await
+            .context("team kill could not confirm aggregate session death")?;
+        let after_names = after
+            .iter()
+            .map(|session| session.name.clone())
+            .collect::<Vec<_>>();
+        let status =
+            omega_core::team::reconcile_stopped_team(&config.state_dir, name, &after_names)?;
+        println!(
+            "Killed team session: {} ({} member attempt(s) terminal, mission {:?})",
+            name,
+            status
+                .members
+                .iter()
+                .filter(|member| member.state.is_terminal())
+                .count(),
+            status.mission_state
+        );
+        return Ok(());
+    }
+
+    if let Some(runtime) =
+        omega_core::worker_runtime::WorkerRuntimeManifest::resolve_session_strict(
+            &config.state_dir,
+            name,
+        )?
+    {
+        let execution_workspace = runtime.workspace().to_path_buf();
+        close_worker_runtime_exact(&mgr, &config, &runtime)
+            .await
+            .with_context(|| format!("exact V3 worker closure failed for {name}"))?;
+        cleanup_worker_worktree(&omega_dir, &execution_workspace);
+        println!("Killed session: {} (V3 runtime archived)", name);
+        return Ok(());
+    }
 
     let is_oracle = omega_core::session::OmegaSession::classify(name).role
         == omega_core::session::SessionRole::Oracle;
@@ -5270,20 +5784,38 @@ async fn cmd_kill(name: &str, force: bool) -> Result<()> {
     // WORKERS FIRST, target last: the target may be the pane running this very
     // command, so anything after killing it may never execute.
     for w in &cascade {
-        // The scope release comes BEFORE the kill on purpose. If the kill hangs
-        // or the daemon drops the connection, the claim is already gone —
-        // a leaked claim is the failure with the long tail, a surviving pane is
-        // visible in `omega list` and the operator can retry.
+        if let Some(runtime) =
+            omega_core::worker_runtime::WorkerRuntimeManifest::resolve_session_strict(
+                &config.state_dir,
+                w,
+            )?
+        {
+            let execution_workspace = runtime.workspace().to_path_buf();
+            close_worker_runtime_exact(&mgr, &config, &runtime)
+                .await
+                .with_context(|| format!("exact V3 cascade closure failed for {w}"))?;
+            cleanup_worker_worktree(&omega_dir, &execution_workspace);
+            println!("  cascaded V3 worker closed and archived: {}", w);
+            continue;
+        }
+        // Legacy workers carry no exact runtime/process generation. Preserve
+        // the historical compatibility path only for those sessions, while
+        // retaining the same containment-first invariant as V3: authority and
+        // the worktree remain untouched until a fresh rmux snapshot proves the
+        // name absent.
+        contain_legacy_session_by_name(&mgr, w, true)
+            .await
+            .with_context(|| format!("legacy cascade containment failed for {w}"))?;
         let _ = omega_core::scope::ScopeClaim::release(&config.state_dir, w);
         for dir in worker_worktrees(&omega_dir, w) {
             cleanup_worker_worktree(&omega_dir, &dir);
         }
-        match mgr.kill_session(w).await {
-            Ok(()) => println!("  cascaded worker closed: {}", w),
-            Err(e) => println!("  cascaded worker {} could not be killed ({})", w, e),
-        }
+        println!("  cascaded worker closed: {}", w);
     }
 
+    contain_legacy_session_by_name(&mgr, name, target_live)
+        .await
+        .with_context(|| format!("legacy session containment failed for {name}"))?;
     let _ = omega_core::scope::ScopeClaim::release(&config.state_dir, name);
     if is_oracle {
         clear_oracle_state(&config.state_dir, name);
@@ -5295,12 +5827,9 @@ async fn cmd_kill(name: &str, force: bool) -> Result<()> {
         }
     }
 
-    // Kept as the last line and byte-identical to what it always printed: the
-    // Telegram bot renders this stdout verbatim in its session card.
-    match mgr.kill_session(name).await {
-        Ok(()) => println!("Killed session: {}", name),
-        Err(e) => println!("Killed session: {} (pane cleanup reported: {})", name, e),
-    }
+    // Kept as the last line and byte-identical to the successful historical
+    // output: the Telegram bot renders this stdout verbatim in its session card.
+    println!("Killed session: {}", name);
     Ok(())
 }
 
@@ -5459,10 +5988,57 @@ fn plan_reap(candidates: &[ReapCandidate]) -> Vec<(String, ReapVerdict)> {
 /// keeps the reaper fail-closed: a corrupt signal is not evidence that a worker
 /// finished, and guessing in that direction is what closes a live session.
 fn done_status_of(state_dir: &std::path::Path, session: &str) -> Option<DoneStatus> {
-    omega_core::done::DoneSignal::read(state_dir, session)
+    let signal = omega_core::done::DoneSignal::read(state_dir, session)
         .ok()
-        .flatten()
-        .map(|s| s.status)
+        .flatten()?;
+    if signal.status == DoneStatus::DoneClean && signal.projection.is_some() {
+        // A V3 done file is a worker-authored candidate. Patrol must run the
+        // immutable verifier contract and commit Accepted before reap may
+        // release scope or close the session. Any unreadable/mismatched ledger
+        // state is therefore Pending, never a compatibility success.
+        match v3_worker_attempt_accepted(state_dir, session) {
+            Ok(Some(true)) => {}
+            Ok(Some(false)) | Ok(None) | Err(_) => return Some(DoneStatus::Pending),
+        }
+    }
+    Some(signal.status)
+}
+
+fn v3_worker_attempt_accepted(state_dir: &std::path::Path, session: &str) -> Result<Option<bool>> {
+    let oracle_states = omega_core::oracle_lifecycle::OracleState::read_all(state_dir);
+    let Some((oracle, worker)) = oracle_states.iter().find_map(|oracle| {
+        oracle
+            .workers
+            .iter()
+            .find(|worker| worker.session_name == session)
+            .map(|worker| (oracle, worker))
+    }) else {
+        return Ok(None);
+    };
+    let (Some(attempt_id), Some(plan_revision)) =
+        (worker.attempt_id.as_deref(), worker.plan_revision)
+    else {
+        return Ok(Some(false));
+    };
+    let ledger_path = omega_core::oracle_lifecycle::mission_ledger_path(state_dir);
+    if path_metadata_if_present(&ledger_path, "mission ledger")?.is_none() {
+        return Ok(Some(false));
+    }
+    let ledger = omega_core::mission_ledger::MissionLedger::open(ledger_path)?;
+    oracle.require_ledger_authority(&ledger)?;
+    let active_plan = ledger.active_plan(&oracle.mission_id)?;
+    if active_plan.as_ref().map(|plan| plan.revision) != Some(plan_revision) {
+        return Ok(Some(false));
+    }
+    let Some(attempt) = ledger.task_attempt(attempt_id)? else {
+        return Ok(Some(false));
+    };
+    Ok(Some(
+        attempt.mission_id == oracle.mission_id
+            && attempt.task_id == worker.task_id
+            && attempt.plan_revision == plan_revision
+            && attempt.state == omega_core::mission::TaskAttemptState::Accepted,
+    ))
 }
 
 /// `omega reap [<session>] [--dry-run]` — close the workers that already finished.
@@ -5479,12 +6055,12 @@ fn done_status_of(state_dir: &std::path::Path, session: &str) -> Option<DoneStat
 /// skip the scope release, and a git probe that fails must not skip the kill: a
 /// half-run closure leaks exactly the thing this command exists to reclaim.
 async fn cmd_reap(target: Option<&str>, dry_run: bool) -> Result<()> {
-    let config = OmegaConfig::load().unwrap_or_default();
+    let config = OmegaConfig::load().context("cannot load OmegaOS config for reap")?;
     let omega_dir = config
         .state_dir
         .parent()
         .map(|p| p.to_path_buf())
-        .unwrap_or_default();
+        .ok_or_else(|| anyhow::anyhow!("state directory has no parent; reap refused"))?;
     // Fail CLOSED when liveness cannot be established. Without the daemon every
     // session reads as dead, and a sweep would then release the scope claims of
     // workers that are still editing files — the exact R-SCOPE damage this
@@ -5496,7 +6072,10 @@ async fn cmd_reap(target: Option<&str>, dry_run: bool) -> Result<()> {
             e
         )
     })?;
-    let live = mgr.list_sessions().await.unwrap_or_default();
+    let live = mgr
+        .list_sessions()
+        .await
+        .context("reap aborted because live session enumeration failed")?;
 
     let candidates: Vec<ReapCandidate> = match target {
         // A named target is examined whether or not it is still listed: the
@@ -5657,16 +6236,620 @@ fn load_graph(path: &str) -> Result<omega_core::graph::Graph> {
 fn load_graph_state(
     path: Option<&str>,
     graph: &omega_core::graph::Graph,
+    authority: &omega_core::graph::GraphExecutionAuthority,
 ) -> Result<omega_core::graph::GraphState> {
-    let Some(path) = path else {
-        return Ok(omega_core::graph::GraphState::for_graph(graph));
+    let state = match path {
+        None => omega_core::graph::GraphState::for_graph_with_authority(
+            graph,
+            omega_core::mission::MissionId::new().0,
+            authority,
+        ),
+        Some(path) => {
+            let path = std::path::Path::new(path);
+            if path_metadata_if_present(path, "graph run state")?.is_none() {
+                omega_core::graph::GraphState::for_graph_with_authority(
+                    graph,
+                    omega_core::mission::MissionId::new().0,
+                    authority,
+                )
+            } else {
+                let raw = read_private_text(path, "graph run state", MAX_GRAPH_STATE_BYTES)?;
+                serde_json::from_str(&raw)
+                    .with_context(|| format!("{} is not a readable run state", path.display()))?
+            }
+        }
     };
-    if !std::path::Path::new(path).exists() {
-        return Ok(omega_core::graph::GraphState::for_graph(graph));
+    state
+        .validate_for_graph_with_authority(graph, authority)
+        .map_err(|error| anyhow::anyhow!("run state does not belong to this graph: {error}"))?;
+    Ok(state)
+}
+
+/// An operating-system file lock shared by graph execution and risk decisions.
+///
+/// The lock file may remain on disk; the lock itself is owned by the open file
+/// description and is released by the kernel if the process crashes. That is
+/// materially safer than a create/delete sentinel, which turns one killed
+/// process into a permanent stale lock or requires guessing whether a PID was
+/// reused. Dry-runs deliberately never acquire it, so they create no sidecar.
+struct GraphStateLock {
+    file: std::fs::File,
+    path: std::path::PathBuf,
+    identity: PrivateFileIdentity,
+}
+
+impl GraphStateLock {
+    fn acquire(state_path: &std::path::Path) -> Result<Self> {
+        Self::acquire_with_timeout(state_path, std::time::Duration::from_secs(10))
     }
-    let raw = std::fs::read_to_string(path)
-        .with_context(|| format!("cannot read the run state {}", path))?;
-    serde_json::from_str(&raw).with_context(|| format!("{} is not a readable run state", path))
+
+    fn acquire_with_timeout(
+        state_path: &std::path::Path,
+        timeout: std::time::Duration,
+    ) -> Result<Self> {
+        let path = sidecar_path(state_path, "lock");
+        let parent = path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or_else(|| std::path::Path::new("."));
+        if !parent.is_dir() {
+            anyhow::bail!("state directory {} does not exist", parent.display());
+        }
+        if let Some(metadata) = path_metadata_if_present(&path, "graph state lock")? {
+            validate_private_metadata(&metadata, &path, "graph state lock", 4096)?;
+        }
+
+        let mut options = std::fs::OpenOptions::new();
+        options.create(true).read(true).write(true);
+        apply_no_follow(&mut options);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let file = options
+            .open(&path)
+            .with_context(|| format!("cannot open graph state lock {}", path.display()))?;
+        let identity = validate_opened_private_file(&file, &path, "graph state lock", 4096)?;
+
+        let deadline = std::time::Instant::now()
+            .checked_add(timeout)
+            .unwrap_or_else(std::time::Instant::now);
+        loop {
+            match file.try_lock() {
+                Ok(()) => {
+                    let locked_identity =
+                        validate_opened_private_file(&file, &path, "graph state lock", 4096)?;
+                    if locked_identity != identity {
+                        anyhow::bail!("graph state lock {} changed while locking", path.display());
+                    }
+                    return Ok(Self {
+                        file,
+                        path,
+                        identity,
+                    });
+                }
+                Err(std::fs::TryLockError::WouldBlock) => {
+                    if std::time::Instant::now() >= deadline {
+                        anyhow::bail!(
+                            "graph state {} is locked by another run or risk decision",
+                            state_path.display()
+                        );
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(25));
+                }
+                Err(std::fs::TryLockError::Error(error)) => {
+                    return Err(error).with_context(|| {
+                        format!("cannot lock graph state through {}", path.display())
+                    });
+                }
+            }
+        }
+    }
+
+    fn assert_current(&self) -> Result<()> {
+        let current =
+            validate_opened_private_file(&self.file, &self.path, "graph state lock", 4096)?;
+        if current != self.identity {
+            anyhow::bail!(
+                "graph state lock {} was replaced during the transaction",
+                self.path.display()
+            );
+        }
+        Ok(())
+    }
+}
+
+impl Drop for GraphStateLock {
+    fn drop(&mut self) {
+        if let Err(error) = self.file.unlock() {
+            eprintln!(
+                "warning: could not unlock graph state {}: {}",
+                self.path.display(),
+                error
+            );
+        }
+    }
+}
+
+fn under_graph_state_lock<T>(
+    state_lock: &GraphStateLock,
+    mutation: impl FnOnce() -> Result<T>,
+) -> Result<T> {
+    state_lock.assert_current()?;
+    let result = mutation()?;
+    state_lock.assert_current()?;
+    Ok(result)
+}
+
+fn sidecar_path(path: &std::path::Path, suffix: &str) -> std::path::PathBuf {
+    let mut value = path.as_os_str().to_os_string();
+    value.push(format!(".{suffix}"));
+    std::path::PathBuf::from(value)
+}
+
+const MAX_GRAPH_STATE_BYTES: u64 = 16 * 1024 * 1024;
+const MAX_GRAPH_JOURNAL_BYTES: u64 = 64 * 1024 * 1024;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PrivateFileIdentity {
+    #[cfg(unix)]
+    device: u64,
+    #[cfg(unix)]
+    inode: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PrivateFileSnapshot {
+    identity: PrivateFileIdentity,
+    bytes: Vec<u8>,
+}
+
+fn path_metadata_if_present(
+    path: &std::path::Path,
+    label: &str,
+) -> Result<Option<std::fs::Metadata>> {
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) => Ok(Some(metadata)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => {
+            Err(error).with_context(|| format!("cannot inspect {label} {}", path.display()))
+        }
+    }
+}
+
+fn apply_no_follow(options: &mut std::fs::OpenOptions) {
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        // Linux O_NOFOLLOW. It protects the final path component at the same
+        // syscall that opens/creates it, including dangling symlinks that make
+        // `Path::exists()` return false.
+        options.custom_flags(0o400000);
+    }
+}
+
+#[cfg(unix)]
+fn graph_effective_uid() -> u32 {
+    unsafe extern "C" {
+        fn geteuid() -> u32;
+    }
+    // SAFETY: geteuid has no arguments or preconditions and returns only the
+    // kernel-maintained effective uid of this process.
+    unsafe { geteuid() }
+}
+
+#[cfg(unix)]
+fn validate_private_owner_uid(path: &std::path::Path, label: &str, owner_uid: u32) -> Result<()> {
+    let current_uid = graph_effective_uid();
+    if owner_uid != current_uid {
+        anyhow::bail!(
+            "{label} {} is owned by uid {owner_uid}, current uid is {current_uid}",
+            path.display()
+        );
+    }
+    Ok(())
+}
+
+fn validate_private_metadata(
+    metadata: &std::fs::Metadata,
+    path: &std::path::Path,
+    label: &str,
+    max_bytes: u64,
+) -> Result<PrivateFileIdentity> {
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        anyhow::bail!(
+            "{label} {} must be a regular file, never a symlink",
+            path.display()
+        );
+    }
+    if metadata.len() > max_bytes {
+        anyhow::bail!(
+            "{label} {} is {} bytes, above the {} byte safety bound",
+            path.display(),
+            metadata.len(),
+            max_bytes
+        );
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        if metadata.nlink() != 1 {
+            anyhow::bail!(
+                "{label} {} has {} hard links; require exactly one",
+                path.display(),
+                metadata.nlink()
+            );
+        }
+        validate_private_owner_uid(path, label, metadata.uid())?;
+        if metadata.permissions().mode() & 0o077 != 0 {
+            anyhow::bail!(
+                "{label} {} is accessible by group/other; require owner-only permissions",
+                path.display()
+            );
+        }
+        Ok(PrivateFileIdentity {
+            device: metadata.dev(),
+            inode: metadata.ino(),
+        })
+    }
+    #[cfg(not(unix))]
+    {
+        Ok(PrivateFileIdentity {})
+    }
+}
+
+fn validate_opened_private_file(
+    file: &std::fs::File,
+    path: &std::path::Path,
+    label: &str,
+    max_bytes: u64,
+) -> Result<PrivateFileIdentity> {
+    let descriptor_metadata = file
+        .metadata()
+        .with_context(|| format!("cannot inspect opened {label} {}", path.display()))?;
+    let descriptor_identity =
+        validate_private_metadata(&descriptor_metadata, path, label, max_bytes)?;
+    let path_metadata = path_metadata_if_present(path, label)?
+        .ok_or_else(|| anyhow::anyhow!("{label} {} disappeared while opening", path.display()))?;
+    let path_identity = validate_private_metadata(&path_metadata, path, label, max_bytes)?;
+    if descriptor_identity != path_identity {
+        anyhow::bail!("{label} {} changed while opening", path.display());
+    }
+    Ok(descriptor_identity)
+}
+
+fn validate_private_regular_file(
+    path: &std::path::Path,
+    label: &str,
+    max_bytes: u64,
+) -> Result<std::fs::Metadata> {
+    let metadata = path_metadata_if_present(path, label)?
+        .ok_or_else(|| anyhow::anyhow!("{label} {} does not exist", path.display()))?;
+    validate_private_metadata(&metadata, path, label, max_bytes)?;
+    Ok(metadata)
+}
+
+fn read_private_snapshot(
+    path: &std::path::Path,
+    label: &str,
+    max_bytes: u64,
+) -> Result<PrivateFileSnapshot> {
+    use std::io::Read;
+
+    let mut bytes = Vec::new();
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    apply_no_follow(&mut options);
+    let file = options
+        .open(path)
+        .with_context(|| format!("cannot open {label} {}", path.display()))?;
+    let identity = validate_opened_private_file(&file, path, label, max_bytes)?;
+    file.take(max_bytes + 1)
+        .read_to_end(&mut bytes)
+        .with_context(|| format!("cannot read {label} {}", path.display()))?;
+    if bytes.len() as u64 > max_bytes {
+        anyhow::bail!("{label} {} grew beyond its safety bound", path.display());
+    }
+    Ok(PrivateFileSnapshot { identity, bytes })
+}
+
+fn read_private_text(path: &std::path::Path, label: &str, max_bytes: u64) -> Result<String> {
+    let snapshot = read_private_snapshot(path, label, max_bytes)?;
+    String::from_utf8(snapshot.bytes)
+        .map_err(|error| anyhow::anyhow!("{label} {} is not UTF-8: {error}", path.display()))
+}
+
+fn os_random_authority_key() -> Result<[u8; 32]> {
+    use std::io::Read;
+
+    // OmegaOS's current server target is Unix. Read the kernel CSPRNG directly
+    // so the CLI does not invent entropy from clocks, PIDs, or hashes.
+    #[cfg(unix)]
+    {
+        let mut key = [0_u8; 32];
+        std::fs::File::open("/dev/urandom")
+            .context("cannot open the operating-system CSPRNG")?
+            .read_exact(&mut key)
+            .context("cannot read 32 bytes from the operating-system CSPRNG")?;
+        Ok(key)
+    }
+    #[cfg(not(unix))]
+    {
+        anyhow::bail!("graph execution authority generation is unsupported on this platform")
+    }
+}
+
+fn load_graph_authority(
+    state_path: Option<&std::path::Path>,
+    create_if_missing: bool,
+) -> Result<omega_core::graph::GraphExecutionAuthority> {
+    use std::io::{Read, Write};
+
+    // This authenticates state against accidental/cross-process JSON forgery;
+    // it is not a sandbox boundary against another process already running as
+    // the same Unix user, which can read any owner-readable 0600 key.
+    let Some(state_path) = state_path else {
+        return Ok(omega_core::graph::GraphExecutionAuthority::from_key(
+            os_random_authority_key()?,
+        ));
+    };
+    let key_path = sidecar_path(state_path, "key");
+    if let Some(metadata) = path_metadata_if_present(&key_path, "graph authority key")? {
+        validate_private_metadata(&metadata, &key_path, "graph authority key", 32)?;
+        let mut bytes = Vec::new();
+        let mut options = std::fs::OpenOptions::new();
+        options.read(true);
+        apply_no_follow(&mut options);
+        let file = options
+            .open(&key_path)
+            .with_context(|| format!("cannot open graph authority key {}", key_path.display()))?;
+        validate_opened_private_file(&file, &key_path, "graph authority key", 32)?;
+        file.take(33)
+            .read_to_end(&mut bytes)
+            .with_context(|| format!("cannot read graph authority key {}", key_path.display()))?;
+        let key: [u8; 32] = bytes.try_into().map_err(|bytes: Vec<u8>| {
+            anyhow::anyhow!(
+                "graph authority key {} has {} bytes, expected exactly 32",
+                key_path.display(),
+                bytes.len()
+            )
+        })?;
+        return Ok(omega_core::graph::GraphExecutionAuthority::from_key(key));
+    }
+
+    if path_metadata_if_present(state_path, "graph run state")?.is_some() {
+        anyhow::bail!(
+            "graph authority key {} is missing; refusing to trust or mutate the state",
+            key_path.display()
+        );
+    }
+    if !create_if_missing {
+        return Ok(omega_core::graph::GraphExecutionAuthority::from_key(
+            os_random_authority_key()?,
+        ));
+    }
+    let parent = key_path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| std::path::Path::new("."));
+    if !parent.is_dir() {
+        anyhow::bail!("state directory {} does not exist", parent.display());
+    }
+    let key = os_random_authority_key()?;
+    let mut options = std::fs::OpenOptions::new();
+    options.create_new(true).write(true);
+    apply_no_follow(&mut options);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options
+        .open(&key_path)
+        .with_context(|| format!("cannot create graph authority key {}", key_path.display()))?;
+    validate_opened_private_file(&file, &key_path, "graph authority key", 32)?;
+    file.write_all(&key)
+        .with_context(|| format!("cannot write graph authority key {}", key_path.display()))?;
+    file.sync_all()
+        .with_context(|| format!("cannot sync graph authority key {}", key_path.display()))?;
+    std::fs::File::open(parent)
+        .and_then(|directory| directory.sync_all())
+        .with_context(|| format!("cannot sync key directory {}", parent.display()))?;
+    Ok(omega_core::graph::GraphExecutionAuthority::from_key(key))
+}
+
+static DURABLE_TEMP_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Replace one durable JSON artifact atomically.
+///
+/// A unique `create_new` temporary prevents two writers from sharing a temp
+/// name, mode 0600 prevents state/approval leakage, and both the file and its
+/// directory are synced before success is reported. Callers still hold the
+/// graph-state lock; uniqueness and CAS defend against writers that do not.
+fn atomic_write_private(path: &std::path::Path, bytes: &[u8]) -> Result<()> {
+    use std::io::Write;
+    use std::sync::atomic::Ordering;
+
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| std::path::Path::new("."));
+    if !parent.is_dir() {
+        anyhow::bail!("destination directory {} does not exist", parent.display());
+    }
+    if let Some(metadata) = path_metadata_if_present(path, "durable destination")? {
+        validate_private_metadata(
+            &metadata,
+            path,
+            "durable destination",
+            MAX_GRAPH_JOURNAL_BYTES,
+        )?;
+    }
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("graph-state");
+    let sequence = DURABLE_TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let temp = parent.join(format!(".{name}.tmp.{}.{}", std::process::id(), sequence));
+
+    let mut options = std::fs::OpenOptions::new();
+    options.create_new(true).write(true);
+    apply_no_follow(&mut options);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let write_result = (|| -> Result<()> {
+        let mut file = options
+            .open(&temp)
+            .with_context(|| format!("cannot create durable temp {}", temp.display()))?;
+        let temp_identity = validate_opened_private_file(
+            &file,
+            &temp,
+            "durable temporary file",
+            MAX_GRAPH_JOURNAL_BYTES,
+        )?;
+        file.write_all(bytes)
+            .with_context(|| format!("cannot write durable temp {}", temp.display()))?;
+        file.sync_all()
+            .with_context(|| format!("cannot sync durable temp {}", temp.display()))?;
+        let synced_identity = validate_opened_private_file(
+            &file,
+            &temp,
+            "durable temporary file",
+            MAX_GRAPH_JOURNAL_BYTES,
+        )?;
+        if synced_identity != temp_identity {
+            anyhow::bail!("durable temporary file {} was replaced", temp.display());
+        }
+        drop(file);
+        if let Some(metadata) = path_metadata_if_present(path, "durable destination")? {
+            validate_private_metadata(
+                &metadata,
+                path,
+                "durable destination",
+                MAX_GRAPH_JOURNAL_BYTES,
+            )?;
+        }
+        std::fs::rename(&temp, path).with_context(|| {
+            format!(
+                "cannot atomically replace {} with {}",
+                path.display(),
+                temp.display()
+            )
+        })?;
+        std::fs::File::open(parent)
+            .and_then(|directory| directory.sync_all())
+            .with_context(|| format!("cannot sync directory {}", parent.display()))?;
+        Ok(())
+    })();
+    if write_result.is_err() {
+        let _ = std::fs::remove_file(&temp);
+    }
+    write_result
+}
+
+/// Exact-content CAS around one graph state document. The monotone version is
+/// checked as a second invariant so a mutation cannot be persisted under the
+/// same version even if it happened while a non-cooperating writer ignored the
+/// lock.
+struct DurableGraphState {
+    path: std::path::PathBuf,
+    expected_raw: Option<String>,
+    expected_version: Option<u64>,
+}
+
+impl DurableGraphState {
+    fn load(
+        path: &std::path::Path,
+        graph: &omega_core::graph::Graph,
+        authority: &omega_core::graph::GraphExecutionAuthority,
+    ) -> Result<(Self, omega_core::graph::GraphState)> {
+        let expected_raw = if path_metadata_if_present(path, "graph run state")?.is_some() {
+            Some(read_private_text(
+                path,
+                "graph run state",
+                MAX_GRAPH_STATE_BYTES,
+            )?)
+        } else {
+            None
+        };
+        let state = match expected_raw.as_deref() {
+            Some(raw) => serde_json::from_str(raw)
+                .with_context(|| format!("{} is not a readable run state", path.display()))?,
+            None => omega_core::graph::GraphState::for_graph_with_authority(
+                graph,
+                omega_core::mission::MissionId::new().0,
+                authority,
+            ),
+        };
+        state
+            .validate_for_graph_with_authority(graph, authority)
+            .map_err(|error| anyhow::anyhow!("run state does not belong to this graph: {error}"))?;
+        let expected_version = expected_raw.as_ref().map(|_| state.version);
+        Ok((
+            Self {
+                path: path.to_path_buf(),
+                expected_raw,
+                expected_version,
+            },
+            state,
+        ))
+    }
+
+    fn persist(
+        &mut self,
+        graph: &omega_core::graph::Graph,
+        state: &omega_core::graph::GraphState,
+        authority: &omega_core::graph::GraphExecutionAuthority,
+    ) -> Result<()> {
+        state
+            .validate_for_graph_with_authority(graph, authority)
+            .map_err(|error| anyhow::anyhow!("refusing to persist invalid graph state: {error}"))?;
+        let current_raw = if path_metadata_if_present(&self.path, "graph run state")?.is_some() {
+            Some(read_private_text(
+                &self.path,
+                "graph run state",
+                MAX_GRAPH_STATE_BYTES,
+            )?)
+        } else {
+            None
+        };
+        if current_raw != self.expected_raw {
+            anyhow::bail!(
+                "graph state {} changed outside the active transaction; refusing to overwrite it",
+                self.path.display()
+            );
+        }
+
+        let mut next_raw = serde_json::to_string_pretty(state)?;
+        next_raw.push('\n');
+        if next_raw.len() as u64 > MAX_GRAPH_STATE_BYTES {
+            anyhow::bail!(
+                "refusing to persist graph state above {} bytes",
+                MAX_GRAPH_STATE_BYTES
+            );
+        }
+        if current_raw.as_deref() == Some(next_raw.as_str()) {
+            return Ok(());
+        }
+        if let Some(version) = self.expected_version {
+            if state.version <= version {
+                anyhow::bail!(
+                    "graph state mutation did not advance its version (disk {}, candidate {})",
+                    version,
+                    state.version
+                );
+            }
+        }
+
+        atomic_write_private(&self.path, next_raw.as_bytes())?;
+        self.expected_raw = Some(next_raw);
+        self.expected_version = Some(state.version);
+        Ok(())
+    }
 }
 
 /// `omega risk-gate <show|approve|deny>` — the operator's window onto the
@@ -5689,14 +6872,27 @@ fn cmd_risk_gate(action: RiskGateAction) -> Result<()> {
             unattended,
         } => {
             let g = load_graph(&graph)?;
-            let s = load_graph_state(state.as_deref(), &g)?;
+            let state_lock = state
+                .as_deref()
+                .map(std::path::Path::new)
+                .map(GraphStateLock::acquire)
+                .transpose()?;
+            let authority =
+                load_graph_authority(state.as_deref().map(std::path::Path::new), false)?;
+            let s = load_graph_state(state.as_deref(), &g, &authority)?;
+            if let Some(path) = state.as_deref().map(std::path::Path::new) {
+                GraphJournal::load(path, &authority)?.validate_state_provenance(&g, &s)?;
+            }
+            if let Some(state_lock) = &state_lock {
+                state_lock.assert_current()?;
+            }
             let mode = if unattended {
                 ExecutionMode::Unattended
             } else {
                 ExecutionMode::Attended
             };
             let id = NodeId::new(node);
-            match omega_core::graph_risk::evaluate_gate(&g, &s, &id, mode) {
+            match omega_core::graph_risk::evaluate_gate(&g, &s, &id, mode, &authority) {
                 GateDecision::Proceed => {
                     println!("PROCEED  node {} ({} run)", id, mode);
                 }
@@ -5710,10 +6906,17 @@ fn cmd_risk_gate(action: RiskGateAction) -> Result<()> {
                     println!("  risk:         {}", risk);
                     println!("  reason:       {}", reason);
                     println!("  what is lost: {}", what_is_lost);
-                    println!(
-                        "  resolve with: omega risk-gate approve {} {} --approver <who>",
-                        graph, node
-                    );
+                    if let Some(state) = state.as_deref() {
+                        println!(
+                            "  resolve with: omega risk-gate approve {} {} --state {} --approver <who>",
+                            graph, node, state
+                        );
+                    } else {
+                        println!(
+                            "  no durable reservation: run omega graph run {} --state <run-state.json> first",
+                            graph
+                        );
+                    }
                 }
                 // Not a softer hold: the gate could not establish what it is
                 // being asked to approve, so there is nothing a human could
@@ -5730,13 +6933,13 @@ fn cmd_risk_gate(action: RiskGateAction) -> Result<()> {
             node,
             approver,
             state,
-        } => resolve_risk_gate(&graph, &node, &approver, state.as_deref(), true),
+        } => resolve_risk_gate(&graph, &node, &approver, &state, true),
         RiskGateAction::Deny {
             graph,
             node,
             approver,
             state,
-        } => resolve_risk_gate(&graph, &node, &approver, state.as_deref(), false),
+        } => resolve_risk_gate(&graph, &node, &approver, &state, false),
     }
 }
 
@@ -5752,16 +6955,42 @@ fn resolve_risk_gate(
     graph: &str,
     node: &str,
     approver: &str,
-    state_path: Option<&str>,
+    state_path: &str,
     approving: bool,
 ) -> Result<()> {
     use omega_core::graph::NodeId;
     use omega_core::graph_risk::{ExecutionMode, GateDecision};
 
     let g = load_graph(graph)?;
-    let mut s = load_graph_state(state_path, &g)?;
+    let state_path = std::path::Path::new(state_path);
+    if path_metadata_if_present(state_path, "graph run state")?.is_none() {
+        anyhow::bail!(
+            "run state {} does not exist; run omega graph run {} --state {} first so the decision is bound to an active reservation",
+            state_path.display(),
+            graph,
+            state_path.display()
+        );
+    }
+    let state_lock = GraphStateLock::acquire(state_path)?;
+    let authority = load_graph_authority(Some(state_path), false)?;
+    let (mut durable_state, mut s) = DurableGraphState::load(state_path, &g, &authority)?;
+    let mut journal = GraphJournal::load_recovering(state_path, &authority, &s, &state_lock)?;
+    journal.validate_state_provenance(&g, &s)?;
     let id = NodeId::new(node);
-    let decision = omega_core::graph_risk::evaluate_gate(&g, &s, &id, ExecutionMode::Unattended);
+    if g.node(&id).is_none() {
+        anyhow::bail!("risk gate asked about unknown node {}", id);
+    }
+    if s.reservation_of(&id).is_none() {
+        anyhow::bail!(
+            "node {} has no active dispatch reservation in {}; run omega graph run {} --state {} first",
+            id,
+            state_path.display(),
+            graph,
+            state_path.display()
+        );
+    }
+    let decision =
+        omega_core::graph_risk::evaluate_gate(&g, &s, &id, ExecutionMode::Unattended, &authority);
     let record = match decision {
         GateDecision::Refuse { node, reason } => {
             anyhow::bail!("REFUSED  node {}: {}", node, reason);
@@ -5787,9 +7016,9 @@ fn resolve_risk_gate(
     // refusal is surfaced verbatim rather than pre-empted by a check here that
     // could disagree with it.
     let resolution = if approving {
-        omega_core::graph_risk::approve(record, approver)
+        omega_core::graph_risk::approve(&g, &s, record, approver, &authority)
     } else {
-        omega_core::graph_risk::deny(record, approver)
+        omega_core::graph_risk::deny(&g, &s, record, approver, &authority)
     };
     let resolution = match resolution {
         Ok(r) => r,
@@ -5801,36 +7030,30 @@ fn resolve_risk_gate(
         ),
     };
 
-    omega_core::graph_risk::record_resolution(&mut s, &resolution);
+    omega_core::graph_risk::record_resolution(&g, &mut s, &resolution, &authority)?;
     let verdict = if resolution.is_approved() {
         "APPROVED"
     } else {
         "DENIED"
     };
+
+    // `record_resolution` is in-memory by contract (a decision core that wrote
+    // files could not be replayed), so the CLI checkpoints and CAS-persists the
+    // decision while retaining the same exclusive state lock.
+    persist_graph_state(
+        &g,
+        &s,
+        &authority,
+        &mut durable_state,
+        &mut journal,
+        &state_lock,
+    )?;
     println!(
         "{} node {} by {}",
         verdict, resolution.record.node, resolution.approver
     );
     println!("  what is lost: {}", resolution.record.what_is_lost);
-
-    // `record_resolution` is in-memory by contract (a decision core that wrote
-    // files could not be replayed), so persisting is this caller's job. Without
-    // a --state path there is nowhere durable to put it, and an unsaved decision
-    // that PRINTS as recorded is worse than one that refuses to pretend.
-    match state_path {
-        Some(path) => {
-            let json = serde_json::to_string_pretty(&s)?;
-            std::fs::write(path, json)
-                .with_context(|| format!("cannot write the run state {}", path))?;
-            println!("  recorded in: {}", path);
-        }
-        None => {
-            println!(
-                "  NOT RECORDED — pass --state <run-state.json> to persist this decision; \
-                 the gate will ask again without it."
-            );
-        }
-    }
+    println!("  recorded in: {}", durable_state.path.display());
     Ok(())
 }
 
@@ -6047,7 +7270,7 @@ async fn cmd_orchestrate(
     use std::path::PathBuf;
     use std::time::Duration;
 
-    let config = OmegaConfig::load().unwrap_or_default();
+    let config = OmegaConfig::load().context("cannot load OmegaOS config for orchestration")?;
     let opts = OrchestratorOptions {
         worker_timeout: Duration::from_secs(timeout_secs),
         poll_interval: Duration::from_secs(5),
@@ -6093,6 +7316,72 @@ async fn cmd_orchestrate(
     Ok(())
 }
 
+/// Open the canonical planner skill in a project-scoped agent session.
+/// Shared by the public `plan-create` command and the Projects-tab action so
+/// the two surfaces cannot drift to different backend commands again.
+async fn spawn_planner_session(path: &str, project_hint: Option<&str>) -> Result<String> {
+    let project_dir = std::fs::canonicalize(path)
+        .with_context(|| format!("project directory does not exist or is inaccessible: {path}"))?;
+    if !project_dir.is_dir() {
+        anyhow::bail!("planner path is not a directory: {}", project_dir.display());
+    }
+
+    let raw_name = project_hint
+        .filter(|name| !name.trim().is_empty())
+        .map(str::to_string)
+        .or_else(|| {
+            project_dir
+                .file_name()
+                .and_then(|name| name.to_str())
+                .map(str::to_string)
+        })
+        .unwrap_or_else(|| "project".to_string());
+    let safe = raw_name
+        .chars()
+        .filter(|c| c.is_alphanumeric() || *c == '-')
+        .take(24)
+        .collect::<String>();
+    let base = format!(
+        "{}-planner",
+        if safe.is_empty() { "project" } else { &safe }
+    );
+
+    let mgr = SessionManager::connect().await?;
+    let taken: Vec<String> = mgr
+        .list_sessions()
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|session| session.name)
+        .collect();
+    let mut session = base.clone();
+    let mut suffix = 2usize;
+    while taken.iter().any(|name| name == &session) {
+        session = format!("{base}-{suffix}");
+        suffix += 1;
+    }
+
+    let config = OmegaConfig::load().context("cannot load OmegaOS config for planner dispatch")?;
+    let agent = omega_core::agents::Agent::from_name(&config.agent_command).ok_or_else(|| {
+        anyhow::anyhow!(
+            "configured planner agent {:?} is unknown; choose a supported provider",
+            config.agent_command
+        )
+    })?;
+    let cwd = project_dir.to_string_lossy().to_string();
+    mgr.create_session_with_agent(&session, Some(&cwd), agent, Some("/omg-planner"))
+        .await?;
+    Ok(session)
+}
+
+async fn cmd_plan_create(path: &str) -> Result<()> {
+    let session = spawn_planner_session(path, None).await?;
+    println!("Planner opened in session: {session}");
+    println!("  project: {}", std::fs::canonicalize(path)?.display());
+    println!("  skill:   /omg-planner");
+    Ok(())
+}
+
 /// Read-only plan progress from .planner/tracker.json.
 fn cmd_plan_status(path: &str) -> Result<()> {
     let dir = std::path::Path::new(path);
@@ -6133,7 +7422,7 @@ async fn cmd_plan_run(path: &str) -> Result<()> {
     use omega_core::executor::{run, RmuxRuntime, RunOptions};
 
     let dir = std::path::Path::new(path);
-    let config = OmegaConfig::load().unwrap_or_default();
+    let config = OmegaConfig::load().context("cannot load OmegaOS config for plan execution")?;
     config.ensure_dirs()?;
     // Construct the SessionManager exactly as Orchestrator::new does.
     let mgr = SessionManager::connect().await?;
@@ -6280,7 +7569,7 @@ async fn cmd_dispatch(
     agent: Option<&str>,
     new_oracle: bool,
 ) -> Result<()> {
-    let config = OmegaConfig::load().unwrap_or_default();
+    let config = OmegaConfig::load().context("cannot load OmegaOS config for dispatch")?;
     config.ensure_dirs()?;
     let mgr = SessionManager::connect().await?;
     let dispatcher = omega_core::dispatch::Dispatcher::new(mgr, config.clone());
@@ -6310,10 +7599,27 @@ async fn cmd_dispatch(
 
 #[derive(Debug, Clone)]
 struct V3WorkerAttempt {
-    mission_id: omega_core::mission::MissionId,
-    task_id: String,
-    attempt_id: String,
-    plan_revision: u64,
+    authority: omega_core::orchestration::AuthoritativeTaskAttempt,
+    plan_digest: String,
+    parent_mission_id: Option<omega_core::mission::MissionId>,
+}
+
+impl V3WorkerAttempt {
+    fn mission_id(&self) -> &omega_core::mission::MissionId {
+        &self.authority.mission_id
+    }
+
+    fn task_id(&self) -> &str {
+        &self.authority.task_id
+    }
+
+    fn attempt_id(&self) -> &str {
+        &self.authority.attempt_id
+    }
+
+    fn plan_revision(&self) -> u64 {
+        self.authority.plan_revision
+    }
 }
 
 fn declared_verify_command(prompt: &str) -> Option<Vec<String>> {
@@ -6377,32 +7683,41 @@ fn declared_done_criteria(prompt: &str) -> Vec<String> {
 fn prepare_v3_worker_attempt(
     config: &OmegaConfig,
     oracle_session: Option<&str>,
+    project: &str,
     worker_name: &str,
     task: &str,
     prompt: &str,
+    authority_work_dir: &str,
     work_dir: &str,
     files: &[String],
     provider: omega_core::agents::Agent,
-) -> Result<Option<V3WorkerAttempt>> {
-    let Some(oracle_session) = oracle_session else {
-        return Ok(None);
-    };
-    let Some(state) =
-        omega_core::oracle_lifecycle::OracleState::read(&config.state_dir, oracle_session)?
-    else {
-        return Ok(None);
-    };
-    if state.mission_id.as_str().is_empty() {
-        return Ok(None);
-    }
-
+) -> Result<V3WorkerAttempt> {
     let ledger_path = config.state_dir.join("mission-engine-v3.sqlite3");
-    if !ledger_path.exists() {
-        return Ok(None);
-    }
     let ledger = omega_core::mission_ledger::MissionLedger::open(&ledger_path)?;
-    let Some(mut projection) = ledger.mission(&state.mission_id)? else {
-        return Ok(None);
+    let parent_mission_id = match oracle_session {
+        Some(oracle_session) => {
+            match omega_core::oracle_lifecycle::OracleState::read(
+                &config.state_dir,
+                oracle_session,
+            )? {
+                Some(state) if !state.mission_id.as_str().is_empty() => {
+                    state.require_ledger_authority(&ledger).with_context(|| {
+                        format!(
+                            "oracle {oracle_session} advertises a mission but has no coherent V3 authority"
+                        )
+                    })?;
+                    let plan = ledger.active_plan(&state.mission_id)?.ok_or_else(|| {
+                        anyhow::anyhow!("authoritative parent Oracle has no active plan")
+                    })?;
+                    if plan.tasks.is_empty() {
+                        anyhow::bail!("authoritative parent Oracle has an empty plan");
+                    }
+                    Some(state.mission_id)
+                }
+                Some(_) | None => None,
+            }
+        }
+        None => None,
     };
     let argv = declared_verify_command(prompt).ok_or_else(|| {
         anyhow::anyhow!(
@@ -6410,6 +7725,30 @@ fn prepare_v3_worker_attempt(
              shell operators are not accepted in immutable verifier contracts"
         )
     })?;
+    let canonical_work_dir = std::fs::canonicalize(authority_work_dir).with_context(|| {
+        format!("canonicalizing worker authority directory {authority_work_dir}")
+    })?;
+    let mission = omega_core::mission::Mission::new(
+        project,
+        format!("Dynamically execute worker task `{task}`\n\n{prompt}"),
+        canonical_work_dir,
+    );
+    let created = ledger.create_mission(
+        &mission,
+        &format!("spawn-worker:{}:created", mission.id.as_str()),
+        worker_name,
+    )?;
+    let mut classified = omega_core::mission_ledger::AppendEvent::new(
+        mission.id.clone(),
+        created.projection.version,
+        format!("spawn-worker:{}:classified", mission.id.as_str()),
+        worker_name,
+        "mission_classified",
+    );
+    classified.next_mission_state = Some(omega_core::mission::MissionState::Classified);
+    classified.provider = Some(provider.name().to_string());
+    classified.payload = serde_json::to_value(omega_core::routing::classify_mission(prompt))?;
+    let classified = ledger.append(classified)?;
     let task_contract = omega_core::mission::TaskContract {
         schema_version: omega_core::mission::CONTRACT_SCHEMA_VERSION,
         task_id: omega_core::mission::TaskId::new(task),
@@ -6432,114 +7771,63 @@ fn prepare_v3_worker_attempt(
         retry_policy: omega_core::mission::RetryPolicy::default(),
         depends_on: Vec::new(),
     };
-
-    let active_plan = ledger.active_plan(&state.mission_id)?;
-    let (plan_revision, plan_to_append) = match active_plan {
-        None => {
-            let plan = omega_core::mission::PlanContract::new(
-                state.mission_id.clone(),
-                1,
-                projection.version,
-                vec![task_contract],
-                vec!["independent_verification".to_string()],
-                Vec::new(),
-            )?;
-            (1, Some(plan))
-        }
-        Some(plan) => {
-            if let Some(existing) = plan
-                .tasks
-                .iter()
-                .find(|existing| existing.task_id.as_str() == task)
-            {
-                if existing != &task_contract {
-                    anyhow::bail!(
-                        "task `{task}` already exists in immutable plan revision {} with a \
-                         different contract; dispatch it under a new task id",
-                        plan.revision
-                    );
-                }
-                (plan.revision, None)
-            } else {
-                let protected: Vec<omega_core::mission::TaskId> =
-                    plan.tasks.iter().map(|item| item.task_id.clone()).collect();
-                let mut tasks = plan.tasks.clone();
-                tasks.push(task_contract);
-                let amended = plan.amend(plan.revision, projection.version, tasks, &protected)?;
-                (amended.revision, Some(amended))
-            }
-        }
-    };
-
-    if let Some(plan) = plan_to_append {
-        let mut event = omega_core::mission_ledger::AppendEvent::new(
-            state.mission_id.clone(),
-            projection.version,
-            format!(
-                "worker-plan:{}:{}:{}",
-                state.mission_id.as_str(),
-                task,
-                plan.revision
-            ),
-            worker_name,
-            if plan.revision == 1 {
-                "plan_accepted"
-            } else {
-                "plan_amended"
-            },
-        );
-        event.provider = Some(provider.name().to_string());
-        event.payload = serde_json::to_value(&plan)?;
-        event.plan = Some(plan);
-        event.next_mission_state = match projection.state {
-            omega_core::mission::MissionState::Classified
-            | omega_core::mission::MissionState::Blocked => {
-                Some(omega_core::mission::MissionState::Planned)
-            }
-            omega_core::mission::MissionState::Planned
-            | omega_core::mission::MissionState::Running => None,
-            current => anyhow::bail!(
-                "mission {} cannot accept a worker plan while in state {:?}",
-                state.mission_id.as_str(),
-                current
-            ),
-        };
-        projection = ledger.append(event)?.projection;
-    }
-
-    let attempt_id = format!(
-        "attempt-{}-{}",
+    let plan = omega_core::mission::PlanContract::new(
+        mission.id.clone(),
+        1,
+        classified.projection.version,
+        vec![task_contract],
+        vec!["independent_verification".to_string()],
+        Vec::new(),
+    )?;
+    let mut planned = omega_core::mission_ledger::AppendEvent::new(
+        mission.id.clone(),
+        classified.projection.version,
+        format!("spawn-worker:{}:plan:1", mission.id.as_str()),
         worker_name,
-        chrono::Utc::now().timestamp_micros()
+        "plan_accepted",
     );
+    planned.next_mission_state = Some(omega_core::mission::MissionState::Planned);
+    planned.provider = Some(provider.name().to_string());
+    planned.payload = serde_json::to_value(&plan)?;
+    planned.plan = Some(plan.clone());
+    let planned = ledger.append(planned)?;
+    let attempt_id = format!("attempt-{}-{}-1", mission.id.as_str(), task);
     let mut queued = omega_core::mission_ledger::AppendEvent::new(
-        state.mission_id.clone(),
-        projection.version,
-        format!("worker-attempt:{attempt_id}:queued"),
+        mission.id.clone(),
+        planned.projection.version,
+        format!("spawn-worker:{attempt_id}:queued"),
         worker_name,
         "task_attempt_queued",
     );
     queued.provider = Some(provider.name().to_string());
-    queued.payload = serde_json::json!({
-        "worker": worker_name,
-        "task": task,
-        "working_dir": work_dir,
-    });
     queued.task_attempt = Some(omega_core::mission_ledger::TaskAttemptMutation {
         task_id: task.to_string(),
         attempt_id: attempt_id.clone(),
-        plan_revision,
+        plan_revision: plan.revision,
         expected_version: 0,
         next_state: omega_core::mission::TaskAttemptState::Queued,
     });
+    queued.payload = serde_json::json!({
+        "worker_base": worker_name,
+        "task": task,
+        "authority_working_dir": authority_work_dir,
+        "execution_working_dir": work_dir,
+    });
     ledger.append(queued)?;
-
-    Ok(Some(V3WorkerAttempt {
-        mission_id: state.mission_id,
+    let authority = omega_core::orchestration::AuthoritativeTaskAttempt {
+        mission_id: mission.id,
         task_id: task.to_string(),
         attempt_id,
-        plan_revision,
-    }))
+        plan_revision: plan.revision,
+        owner: None,
+        leases: Vec::new(),
+        scope_receipt: None,
+    };
+    Ok(V3WorkerAttempt {
+        authority,
+        plan_digest: plan.content_digest,
+        parent_mission_id,
+    })
 }
 
 fn transition_v3_worker_attempt(
@@ -6551,34 +7839,519 @@ fn transition_v3_worker_attempt(
     let ledger = omega_core::mission_ledger::MissionLedger::open(
         config.state_dir.join("mission-engine-v3.sqlite3"),
     )?;
-    let projection = ledger
-        .mission(&attempt.mission_id)?
-        .ok_or_else(|| anyhow::anyhow!("mission disappeared before worker transition"))?;
-    let task_projection = ledger
-        .task_attempt(&attempt.attempt_id)?
-        .ok_or_else(|| anyhow::anyhow!("task attempt disappeared before worker transition"))?;
-    let next_label = format!("{next:?}").to_lowercase();
-    let mut event = omega_core::mission_ledger::AppendEvent::new(
-        attempt.mission_id.clone(),
-        projection.version,
-        format!("worker-attempt:{}:{next_label}", attempt.attempt_id),
-        worker_name,
-        format!("task_attempt_{next_label}"),
-    );
-    event.task_attempt = Some(omega_core::mission_ledger::TaskAttemptMutation {
-        task_id: attempt.task_id.clone(),
-        attempt_id: attempt.attempt_id.clone(),
-        plan_revision: attempt.plan_revision,
-        expected_version: task_projection.version,
-        next_state: next,
-    });
-    if next == omega_core::mission::TaskAttemptState::Running
-        && projection.state == omega_core::mission::MissionState::Planned
-    {
-        event.next_mission_state = Some(omega_core::mission::MissionState::Running);
+    if next == omega_core::mission::TaskAttemptState::Running {
+        omega_core::orchestration::transition_authoritative_mission(
+            &ledger,
+            attempt.mission_id(),
+            omega_core::mission::MissionState::Running,
+            worker_name,
+        )?;
     }
-    ledger.append(event)?;
+    omega_core::orchestration::transition_authoritative_attempt(
+        &ledger,
+        &attempt.authority,
+        next,
+        worker_name,
+    )
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CreatedWorkerWorktree {
+    main_worktree: std::path::PathBuf,
+    worktree: std::path::PathBuf,
+    branch: String,
+    head: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RegisteredWorktree {
+    worktree: std::path::PathBuf,
+    branch: Option<String>,
+    head: Option<String>,
+}
+
+fn required_git_output(dir: &std::path::Path, args: &[&str]) -> Result<std::process::Output> {
+    let output = std::process::Command::new("git")
+        .args(args)
+        .current_dir(dir)
+        .output()
+        .with_context(|| format!("cannot execute git {} in {}", args.join(" "), dir.display()))?;
+    if !output.status.success() {
+        anyhow::bail!(
+            "git {} failed in {}: {}",
+            args.join(" "),
+            dir.display(),
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    Ok(output)
+}
+
+fn required_git_text(dir: &std::path::Path, args: &[&str]) -> Result<String> {
+    let output = required_git_output(dir, args)?;
+    let stdout = String::from_utf8(output.stdout)
+        .with_context(|| format!("git {} returned non-UTF-8 output", args.join(" ")))?;
+    Ok(stdout.trim().to_string())
+}
+
+fn registered_worktrees(repo: &std::path::Path) -> Result<Vec<RegisteredWorktree>> {
+    let output = required_git_output(repo, &["worktree", "list", "--porcelain", "-z"])?;
+    let mut registrations = Vec::new();
+    let mut worktree = None;
+    let mut branch = None;
+    let mut head = None;
+
+    for field in output.stdout.split(|byte| *byte == 0) {
+        if field.is_empty() {
+            if let Some(path) = worktree.take() {
+                registrations.push(RegisteredWorktree {
+                    worktree: path,
+                    branch: branch.take(),
+                    head: head.take(),
+                });
+            }
+            continue;
+        }
+        if let Some(value) = field.strip_prefix(b"worktree ") {
+            let path = String::from_utf8(value.to_vec())
+                .context("git worktree list returned a non-UTF-8 path")?;
+            worktree = Some(std::path::PathBuf::from(path));
+        } else if let Some(value) = field.strip_prefix(b"branch refs/heads/") {
+            branch = Some(
+                String::from_utf8(value.to_vec())
+                    .context("git worktree list returned a non-UTF-8 branch")?,
+            );
+        } else if let Some(value) = field.strip_prefix(b"HEAD ") {
+            head = Some(
+                String::from_utf8(value.to_vec())
+                    .context("git worktree list returned a non-UTF-8 HEAD")?,
+            );
+        }
+    }
+    if let Some(path) = worktree {
+        registrations.push(RegisteredWorktree {
+            worktree: path,
+            branch,
+            head,
+        });
+    }
+    Ok(registrations)
+}
+
+impl CreatedWorkerWorktree {
+    fn capture(
+        repo: &std::path::Path,
+        worktree: &std::path::Path,
+        worker_name: &str,
+    ) -> Result<Self> {
+        let main_worktree =
+            std::fs::canonicalize(required_git_text(repo, &["rev-parse", "--show-toplevel"])?)
+                .context("cannot canonicalize the worker source checkout")?;
+        let worktree = std::fs::canonicalize(worktree)
+            .context("cannot canonicalize the newly created worker worktree")?;
+        if worktree == main_worktree || !worktree.join(".git").is_file() {
+            anyhow::bail!(
+                "worker isolation returned an unsafe worktree path: {}",
+                worktree.display()
+            );
+        }
+
+        let registration = registered_worktrees(&main_worktree)?
+            .into_iter()
+            .find(|entry| {
+                std::fs::canonicalize(&entry.worktree)
+                    .is_ok_and(|registered| registered == worktree)
+            })
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "new worker worktree {} is not registered in the source repository",
+                    worktree.display()
+                )
+            })?;
+        let branch = registration
+            .branch
+            .ok_or_else(|| anyhow::anyhow!("new worker worktree is detached"))?;
+        let slug = worker_branch_slug(worker_name);
+        let branch_tail = branch.strip_prefix("omega/").ok_or_else(|| {
+            anyhow::anyhow!("new worker worktree uses non-Omega branch {branch:?}")
+        })?;
+        if !worktree_dir_belongs_to(branch_tail, &slug) {
+            anyhow::bail!("new worker branch {branch:?} is not bound to worker {worker_name:?}");
+        }
+        let head = registration
+            .head
+            .ok_or_else(|| anyhow::anyhow!("new worker worktree has no registered HEAD"))?;
+        let observed_head = required_git_text(&worktree, &["rev-parse", "HEAD"])?;
+        if observed_head != head {
+            anyhow::bail!("new worker worktree HEAD changed while it was being registered");
+        }
+
+        Ok(Self {
+            main_worktree,
+            worktree,
+            branch,
+            head,
+        })
+    }
+}
+
+fn expected_worktree_dependency_link(created: &CreatedWorkerWorktree, relative: &str) -> bool {
+    let relative = relative.trim_end_matches('/');
+    if relative.contains('/')
+        || !(relative == "node_modules" || relative == ".env" || relative.starts_with(".env."))
+    {
+        return false;
+    }
+    let link = created.worktree.join(relative);
+    let Ok(metadata) = std::fs::symlink_metadata(&link) else {
+        return false;
+    };
+    if !metadata.file_type().is_symlink() {
+        return false;
+    }
+    let Ok(target) = std::fs::read_link(&link) else {
+        return false;
+    };
+    let target = if target.is_absolute() {
+        target
+    } else {
+        created.worktree.join(target)
+    };
+    let expected = created.main_worktree.join(relative);
+    std::fs::canonicalize(target).ok() == std::fs::canonicalize(expected).ok()
+}
+
+/// Undo only an isolation worktree created by this invocation. The rollback is
+/// intentionally non-forcing and refuses to remove a changed HEAD, a dirty
+/// tree, an unexpected ignored artifact, or a re-bound branch. The caller can
+/// therefore report a preserved recovery path instead of deleting worker data.
+fn rollback_created_worker_worktree(created: &CreatedWorkerWorktree) -> Result<()> {
+    let registration = registered_worktrees(&created.main_worktree)?
+        .into_iter()
+        .find(|entry| {
+            std::fs::canonicalize(&entry.worktree)
+                .is_ok_and(|registered| registered == created.worktree)
+        })
+        .ok_or_else(|| anyhow::anyhow!("created worker worktree is no longer registered"))?;
+    if registration.branch.as_deref() != Some(created.branch.as_str())
+        || registration.head.as_deref() != Some(created.head.as_str())
+        || required_git_text(&created.worktree, &["rev-parse", "HEAD"])? != created.head
+    {
+        anyhow::bail!(
+            "created worker worktree changed branch or HEAD; preserving {}",
+            created.worktree.display()
+        );
+    }
+
+    let status = required_git_output(
+        &created.worktree,
+        &[
+            "status",
+            "--porcelain=v1",
+            "-z",
+            "--untracked-files=all",
+            "--ignored",
+        ],
+    )?;
+    for entry in status.stdout.split(|byte| *byte == 0) {
+        if entry.is_empty() {
+            continue;
+        }
+        if entry.len() < 4 || &entry[..2] != b"!!" || entry[2] != b' ' {
+            anyhow::bail!(
+                "created worker worktree contains changes; preserving {}",
+                created.worktree.display()
+            );
+        }
+        let relative = std::str::from_utf8(&entry[3..])
+            .context("worker worktree status contained a non-UTF-8 path")?;
+        if !expected_worktree_dependency_link(created, relative) {
+            anyhow::bail!(
+                "created worker worktree contains unexpected ignored data at {relative:?}; preserving {}",
+                created.worktree.display()
+            );
+        }
+    }
+
+    let remove = std::process::Command::new("git")
+        .args(["worktree", "remove", "--"])
+        .arg(&created.worktree)
+        .current_dir(&created.main_worktree)
+        .output()
+        .context("cannot execute safe worker worktree rollback")?;
+    if !remove.status.success() {
+        anyhow::bail!(
+            "git refused safe worktree rollback for {}: {}",
+            created.worktree.display(),
+            String::from_utf8_lossy(&remove.stderr).trim()
+        );
+    }
+    if created.worktree.exists() {
+        anyhow::bail!(
+            "git reported rollback success but worktree still exists at {}",
+            created.worktree.display()
+        );
+    }
+
+    let delete = std::process::Command::new("git")
+        .args(["branch", "-d", "--", &created.branch])
+        .current_dir(&created.main_worktree)
+        .output()
+        .context("cannot execute safe worker branch rollback")?;
+    if !delete.status.success() {
+        anyhow::bail!(
+            "worktree was removed but git refused to delete rolled-back branch {}: {}",
+            created.branch,
+            String::from_utf8_lossy(&delete.stderr).trim()
+        );
+    }
     Ok(())
+}
+
+fn rollback_worker_worktree_error(
+    created: Option<&CreatedWorkerWorktree>,
+    primary: anyhow::Error,
+) -> anyhow::Error {
+    match created.and_then(|worktree| rollback_created_worker_worktree(worktree).err()) {
+        Some(rollback) => anyhow::anyhow!("{primary:#}; worktree rollback FAILED: {rollback:#}"),
+        None => primary,
+    }
+}
+
+fn worker_runtime_scope(
+    attempt: &omega_core::orchestration::AuthoritativeTaskAttempt,
+) -> Result<Option<omega_core::worker_runtime::WorkerRuntimeScope>> {
+    let Some(receipt) = &attempt.scope_receipt else {
+        if !attempt.leases.is_empty() {
+            anyhow::bail!("worker attempt has leases without an immutable scope receipt");
+        }
+        return Ok(None);
+    };
+    let receipt = omega_core::worker_runtime::WorkerScopeReceipt {
+        schema_version: 1,
+        mission_id: receipt.mission_id.clone(),
+        task_id: receipt.task_id.clone(),
+        attempt_id: receipt.attempt_id.clone(),
+        plan_revision: receipt.plan_revision,
+        owner: receipt.owner.clone(),
+        claim: receipt.claim.clone(),
+    };
+    omega_core::worker_runtime::WorkerRuntimeScope::from_authority(receipt, &attempt.leases)
+        .map(Some)
+}
+
+fn cancel_worker_authority(
+    config: &OmegaConfig,
+    attempt: &V3WorkerAttempt,
+    actor: &str,
+) -> Result<()> {
+    let ledger = omega_core::mission_ledger::MissionLedger::open(
+        config.state_dir.join("mission-engine-v3.sqlite3"),
+    )?;
+    let task = ledger
+        .task_attempt(attempt.attempt_id())?
+        .ok_or_else(|| anyhow::anyhow!("worker attempt disappeared during rollback"))?;
+    if !task.state.is_terminal() {
+        omega_core::orchestration::transition_authoritative_attempt(
+            &ledger,
+            &attempt.authority,
+            omega_core::mission::TaskAttemptState::Cancelled,
+            actor,
+        )?;
+    }
+    let mission = ledger
+        .mission(attempt.mission_id())?
+        .ok_or_else(|| anyhow::anyhow!("worker mission disappeared during rollback"))?;
+    if !mission.state.is_terminal() {
+        omega_core::orchestration::transition_authoritative_mission(
+            &ledger,
+            attempt.mission_id(),
+            omega_core::mission::MissionState::Cancelled,
+            actor,
+        )?;
+    }
+    if attempt.authority.scope_receipt.is_some() || !attempt.authority.leases.is_empty() {
+        omega_core::orchestration::release_authoritative_scopes(
+            &ledger,
+            &config.state_dir,
+            &attempt.authority,
+        )?;
+    } else if !ledger
+        .active_leases_for_attempt(
+            attempt.mission_id(),
+            attempt.task_id(),
+            attempt.attempt_id(),
+        )?
+        .is_empty()
+    {
+        anyhow::bail!("worker rollback found unrepresented active scope leases");
+    }
+    Ok(())
+}
+
+fn block_worker_authority(
+    config: &OmegaConfig,
+    attempt: &V3WorkerAttempt,
+    actor: &str,
+    reason: &str,
+) -> Result<()> {
+    let ledger = omega_core::mission_ledger::MissionLedger::open(
+        config.state_dir.join("mission-engine-v3.sqlite3"),
+    )?;
+    let mut mission = ledger.mission(attempt.mission_id())?.ok_or_else(|| {
+        anyhow::anyhow!("worker mission disappeared while recording containment failure")
+    })?;
+    if mission.state == omega_core::mission::MissionState::Planned {
+        omega_core::orchestration::transition_authoritative_mission(
+            &ledger,
+            attempt.mission_id(),
+            omega_core::mission::MissionState::Running,
+            actor,
+        )?;
+        mission = ledger.mission(attempt.mission_id())?.ok_or_else(|| {
+            anyhow::anyhow!("worker mission disappeared after Running transition")
+        })?;
+    }
+    if mission.state == omega_core::mission::MissionState::Running {
+        omega_core::orchestration::transition_authoritative_mission(
+            &ledger,
+            attempt.mission_id(),
+            omega_core::mission::MissionState::Verifying,
+            actor,
+        )?;
+        mission = ledger.mission(attempt.mission_id())?.ok_or_else(|| {
+            anyhow::anyhow!("worker mission disappeared after Verifying transition")
+        })?;
+    }
+    if mission.state == omega_core::mission::MissionState::Verifying {
+        omega_core::orchestration::transition_authoritative_mission(
+            &ledger,
+            attempt.mission_id(),
+            omega_core::mission::MissionState::Blocked,
+            actor,
+        )?;
+    }
+    let projection = ledger
+        .mission(attempt.mission_id())?
+        .ok_or_else(|| anyhow::anyhow!("worker mission disappeared after containment failure"))?;
+    if projection.state != omega_core::mission::MissionState::Blocked {
+        anyhow::bail!(
+            "worker containment failed but mission remained {:?}: {reason}",
+            projection.state
+        );
+    }
+    Ok(())
+}
+
+fn register_worker_under_oracle(
+    config: &OmegaConfig,
+    oracle_name: &str,
+    project_name: &str,
+    work_dir: &str,
+    session_name: &str,
+    task: &str,
+    attempt: &V3WorkerAttempt,
+    files: &[String],
+) -> Result<()> {
+    let _lock =
+        omega_core::worker_runtime::lock_oracle_worker_registry(&config.state_dir, oracle_name)?;
+    let mut state =
+        omega_core::oracle_lifecycle::OracleState::read(&config.state_dir, oracle_name)?
+            .unwrap_or_else(|| {
+                omega_core::oracle_lifecycle::OracleState::new_minimal(
+                    oracle_name,
+                    project_name,
+                    std::path::PathBuf::from(work_dir),
+                )
+            });
+    if let Some(parent) = &attempt.parent_mission_id {
+        if state.mission_id != *parent {
+            anyhow::bail!("Oracle registry changed parent mission before worker registration");
+        }
+    }
+    state.register_worker(omega_core::oracle_lifecycle::WorkerEntry {
+        session_name: session_name.to_string(),
+        task_id: attempt.task_id().to_string(),
+        task_name: task.to_string(),
+        attempt_id: Some(attempt.attempt_id().to_string()),
+        plan_revision: Some(attempt.plan_revision()),
+        files_owned: files.to_vec(),
+        dispatched_at: chrono::Utc::now(),
+        status: omega_core::oracle_lifecycle::WorkerEntryStatus::Running,
+    });
+    state.write(&config.state_dir)
+}
+
+fn rollback_unstarted_worker(
+    config: &OmegaConfig,
+    attempt: &V3WorkerAttempt,
+    actor: &str,
+    created_worktree: Option<&CreatedWorkerWorktree>,
+    primary: anyhow::Error,
+) -> anyhow::Error {
+    if let Err(rollback) = cancel_worker_authority(config, attempt, actor) {
+        return anyhow::anyhow!(
+            "{primary:#}; authoritative unstarted worker rollback FAILED: {rollback:#}; scope authority and worker files were preserved"
+        );
+    }
+    rollback_worker_worktree_error(created_worktree, primary)
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn rollback_spawned_worker(
+    manager: &SessionManager,
+    config: &OmegaConfig,
+    attempt: &V3WorkerAttempt,
+    runtime: &omega_core::worker_runtime::WorkerRuntimeManifest,
+    actor: &str,
+    observed: Option<&omega_core::worker_runtime::ObservedWorkerProcess>,
+    created_worktree: Option<&CreatedWorkerWorktree>,
+    primary: anyhow::Error,
+) -> anyhow::Error {
+    let absence = match observed {
+        Some(observed) => match manager.contain_worker_process(observed).await {
+            Ok(()) => manager.confirm_worker_runtime_absence(runtime).await,
+            Err(error) => Err(error),
+        },
+        None => match manager.confirm_worker_runtime_absence(runtime).await {
+            Ok(absence) => Ok(absence),
+            Err(_) => manager.contain_worker_runtime_session(runtime).await,
+        },
+    };
+    let absence = match absence {
+        Ok(absence) => absence,
+        Err(containment) => {
+            let reason = format!("{primary:#}; containment failed: {containment:#}");
+            let blocked = block_worker_authority(config, attempt, actor, &reason).err();
+            return match blocked {
+            Some(blocked) => anyhow::anyhow!(
+                "{reason}; durable Blocked transition ALSO FAILED: {blocked:#}; exact scope authority and worker files remain retained"
+            ),
+            None => anyhow::anyhow!(
+                "{reason}; mission is durably Blocked and exact scope authority and worker files remain retained"
+            ),
+        };
+        }
+    };
+    if let Err(rollback) = cancel_worker_authority(config, attempt, actor) {
+        return anyhow::anyhow!(
+            "{primary:#}; process containment succeeded but authoritative cancellation/release FAILED: {rollback:#}; worker files were preserved"
+        );
+    }
+    let archive = match runtime.retire_terminal(&config.state_dir, &absence) {
+        Ok(archive) => archive,
+        Err(error) => {
+            return anyhow::anyhow!(
+                "{primary:#}; process and authority rolled back but runtime retirement FAILED: {error:#}; worker files were preserved"
+            )
+        }
+    };
+    if let Err(error) = archive.cleanup_launch_artifacts(&config.state_dir) {
+        return anyhow::anyhow!(
+            "{primary:#}; runtime was durably archived but launch-artifact cleanup FAILED: {error:#}; worker files were preserved"
+        );
+    }
+    rollback_worker_worktree_error(created_worktree, primary)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -6592,37 +8365,24 @@ async fn cmd_spawn_worker(
     worktree: bool,
     agent_override: Option<&str>,
 ) -> Result<()> {
-    let config = OmegaConfig::load().unwrap_or_default();
+    let config = OmegaConfig::load().context("cannot load OmegaOS config for worker dispatch")?;
     config.ensure_dirs()?;
     let mgr = SessionManager::connect().await?;
-
-    // The current rmux session IS the oracle when spawn-worker runs inside one.
-    // Capture it to register the worker under it + derive the project.
-    //
-    // NOTE: $RMUX is "socket,server_pid,session_id" — it does NOT carry the
-    // session NAME, so the old `RMUX.split(',').next()` read the socket PATH and
-    // never matched "oracle-*". Result: the worker→oracle link was silently
-    // dropped for EVERY worker, so the menu could never nest workers under their
-    // oracle. Resolve the real name by asking rmux to expand #{session_name} for
-    // our pane ($RMUX_PANE).
     let oracle_session = current_session_name().filter(|s| s.starts_with("oracle-"));
-
-    let project_name = match project {
-        Some(p) => Some(p.to_string()),
-        None => oracle_session
-            .as_deref()
-            .and_then(|s| omega_core::session::OmegaSession::classify(s).project),
-    };
-
+    let project_name = project
+        .map(str::to_string)
+        .or_else(|| {
+            oracle_session
+                .as_deref()
+                .and_then(|session| omega_core::session::OmegaSession::classify(session).project)
+        })
+        .unwrap_or_else(|| "standalone".to_string());
     let mut work_dir = dir.unwrap_or(".").to_string();
-    let worker_name = match &project_name {
-        Some(p) => format!("{}-worker-{}", p, task),
-        None => format!("worker-{}", task),
-    };
+    let source_work_dir = std::path::PathBuf::from(&work_dir);
+    let mut created_worktree = None;
+    let worker_base =
+        omega_core::session::sanitize_session_name(&format!("{}-worker-{}", project_name, task));
 
-    // Worker-prompt completeness gate (cheap, no LLM): the brief MUST carry both a
-    // Done-criteria signal AND a Verify-command signal. Checked BEFORE the scope
-    // claim so a rejected dispatch never leaves a file lock behind.
     let prompt_lc = prompt.to_lowercase();
     let has_done = prompt_lc.contains("done criteria")
         || prompt_lc.contains("done:")
@@ -6635,179 +8395,24 @@ async fn cmd_spawn_worker(
             (true, false) => "Verify Command",
             (true, true) => unreachable!(),
         };
-        if force {
+        if force && has_verify {
             tracing::warn!(
-                "worker prompt missing {} — --force set, dispatching anyway (quality gate may fail)",
+                "worker prompt missing {} — --force set; immutable fallback criteria will be used",
                 missing
             );
             eprintln!(
-                "[!] worker prompt missing {} — --force set, dispatching anyway (quality gate may fail)",
+                "[!] worker prompt missing {} — --force set; immutable fallback criteria will be used",
                 missing
             );
         } else {
             anyhow::bail!(
                 "worker prompt missing {missing}. Add explicit \"Done Criteria:\" and a \"Verify Command:\" \
-                 to the prompt so the worker has measurable success criteria (rule R-RUBRIC), or pass --force to override."
+                 to the prompt so the worker has measurable success criteria (rule R-RUBRIC). \
+                 --force may waive only the prose Done Criteria, never an executable verifier."
             );
         }
     }
 
-    if let Some(ref files) = files {
-        omega_core::scope::claim_or_reject(&config.state_dir, &worker_name, files.clone())?;
-    }
-
-    // Clear any STALE lifecycle markers from a prior run under the same name.
-    // Worker names are deterministic (`<project>-worker-<task>`) and the
-    // done.json survives its session, so a leftover signal from a predecessor
-    // would make patrol read THIS fresh worker as already done on its next
-    // tick — pushing the OLD outcome to the oracle and reaping (killing) the
-    // new session after the close grace. Mirror of the Executor-path clear in
-    // orchestration.rs; the blocked/close markers go too, for the same reason.
-    // Ordering: after BOTH gates (prompt + scope claim) — a rejected dispatch
-    // must leave no side effects, and the scope gate is a rejection path too.
-    // Guard: if a same-name session is STILL ALIVE, or its done.json is fresh
-    // (a just-finished worker whose result patrol/oracle hasn't consumed yet —
-    // LLM oracles do double-fire spawn-worker), refuse instead of silently
-    // destroying the unconsumed outcome of live or just-completed work.
-    let done_marker = config
-        .state_dir
-        .join(format!("worker-{}.done.json", worker_name));
-    let refuse = |why: String| {
-        // This dispatch claimed scope above — a refusal must release it, or the
-        // rejected name holds its files hostage (no side effects on rejection).
-        if files.is_some() {
-            let _ = omega_core::scope::ScopeClaim::release(&config.state_dir, &worker_name);
-        }
-        anyhow::anyhow!(why)
-    };
-    if mgr.capture_pane(&worker_name).await.is_ok() {
-        return Err(refuse(format!(
-            "worker session `{worker_name}` is still alive — not clobbering it. \
-             Wait for it to finish (or `omega kill {worker_name}`) before re-dispatching."
-        )));
-    }
-    if let Ok(meta) = std::fs::metadata(&done_marker) {
-        let fresh = meta
-            .modified()
-            .ok()
-            .and_then(|m| m.elapsed().ok())
-            .is_some_and(|age| age.as_secs() < 120);
-        if fresh {
-            return Err(refuse(format!(
-                "worker `{worker_name}` left a done.json less than 2 minutes old — its result \
-                 may not be consumed yet. Re-dispatch after patrol's next tick (or remove \
-                 {} to override).",
-                done_marker.display()
-            )));
-        }
-    }
-    for marker in [
-        format!("worker-{}.done.json", worker_name),
-        format!("worker-blocked-{}.json", worker_name),
-        format!("worker-close-{}.json", worker_name),
-    ] {
-        let _ = std::fs::remove_file(config.state_dir.join(marker));
-    }
-
-    // GIT SYNC PREFLIGHT (pull-before-work doctrine): make sure the worker —
-    // and the worktree branched off this HEAD below — starts from the CURRENT
-    // origin state, not a stale checkout that silently rebuilds or overwrites
-    // what cloud sessions already pushed. ff-only on a clean tree; a dirty or
-    // diverged dir is never touched, the drift is surfaced to the worker
-    // prompt instead.
-    let git_sync = omega_core::git_sync::pull_preflight(std::path::Path::new(&work_dir));
-    eprintln!("[git-sync] {}: {}", work_dir, git_sync.describe());
-    let git_sync_warning = git_sync.warning();
-
-    // --worktree: give this worker its OWN git worktree (independent HEAD + working
-    // tree) so concurrent workers never race on the shared checkout. node_modules/.env
-    // are symlinked in by omega-git-branch so builds/tests still work. The oracle later
-    // runs omega-git-merge to integrate the branch and remove the worktree. Best-effort:
-    // fall back to the shared dir (with a warning) if the worktree can't be created.
-    if worktree {
-        let home = dirs::home_dir().unwrap_or_default();
-        let script = home.join(".omega/bin/omega-git-branch.sh");
-        let out = std::process::Command::new("bash")
-            .arg(&script)
-            .arg("worktree")
-            .arg(&worker_name)
-            .arg("") // base = current HEAD of the repo dir
-            .arg(&work_dir)
-            .output();
-        match out {
-            Ok(o) if o.status.success() => {
-                let wt = String::from_utf8_lossy(&o.stdout).trim().to_string();
-                if !wt.is_empty() && std::path::Path::new(&wt).is_dir() {
-                    eprintln!("[+] worker isolated in worktree: {wt}");
-                    work_dir = wt;
-                } else {
-                    eprintln!(
-                        "[!] worktree create returned no path — running in shared dir {work_dir}"
-                    );
-                }
-            }
-            Ok(o) => eprintln!(
-                "[!] worktree create failed ({}) — running in shared dir {work_dir}",
-                String::from_utf8_lossy(&o.stderr).trim()
-            ),
-            Err(e) => {
-                eprintln!("[!] worktree create error ({e}) — running in shared dir {work_dir}")
-            }
-        }
-    }
-
-    // THE FUNNEL — inject the Worker-scoped Laws + operational rules, exactly
-    // like Dispatcher::dispatch_worker_with_context. Without this, a worker
-    // spawned via the CLI (the live path oracles use) gets NO doctrine.
-    let mut full_prompt = prompt.to_string();
-    // SESSION IDENTITY — a worker must know its own deterministic name: it is the
-    // join key for its rmux session, its Claude conversation (--name, resumable),
-    // and every state file the engine polls (worker-<name>.done.json etc.). Without
-    // this a worker only knows its name if the oracle happened to paste it.
-    full_prompt.push_str(&format!(
-        "\n\n## SESSION IDENTITY\nYou are worker `{worker_name}` — this exact string is your rmux session name, \
-         your Claude conversation name (resumable via `claude --resume {worker_name}`), and the key for your \
-         state files in ~/.omega/state/. Use it verbatim in every `omega done {worker_name} …` / \
-         `omega progress {worker_name} …` call — never a paraphrase.\n"
-    ));
-    // Surface an unresolved git drift to the worker so it reconciles BEFORE
-    // editing instead of working blind on a stale/diverged checkout.
-    if let Some(warning) = &git_sync_warning {
-        full_prompt.push_str(&format!(
-            "\n\n## GIT SYNC\n{warning}\nReconcile (fetch/pull --ff-only on a clean tree) before touching any file.\n"
-        ));
-    }
-    // The shape of the work, matched from the brief. A worker inside a
-    // self-correcting loop, an audit dimension or a long-horizon slice needs to
-    // know which it is — the stop condition is different in each, and a worker
-    // that does not know when to stop either quits early or never quits.
-    let shape = omega_core::mission_patterns::orchestration_block(&full_prompt);
-    if !shape.is_empty() {
-        full_prompt.push_str("\n\n");
-        full_prompt.push_str(&shape);
-    }
-
-    let agent_ctx = omega_core::rules::agent_context_block_for_mission(
-        omega_core::rules::RuleScope::Worker,
-        &full_prompt,
-    );
-    if !agent_ctx.is_empty() {
-        full_prompt.push_str("\n\n");
-        full_prompt.push_str(&agent_ctx);
-    }
-
-    // Per-role LaunchOptions for the WORKER (Claude only — other providers
-    // ignore the Claude-only fields). A worker is a hermetic, trusted executor:
-    //   * permission-mode "bypassPermissions" — never prompt the operator (every
-    //     OmegaOS session runs fully autonomous; "acceptEdits" still gated on Bash
-    //     and stalled hermetic workers waiting for an answer no one gives).
-    //   * disallowed_tools — the real safety rail (orthogonal to permission mode,
-    //     a hard deny that survives bypass): the destructive/irreversible ops a
-    //     worker must never run (git push, rm, sudo). Oracles keep full access.
-    //   * mcp_config + --strict-mcp-config — ONLY the OmegaOS MCP servers, no
-    //     user/project .mcp.json (hermetic).
-    //   * NO --bare — bare mode skips OAuth credential loading in Claude Code
-    //     >= 2.1.x, so a bare worker dies at the login screen (see below).
     let agent = match agent_override {
         Some(name) => {
             let resolved = omega_core::agents::Agent::from_name(name).ok_or_else(|| {
@@ -6826,9 +8431,15 @@ async fn cmd_spawn_worker(
             }
             resolved
         }
-        None => omega_core::agents::Agent::from_name(&config.agent_command)
-            .unwrap_or(omega_core::agents::Agent::Codex),
+        None => omega_core::agents::Agent::from_name(&config.agent_command).ok_or_else(|| {
+            anyhow::anyhow!(
+                "configured worker agent {:?} is unknown; set an explicit supported provider",
+                config.agent_command
+            )
+        })?,
     };
+    omega_core::providers::ProvidersConfig::try_load()
+        .context("cannot load provider config for worker dispatch")?;
     omega_core::providers::ProvidersConfig::negotiate_provider(
         Some(agent.name()),
         &[
@@ -6839,180 +8450,548 @@ async fn cmd_spawn_worker(
         &[omega_core::providers::ProviderCapability::Delegation],
     )
     .map_err(|error| anyhow::anyhow!("provider capability negotiation failed: {error}"))?;
-    let v3_attempt = prepare_v3_worker_attempt(
+    let git_sync = omega_core::git_sync::pull_preflight(std::path::Path::new(&work_dir));
+    eprintln!("[git-sync] {}: {}", work_dir, git_sync.describe());
+    let git_sync_warning = git_sync.warning();
+    if worktree {
+        let home = dirs::home_dir()
+            .context("cannot resolve the home directory required for --worktree")?;
+        let script = home.join(".omega/bin/omega-git-branch.sh");
+        let out = std::process::Command::new("bash")
+            .arg(&script)
+            .arg("worktree")
+            .arg(&worker_base)
+            .arg("") // base = current HEAD of the repo dir
+            .arg(&work_dir)
+            .output();
+        match out {
+            Ok(o) if o.status.success() => {
+                let wt = String::from_utf8_lossy(&o.stdout).trim().to_string();
+                if !wt.is_empty() && std::path::Path::new(&wt).is_dir() {
+                    let captured = CreatedWorkerWorktree::capture(
+                        &source_work_dir,
+                        std::path::Path::new(&wt),
+                        &worker_base,
+                    )
+                    .with_context(|| {
+                        format!(
+                            "--worktree creation produced an unverifiable isolation boundary for {worker_base}; preserved path: {wt}"
+                        )
+                    })?;
+                    eprintln!("[+] worker isolated in worktree: {wt}");
+                    work_dir = wt;
+                    created_worktree = Some(captured);
+                } else {
+                    anyhow::bail!(
+                        "--worktree creation returned no usable directory for {worker_base}; dispatch aborted"
+                    );
+                }
+            }
+            Ok(o) => {
+                anyhow::bail!(
+                    "--worktree creation failed for {worker_base}: {}",
+                    String::from_utf8_lossy(&o.stderr).trim()
+                );
+            }
+            Err(e) => {
+                anyhow::bail!("--worktree creation failed for {worker_base}: {e}");
+            }
+        }
+    }
+    let worktree_provenance = if created_worktree.is_some() {
+        match omega_core::worker_runtime::WorkerWorktreeProvenance::capture(
+            &source_work_dir,
+            std::path::Path::new(&work_dir),
+        ) {
+            Ok(provenance) => Some(provenance),
+            Err(error) => {
+                return Err(rollback_worker_worktree_error(
+                    created_worktree.as_ref(),
+                    error.context("cannot freeze worker worktree provenance"),
+                ));
+            }
+        }
+    } else {
+        None
+    };
+
+    let mut full_prompt = prompt.to_string();
+    if let Some(warning) = &git_sync_warning {
+        full_prompt.push_str(&format!(
+            "\n\n## GIT SYNC\n{warning}\nReconcile (fetch/pull --ff-only on a clean tree) before touching any file.\n"
+        ));
+    }
+    let shape = omega_core::mission_patterns::orchestration_block(&full_prompt);
+    if !shape.is_empty() {
+        full_prompt.push_str("\n\n");
+        full_prompt.push_str(&shape);
+    }
+
+    let agent_ctx = omega_core::rules::agent_context_block_for_mission(
+        omega_core::rules::RuleScope::Worker,
+        &full_prompt,
+    );
+    if !agent_ctx.is_empty() {
+        full_prompt.push_str("\n\n");
+        full_prompt.push_str(&agent_ctx);
+    }
+    let mut v3_attempt = match prepare_v3_worker_attempt(
         &config,
         oracle_session.as_deref(),
-        &worker_name,
+        &project_name,
+        &worker_base,
         task,
         &full_prompt,
+        &source_work_dir.to_string_lossy(),
         &work_dir,
         files.as_deref().unwrap_or(&[]),
         agent,
-    )?;
-    let spawn_result = if matches!(agent, omega_core::agents::Agent::Claude) {
-        let mut opts = omega_core::agents::LaunchOptions {
-            permission_mode: Some("bypassPermissions".to_string()),
-            disallowed_tools: Some("Bash(git push:*) Bash(rm:*) Bash(sudo:*)".to_string()),
-            session_name: Some(worker_name.clone()),
-            ..Default::default()
-        };
-        // Claude-side session label (`--name`): mirror the rmux session name so the
-        // conversation is addressable/resumable by the SAME deterministic identity
-        // (`claude --resume <name>`, searchable in /resume) — oracles already get
-        // this in dispatch_oracle; workers were anonymous on the Claude side.
-        // NOT bare: --bare skips OAuth credential loading in Claude Code >= 2.1.x
-        // (runtime-verified 2026-06-05: `claude --bare --print` -> "Not logged in"
-        // while plain `claude --print` succeeds on an OAuth-only host), so hermetic
-        // workers must NOT use bare mode until upstream fixes it.
-        match omega_core::mcp_servers::generate_mcp_config(&config, &worker_name) {
-            Ok(json) => {
-                let path = config.state_dir.join(format!("{}.mcp.json", worker_name));
-                match std::fs::write(&path, json) {
-                    Ok(()) => {
-                        opts.mcp_config = Some(vec![path.to_string_lossy().to_string()]);
-                        opts.strict_mcp_config = true;
-                    }
-                    Err(e) => tracing::warn!(
-                        worker = %worker_name, error = %e,
-                        "failed to write worker mcp-config — launching without it"
-                    ),
-                }
-            }
-            Err(e) => tracing::warn!(
-                worker = %worker_name, error = %e,
-                "failed to generate worker mcp-config — launching without it"
-            ),
-        }
-        mgr.create_agent_session_with_opts(&worker_name, &work_dir, agent, Some(&full_prompt), opts)
-            .await
-    } else {
-        mgr.create_session_with_agent(&worker_name, Some(&work_dir), agent, Some(&full_prompt))
-            .await
-    };
-    if let Err(e) = spawn_result {
-        if let Some(attempt) = &v3_attempt {
-            let _ = transition_v3_worker_attempt(
-                &config,
-                &worker_name,
-                attempt,
-                omega_core::mission::TaskAttemptState::Cancelled,
-            );
-        }
-        // Roll back the scope claim so a failed spawn doesn't lock files forever.
-        let _ = omega_core::scope::ScopeClaim::release(&config.state_dir, &worker_name);
-        return Err(e);
-    }
-    if let Some(attempt) = &v3_attempt {
-        if let Err(error) = transition_v3_worker_attempt(
-            &config,
-            &worker_name,
-            attempt,
-            omega_core::mission::TaskAttemptState::Running,
-        ) {
-            let _ = mgr.kill_session(&worker_name).await;
-            let _ = omega_core::scope::ScopeClaim::release(&config.state_dir, &worker_name);
-            return Err(error.context(
-                "worker spawn rolled back because the authoritative V3 running transition failed",
+    ) {
+        Ok(attempt) => attempt,
+        Err(error) => {
+            return Err(rollback_worker_worktree_error(
+                created_worktree.as_ref(),
+                error,
             ));
         }
-    }
-
-    // Register the worker under its oracle so the patrol routes its done/blocked
-    // events to the right parent and the TUI shows it under the oracle.
-    if let Some(ref oracle_name) = oracle_session {
-        // Serialize the read-modify-write of the oracle state behind an exclusive
-        // advisory lock so two concurrent spawns can't both read the old state,
-        // both append their worker, and have the second write clobber the first's
-        // entry (the idempotent check in register_worker only dedups the SAME
-        // session, not concurrent different sessions). std-only mutex: an atomic
-        // create_dir on a per-oracle lock dir, bounded-spin then proceed best-effort.
-        let lock_dir = config
-            .state_dir
-            .join(format!(".oracle-{}.lock", oracle_name));
-        let mut held_lock = false;
-        for _ in 0..50 {
-            match std::fs::create_dir(&lock_dir) {
-                Ok(()) => {
-                    held_lock = true;
-                    break;
-                }
-                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-                    std::thread::sleep(std::time::Duration::from_millis(20));
-                }
-                Err(_) => break, // unexpected IO error — proceed unlocked, best-effort
+    };
+    let preliminary = omega_core::worker_runtime::WorkerRuntimeIntent {
+        attempt: omega_core::worker_runtime::WorkerAttemptIdentity {
+            mission_id: v3_attempt.mission_id().clone(),
+            plan_revision: v3_attempt.plan_revision(),
+            plan_digest: v3_attempt.plan_digest.clone(),
+            task_id: v3_attempt.task_id().to_string(),
+            attempt_id: v3_attempt.attempt_id().to_string(),
+            owner: worker_base.clone(),
+        },
+        launch: omega_core::worker_runtime::WorkerLaunchIdentity {
+            session: worker_base.clone(),
+            expected_command_digest: "0".repeat(64),
+            authority_workspace: source_work_dir.clone(),
+            execution_workspace: std::path::PathBuf::from(&work_dir),
+            worktree: worktree_provenance.clone(),
+            project: project_name.clone(),
+            provider: agent.name().to_string(),
+        },
+        scope: None,
+    };
+    let runtime_id = match preliminary.runtime_generation() {
+        Ok(runtime_id) => runtime_id,
+        Err(error) => {
+            return Err(rollback_unstarted_worker(
+                &config,
+                &v3_attempt,
+                &worker_base,
+                created_worktree.as_ref(),
+                error.context("cannot derive worker runtime generation"),
+            ));
+        }
+    };
+    let worker_session = match preliminary.generation_scoped_session(&worker_base) {
+        Ok(worker_session) => worker_session,
+        Err(error) => {
+            return Err(rollback_unstarted_worker(
+                &config,
+                &v3_attempt,
+                &worker_base,
+                created_worktree.as_ref(),
+                error.context("cannot derive generation-scoped worker session"),
+            ));
+        }
+    };
+    let gate_path =
+        match omega_core::worker_runtime::worker_start_gate_path(&config.state_dir, &runtime_id) {
+            Ok(path) => path,
+            Err(error) => {
+                return Err(rollback_unstarted_worker(
+                    &config,
+                    &v3_attempt,
+                    &worker_session,
+                    created_worktree.as_ref(),
+                    error.context("cannot derive private worker start-gate path"),
+                ));
             }
+        };
+    let mut launch_prompt = full_prompt;
+    launch_prompt.push_str(&format!(
+        "\n\n## SESSION IDENTITY\nYou are worker `{worker_session}`. This generation-scoped identity binds rmux, \
+         mission `{}`, task `{}`, attempt `{}`, and every OmegaOS state file. Use it verbatim in \
+         `omega done {worker_session} …` and never substitute the shorter task name.\n",
+        v3_attempt.mission_id().as_str(),
+        v3_attempt.task_id(),
+        v3_attempt.attempt_id(),
+    ));
+    let launch_result = (|| -> Result<(
+        omega_core::agents::AgentLaunch,
+        Option<(std::path::PathBuf, String)>,
+    )> {
+        if matches!(agent, omega_core::agents::Agent::Claude) {
+            let mut opts = omega_core::agents::LaunchOptions {
+                permission_mode: Some("auto".to_string()),
+                disallowed_tools: Some("Bash(git push:*) Bash(rm:*) Bash(sudo:*)".to_string()),
+                session_name: Some(worker_session.clone()),
+                ..Default::default()
+            };
+            let json = omega_core::mcp_servers::generate_mcp_config(&config, &worker_session)
+                .context("cannot generate hermetic worker MCP config")?;
+            let path = config.state_dir.join(format!("{runtime_id}.mcp.json"));
+            opts.mcp_config = Some(vec![path.to_string_lossy().to_string()]);
+            opts.strict_mcp_config = true;
+            Ok((
+                agent.try_launch_with(Some(&launch_prompt), opts)?,
+                Some((path, json)),
+            ))
+        } else {
+            Ok((agent.try_launch(Some(&launch_prompt))?, None))
         }
-
-        // Upsert: if the oracle never wrote a full state, create a minimal one
-        // so the worker→oracle link is ALWAYS persisted. Previously this only
-        // updated an EXISTING state and silently dropped the link otherwise —
-        // which is why the menu couldn't nest these workers under their oracle.
-        let mut state =
-            omega_core::oracle_lifecycle::OracleState::read(&config.state_dir, oracle_name)
-                .ok()
-                .flatten()
-                .unwrap_or_else(|| {
-                    omega_core::oracle_lifecycle::OracleState::new_minimal(
-                        oracle_name,
-                        project_name.as_deref().unwrap_or(""),
-                        std::path::PathBuf::from(work_dir),
-                    )
-                });
-        state.register_worker(omega_core::oracle_lifecycle::WorkerEntry {
-            session_name: worker_name.clone(),
-            task_id: task.to_string(),
-            task_name: task.to_string(),
-            attempt_id: v3_attempt
-                .as_ref()
-                .map(|attempt| attempt.attempt_id.clone()),
-            plan_revision: v3_attempt.as_ref().map(|attempt| attempt.plan_revision),
-            files_owned: files.clone().unwrap_or_default(),
-            dispatched_at: chrono::Utc::now(),
-            status: omega_core::oracle_lifecycle::WorkerEntryStatus::Running,
-        });
-        // The worker is ALREADY spawned at this point, so a write failure cannot
-        // be rolled back by releasing the scope (that would free the files the
-        // running worker still owns and let another worker clobber them). Instead
-        // surface the failure loudly + retry a few times so the worker→oracle link
-        // isn't silently lost; patrol can still reconcile an orphan from the error.
-        let mut last_err = None;
-        for attempt in 0..3 {
-            match state.write(&config.state_dir) {
-                Ok(()) => {
-                    last_err = None;
-                    break;
-                }
-                Err(e) => {
-                    last_err = Some(e);
-                    if attempt < 2 {
-                        std::thread::sleep(std::time::Duration::from_millis(50));
-                    }
-                }
+    })();
+    let (launch, deferred_mcp) = match launch_result {
+        Ok(launch) => launch,
+        Err(error) => {
+            return Err(rollback_unstarted_worker(
+                &config,
+                &v3_attempt,
+                &worker_session,
+                created_worktree.as_ref(),
+                error.context("cannot construct typed gated worker launch"),
+            ));
+        }
+    };
+    let expected_command_digest = match omega_core::session::gated_agent_launch_command_digest(
+        &launch,
+        &gate_path,
+        &runtime_id,
+    ) {
+        Ok(digest) => digest,
+        Err(error) => {
+            return Err(rollback_unstarted_worker(
+                &config,
+                &v3_attempt,
+                &worker_session,
+                created_worktree.as_ref(),
+                error.context("cannot bind worker launch command digest"),
+            ));
+        }
+    };
+    let ledger = match omega_core::mission_ledger::MissionLedger::open(
+        config.state_dir.join("mission-engine-v3.sqlite3"),
+    ) {
+        Ok(ledger) => ledger,
+        Err(error) => {
+            return Err(rollback_unstarted_worker(
+                &config,
+                &v3_attempt,
+                &worker_session,
+                created_worktree.as_ref(),
+                anyhow::anyhow!("cannot reopen mission ledger for worker dispatch: {error}"),
+            ));
+        }
+    };
+    if let Err(error) = omega_core::orchestration::claim_authoritative_scopes(
+        &ledger,
+        &config.state_dir,
+        std::path::Path::new(&work_dir),
+        &mut v3_attempt.authority,
+        &worker_session,
+        files.as_deref().unwrap_or(&[]),
+        std::time::Duration::from_secs(24 * 60 * 60),
+    ) {
+        return Err(rollback_unstarted_worker(
+            &config,
+            &v3_attempt,
+            &worker_session,
+            created_worktree.as_ref(),
+            error.context("authoritative worker scope acquisition failed"),
+        ));
+    }
+    let runtime_scope = match worker_runtime_scope(&v3_attempt.authority) {
+        Ok(scope) => scope,
+        Err(error) => {
+            return Err(rollback_unstarted_worker(
+                &config,
+                &v3_attempt,
+                &worker_session,
+                created_worktree.as_ref(),
+                error.context("freezing worker scope receipt and fences failed"),
+            ));
+        }
+    };
+    let intent = omega_core::worker_runtime::WorkerRuntimeIntent {
+        attempt: omega_core::worker_runtime::WorkerAttemptIdentity {
+            mission_id: v3_attempt.mission_id().clone(),
+            plan_revision: v3_attempt.plan_revision(),
+            plan_digest: v3_attempt.plan_digest.clone(),
+            task_id: v3_attempt.task_id().to_string(),
+            attempt_id: v3_attempt.attempt_id().to_string(),
+            owner: worker_session.clone(),
+        },
+        launch: omega_core::worker_runtime::WorkerLaunchIdentity {
+            session: worker_session.clone(),
+            expected_command_digest,
+            authority_workspace: source_work_dir.clone(),
+            execution_workspace: std::path::PathBuf::from(&work_dir),
+            worktree: worktree_provenance,
+            project: project_name.clone(),
+            provider: agent.name().to_string(),
+        },
+        scope: runtime_scope,
+    };
+    let mut runtime =
+        match omega_core::worker_runtime::WorkerRuntimeManifest::prepare(&config.state_dir, intent)
+        {
+            Ok(runtime) => runtime,
+            Err(error) => {
+                return Err(rollback_unstarted_worker(
+                    &config,
+                    &v3_attempt,
+                    &worker_session,
+                    created_worktree.as_ref(),
+                    error.context("worker runtime intent publication failed"),
+                ));
             }
-        }
-        if let Some(e) = last_err {
-            tracing::error!(
-                worker = %worker_name, oracle = %oracle_name, error = %e,
-                "worker spawned but FAILED to persist worker→oracle registration after retries — \
-                 worker is running orphaned (not nested under oracle); patrol must reconcile"
-            );
-            eprintln!(
-                "[!] worker {} spawned but registration under oracle {} failed: {} \
-                 (worker is running; it will not show nested under its oracle until reconciled)",
-                worker_name, oracle_name, e
-            );
-        }
+        };
+    if let Some(parent_mission_id) = &v3_attempt.parent_mission_id {
+        let link = match omega_core::orchestration::link_authoritative_child_mission(
+            &ledger,
+            parent_mission_id,
+            v3_attempt.mission_id(),
+            &worker_session,
+            runtime.manifest_digest(),
+            &worker_session,
+        ) {
+            Ok(link) => link,
+            Err(error) => {
+                return Err(rollback_spawned_worker(
+                    &mgr,
+                    &config,
+                    &v3_attempt,
+                    &runtime,
+                    &worker_session,
+                    None,
+                    created_worktree.as_ref(),
+                    error.context("atomic parent/child mission link failed"),
+                )
+                .await);
+            }
+        };
+        runtime = match runtime.bind_parent_link(&config.state_dir, link) {
+            Ok(runtime) => runtime,
+            Err(error) => {
+                return Err(rollback_spawned_worker(
+                    &mgr,
+                    &config,
+                    &v3_attempt,
+                    &runtime,
+                    &worker_session,
+                    None,
+                    created_worktree.as_ref(),
+                    error.context("worker runtime parent-link binding failed"),
+                )
+                .await);
+            }
+        };
+    }
 
-        if held_lock {
-            let _ = std::fs::remove_dir(&lock_dir);
+    let runtime_gate_path = match runtime.start_gate_path(&config.state_dir) {
+        Ok(path) => path,
+        Err(error) => {
+            return Err(rollback_spawned_worker(
+                &mgr,
+                &config,
+                &v3_attempt,
+                &runtime,
+                &worker_session,
+                None,
+                created_worktree.as_ref(),
+                error.context("prepared runtime has no valid private start-gate path"),
+            )
+            .await);
+        }
+    };
+    if runtime_gate_path != gate_path || runtime.start_gate_value() != runtime_id {
+        return Err(rollback_spawned_worker(
+            &mgr,
+            &config,
+            &v3_attempt,
+            &runtime,
+            &worker_session,
+            None,
+            created_worktree.as_ref(),
+            anyhow::anyhow!("worker runtime start gate differs from its prepared generation"),
+        )
+        .await);
+    }
+    if std::fs::symlink_metadata(&gate_path).is_ok() {
+        return Err(rollback_spawned_worker(
+            &mgr,
+            &config,
+            &v3_attempt,
+            &runtime,
+            &worker_session,
+            None,
+            created_worktree.as_ref(),
+            anyhow::anyhow!("worker start gate already exists for a fresh runtime generation"),
+        )
+        .await);
+    }
+    for marker in [
+        format!("worker-{worker_session}.done.json"),
+        format!("worker-blocked-{worker_session}.json"),
+        format!("worker-close-{worker_session}.json"),
+    ] {
+        if std::fs::symlink_metadata(config.state_dir.join(&marker)).is_ok() {
+            return Err(rollback_spawned_worker(
+                &mgr,
+                &config,
+                &v3_attempt,
+                &runtime,
+                &worker_session,
+                None,
+                created_worktree.as_ref(),
+                anyhow::anyhow!("fresh worker generation collides with existing marker {marker}"),
+            )
+            .await);
         }
     }
 
-    println!("● Worker spawned: {}", worker_name);
-    if let Some(p) = &project_name {
-        println!("  Under project: {}", p);
+    if let Some((path, json)) = deferred_mcp {
+        if let Err(error) = atomic_write_private(&path, json.as_bytes()) {
+            return Err(rollback_spawned_worker(
+                &mgr,
+                &config,
+                &v3_attempt,
+                &runtime,
+                &worker_session,
+                None,
+                created_worktree.as_ref(),
+                error.context("cannot publish hermetic worker MCP config"),
+            )
+            .await);
+        }
     }
-    if let Some(ref files) = files {
+    let session = match mgr
+        .create_recorded_agent_session_create_only_gated(
+            &worker_session,
+            Some(&work_dir),
+            agent,
+            launch,
+            &gate_path,
+            runtime.start_gate_value(),
+        )
+        .await
+    {
+        Ok(session) => session,
+        Err(error) => {
+            return Err(rollback_spawned_worker(
+                &mgr,
+                &config,
+                &v3_attempt,
+                &runtime,
+                &worker_session,
+                None,
+                created_worktree.as_ref(),
+                error.context("typed create-only gated worker launch failed"),
+            )
+            .await);
+        }
+    };
+
+    if let Err(error) = transition_v3_worker_attempt(
+        &config,
+        &worker_session,
+        &v3_attempt,
+        omega_core::mission::TaskAttemptState::Running,
+    ) {
+        return Err(rollback_spawned_worker(
+            &mgr,
+            &config,
+            &v3_attempt,
+            &runtime,
+            &worker_session,
+            None,
+            created_worktree.as_ref(),
+            error.context("authoritative worker Running transition failed"),
+        )
+        .await);
+    }
+    let observed = match mgr
+        .observe_worker_process(&session, &worker_session, std::path::Path::new(&work_dir))
+        .await
+    {
+        Ok(observed) => observed,
+        Err(error) => {
+            return Err(rollback_spawned_worker(
+                &mgr,
+                &config,
+                &v3_attempt,
+                &runtime,
+                &worker_session,
+                None,
+                created_worktree.as_ref(),
+                error.context("stable worker process observation failed"),
+            )
+            .await);
+        }
+    };
+    runtime = match runtime.activate_started(&config.state_dir, observed.clone()) {
+        Ok(runtime) => runtime,
+        Err(error) => {
+            return Err(rollback_spawned_worker(
+                &mgr,
+                &config,
+                &v3_attempt,
+                &runtime,
+                &worker_session,
+                Some(&observed),
+                created_worktree.as_ref(),
+                error.context("worker runtime activation failed"),
+            )
+            .await);
+        }
+    };
+    if let Some(oracle_name) = &oracle_session {
+        if let Err(error) = register_worker_under_oracle(
+            &config,
+            oracle_name,
+            &project_name,
+            &work_dir,
+            &worker_session,
+            task,
+            &v3_attempt,
+            files.as_deref().unwrap_or(&[]),
+        ) {
+            return Err(rollback_spawned_worker(
+                &mgr,
+                &config,
+                &v3_attempt,
+                &runtime,
+                &worker_session,
+                Some(&observed),
+                created_worktree.as_ref(),
+                error.context("worker-to-Oracle registry publication failed"),
+            )
+            .await);
+        }
+    }
+    if let Err(error) = runtime.release_start_gate(&config.state_dir) {
+        return Err(rollback_spawned_worker(
+            &mgr,
+            &config,
+            &v3_attempt,
+            &runtime,
+            &worker_session,
+            Some(&observed),
+            created_worktree.as_ref(),
+            error.context("worker start-gate release failed"),
+        )
+        .await);
+    }
+
+    println!("● Worker spawned: {}", worker_session);
+    println!("  Project: {}", project_name);
+    println!("  Mission: {}", v3_attempt.mission_id().as_str());
+    println!("  Attempt: {}", v3_attempt.attempt_id());
+    if let Some(files) = files.as_ref().filter(|files| !files.is_empty()) {
         println!("  Scope claimed: {}", files.join(", "));
     }
     Ok(())
@@ -7093,7 +9072,7 @@ async fn cmd_kill_all(yes: bool) -> Result<()> {
 }
 
 async fn cmd_cleanup(yes: bool) -> Result<()> {
-    let config = OmegaConfig::load().unwrap_or_default();
+    let config = OmegaConfig::load().context("cannot load OmegaOS config for cleanup")?;
     config.ensure_dirs()?;
     let mgr = SessionManager::connect().await?;
     let sessions = mgr.list_sessions().await?;
@@ -7270,7 +9249,7 @@ fn fmt_status(status: Option<u32>, expected: u32) -> String {
 
 async fn cmd_resurrect(oracle: Option<String>) -> Result<()> {
     use omega_core::dispatch::ResurrectOutcome;
-    let config = OmegaConfig::load().unwrap_or_default();
+    let config = OmegaConfig::load().context("cannot load OmegaOS config for resurrection")?;
     let mgr = SessionManager::connect().await?;
     let dispatcher = omega_core::dispatch::Dispatcher::new(mgr, config.clone());
     let targets = match oracle {
@@ -7357,7 +9336,7 @@ async fn doctor_checks(config: &OmegaConfig, deep: bool) -> Vec<omega_core::doct
 }
 
 async fn cmd_doctor(fix: bool, deep: bool) -> Result<()> {
-    let config = OmegaConfig::load().unwrap_or_default();
+    let config = OmegaConfig::load().context("cannot load OmegaOS config for doctor")?;
     let mut checks = doctor_checks(&config, deep).await;
     println!("OmegaOS doctor\n");
     for c in &checks {
@@ -7449,7 +9428,7 @@ fn cmd_doctor_pre_reset() -> Result<()> {
 /// `omega backup` — archive the irreproducible OmegaOS state. Projects are never
 /// bundled (only reported); they belong to the user's own git.
 fn cmd_backup(out: Option<String>, include_memory: bool) -> Result<()> {
-    let config = OmegaConfig::load().unwrap_or_default();
+    let config = OmegaConfig::load().context("cannot load OmegaOS config for backup")?;
     let ts = chrono::Local::now().format("%Y%m%d-%H%M%S").to_string();
     let report = omega_core::backup::run_backup(
         &config,
@@ -7522,14 +9501,16 @@ async fn cmd_team(
     count: usize,
     dir: Option<&str>,
     member_specs: &[String],
+    scope_specs: &[String],
 ) -> Result<()> {
-    let config = OmegaConfig::load().unwrap_or_default();
+    let config = OmegaConfig::load().context("cannot load OmegaOS config for team mutation")?;
     config.ensure_dirs()?;
     let mgr = SessionManager::connect().await?;
 
     let work_dir = dir.unwrap_or(".").to_string();
-    let session_name = format!("Team-{}", project);
+    let session_name = omega_core::session::sanitize_session_name(&format!("Team-{}", project));
 
+    let declared_scopes = parse_team_member_scopes(scope_specs)?;
     let mut members: Vec<omega_core::team::TeamMember> = member_specs
         .iter()
         .map(|spec| {
@@ -7539,30 +9520,64 @@ async fn cmd_team(
                 .get(1)
                 .unwrap_or(&"Implement your assigned task")
                 .to_string();
+            let files_owned = declared_scopes.get(&name).cloned().unwrap_or_default();
             omega_core::team::TeamMember {
                 name,
-                role: "worker".to_string(),
+                role: if files_owned.is_empty() {
+                    "reviewer".to_string()
+                } else {
+                    "worker".to_string()
+                },
                 prompt,
-                files_owned: Vec::new(),
+                files_owned,
             }
         })
         .collect();
 
-    // `--count N` (no explicit members) → spawn N generic workers. This is what
-    // the flag always meant; it was previously parsed and ignored.
+    // `--count N` (no explicit members) creates one explicitly-scoped writer
+    // and N-1 read-only reviewers. Two generic writers both owning `**/*`
+    // would violate R-SCOPE before either had a chance to do useful work.
     if members.is_empty() && count > 0 {
         members = (1..=count)
-            .map(|i| omega_core::team::TeamMember {
-                name: format!("worker-{}", i),
-                role: "worker".to_string(),
-                prompt: "Implement your assigned task".to_string(),
-                files_owned: Vec::new(),
+            .map(|i| {
+                let name = format!("worker-{}", i);
+                let files_owned = declared_scopes.get(&name).cloned().unwrap_or_else(|| {
+                    if i == 1 {
+                        vec!["**/*".to_string()]
+                    } else {
+                        Vec::new()
+                    }
+                });
+                omega_core::team::TeamMember {
+                    name,
+                    role: if files_owned.is_empty() {
+                        "reviewer".to_string()
+                    } else {
+                        "worker".to_string()
+                    },
+                    prompt: "Implement your assigned task".to_string(),
+                    files_owned,
+                }
             })
             .collect();
     }
 
     if members.is_empty() {
         anyhow::bail!("No team members. Use: omega team Project member1:prompt member2:prompt  (or --count N for N generic workers)");
+    }
+
+    let known_members: std::collections::BTreeSet<&str> =
+        members.iter().map(|member| member.name.as_str()).collect();
+    let unknown_scopes: Vec<&str> = declared_scopes
+        .keys()
+        .map(String::as_str)
+        .filter(|name| !known_members.contains(name))
+        .collect();
+    if !unknown_scopes.is_empty() {
+        anyhow::bail!(
+            "--scope names member(s) not present in the team specification: {}",
+            unknown_scopes.join(", ")
+        );
     }
 
     let team_config = omega_core::team::TeamConfig {
@@ -7573,7 +9588,7 @@ async fn cmd_team(
         members: members.clone(),
     };
 
-    let spawner = omega_core::team::TeamSpawner::new(&mgr);
+    let spawner = omega_core::team::TeamSpawner::new(&mgr).with_state_dir(config.state_dir.clone());
     let _panes = spawner.spawn_team(&team_config).await?;
 
     println!("◆ Team spawned: {}", session_name);
@@ -7581,6 +9596,35 @@ async fn cmd_team(
         println!("  ● [{}] {}", i, member.name);
     }
     Ok(())
+}
+
+fn parse_team_member_scopes(
+    specs: &[String],
+) -> Result<std::collections::BTreeMap<String, Vec<String>>> {
+    let mut scopes = std::collections::BTreeMap::new();
+    for spec in specs {
+        let (member, paths) = spec.split_once('=').ok_or_else(|| {
+            anyhow::anyhow!("invalid --scope `{spec}`; expected MEMBER=PATH[,PATH...]")
+        })?;
+        let member = member.trim();
+        if member.is_empty() {
+            anyhow::bail!("invalid --scope `{spec}`: member name is empty");
+        }
+        if scopes.contains_key(member) {
+            anyhow::bail!("duplicate --scope for team member `{member}`");
+        }
+        let paths: Vec<String> = paths
+            .split(',')
+            .map(str::trim)
+            .filter(|path| !path.is_empty())
+            .map(str::to_string)
+            .collect();
+        if paths.is_empty() {
+            anyhow::bail!("invalid --scope `{spec}`: at least one path is required");
+        }
+        scopes.insert(member.to_string(), paths);
+    }
+    Ok(scopes)
 }
 
 /// Live mission progress: merge-write ~/.omega/state/oracle-<key>.progress.json,
@@ -7797,14 +9841,15 @@ fn cmd_progress(
     status: Option<&str>,
     json: bool,
 ) -> Result<()> {
-    let config = OmegaConfig::load().unwrap_or_default();
     // READ-BACK: no --plan and no --task means the caller is asking WHAT the
     // plan is, not changing it. `--status` alone is deliberately counted as
     // non-mutating: it was already a no-op (the status is only ever read
     // inside `if let Some(t) = task`), so nothing that works today changes.
     if plan.is_none() && task.is_none() {
+        let config = OmegaConfig::load().unwrap_or_default();
         return cmd_progress_readback(&config.state_dir, session, json);
     }
+    let config = OmegaConfig::load().context("cannot load OmegaOS config for progress mutation")?;
     let key = session.strip_prefix("oracle-").unwrap_or(session);
     // The ledger owns this file now. It resolves the SAME path, keeps the same
     // `{tasks:[{t,s}], done, total, ts}` keys, preserves every foreign field the
@@ -7937,7 +9982,17 @@ fn v3_declared_artifacts(
     state_dir: &std::path::Path,
     session: &str,
 ) -> Result<Vec<omega_core::done::DoneArtifact>> {
-    let Some((mission_id, task_id)) =
+    let runtime_binding =
+        omega_core::worker_runtime::WorkerRuntimeManifest::resolve_session_strict(
+            state_dir, session,
+        )?
+        .map(|runtime| {
+            (
+                runtime.attempt().mission_id.clone(),
+                runtime.attempt().task_id.clone(),
+            )
+        });
+    let oracle_binding = runtime_binding.or_else(|| {
         omega_core::oracle_lifecycle::OracleState::read_all(state_dir)
             .into_iter()
             .find_map(|state| {
@@ -7947,7 +10002,14 @@ fn v3_declared_artifacts(
                     .find(|worker| worker.session_name == session)
                     .map(|worker| (state.mission_id.clone(), worker.task_id.clone()))
             })
-    else {
+    });
+    let team_binding = if oracle_binding.is_none() {
+        omega_core::team::resolve_team_member_binding(state_dir, session)?
+            .map(|binding| (binding.mission_id, binding.task_id))
+    } else {
+        None
+    };
+    let Some((mission_id, task_id)) = oracle_binding.or(team_binding) else {
         return Ok(Vec::new());
     };
     if mission_id.as_str().is_empty() {
@@ -7997,13 +10059,241 @@ fn v3_declared_artifacts(
         .collect())
 }
 
+fn worker_completion_artifact_root(
+    runtime: &omega_core::worker_runtime::WorkerRuntimeManifest,
+) -> Result<std::path::PathBuf> {
+    worker_completion_artifact_root_from(runtime, &std::env::current_dir()?)
+}
+
+fn worker_completion_artifact_root_from(
+    runtime: &omega_core::worker_runtime::WorkerRuntimeManifest,
+    invocation_dir: &std::path::Path,
+) -> Result<std::path::PathBuf> {
+    let cwd = std::fs::canonicalize(invocation_dir)
+        .context("canonicalizing worker completion invocation directory")?;
+    let workspace = runtime.workspace();
+    if !cwd.starts_with(workspace) {
+        anyhow::bail!(
+            "worker completion invocation directory {} is outside runtime workspace {}",
+            cwd.display(),
+            workspace.display()
+        );
+    }
+    Ok(workspace.to_path_buf())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct OrchestratorOracleAttempt {
+    mission_id: omega_core::mission::MissionId,
+    task_id: String,
+    attempt_id: String,
+    plan_revision: u64,
+}
+
+/// Resolve the single V3 task attempt created by `omega orchestrate` for a
+/// complex/epic Oracle session.
+///
+/// The orchestrator session name ends in the opaque mission id. That string is
+/// only a lookup hint: the materialized projection, replayed projection, exact
+/// active plan, task name, attempt row, replayed attempt, and Running actor must
+/// all agree before this process is allowed to mint completion provenance.
+fn resolve_orchestrator_oracle_attempt(
+    state_dir: &std::path::Path,
+    session: &str,
+) -> Result<Option<OrchestratorOracleAttempt>> {
+    if omega_core::session::OmegaSession::classify(session).role
+        != omega_core::session::SessionRole::Oracle
+    {
+        return Ok(None);
+    }
+    let Some((_, digest)) = session.rsplit_once("-m-") else {
+        return Ok(None);
+    };
+    if digest.len() != 32 || !digest.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Ok(None);
+    }
+    let mission_id = omega_core::mission::MissionId(format!("m-{digest}"));
+    let ledger_path = omega_core::oracle_lifecycle::mission_ledger_path(state_dir);
+    if path_metadata_if_present(&ledger_path, "mission ledger")?.is_none() {
+        return Ok(None);
+    }
+    let ledger = omega_core::mission_ledger::MissionLedger::open(ledger_path)?;
+    let Some(projection) = ledger.mission(&mission_id)? else {
+        return Ok(None);
+    };
+    let replayed = ledger.replay(&mission_id)?;
+    if replayed != projection || projection.state != omega_core::mission::MissionState::Running {
+        anyhow::bail!(
+            "orchestrator completion authority is inconsistent for mission {}",
+            mission_id.as_str()
+        );
+    }
+    let Some(plan) = ledger.active_plan(&mission_id)? else {
+        anyhow::bail!(
+            "orchestrator completion refused: mission {} has no active plan",
+            mission_id.as_str()
+        );
+    };
+    let task_id = format!("{}-oracle", mission_id.as_str());
+    if !plan
+        .tasks
+        .iter()
+        .any(|task| task.task_id.as_str() == task_id && task.name == "oracle")
+    {
+        anyhow::bail!(
+            "orchestrator completion refused: active plan does not declare Oracle task {task_id}"
+        );
+    }
+    let attempts = ledger.task_attempts(&mission_id)?;
+    let mut candidates = attempts.iter().filter(|attempt| {
+        attempt.task_id == task_id
+            && attempt.plan_revision == plan.revision
+            && matches!(
+                attempt.state,
+                omega_core::mission::TaskAttemptState::Running
+                    | omega_core::mission::TaskAttemptState::CandidateDone
+            )
+    });
+    let Some(attempt) = candidates.next() else {
+        anyhow::bail!(
+            "orchestrator completion refused: Oracle task {task_id} has no active attempt"
+        );
+    };
+    if candidates.next().is_some() {
+        anyhow::bail!(
+            "orchestrator completion refused: Oracle task {task_id} has multiple active attempts"
+        );
+    }
+    let replayed_attempt = ledger
+        .replay_task_attempts(&mission_id)?
+        .into_iter()
+        .find(|candidate| candidate.attempt_id == attempt.attempt_id)
+        .ok_or_else(|| anyhow::anyhow!("Oracle attempt is absent from immutable ledger replay"))?;
+    if replayed_attempt != *attempt {
+        anyhow::bail!("Oracle attempt materialization diverges from immutable ledger replay");
+    }
+    let running_actor_matches = ledger.events(&mission_id)?.into_iter().any(|event| {
+        event.actor == session
+            && event.resulting_task_attempt.as_ref().is_some_and(|result| {
+                result.attempt_id == attempt.attempt_id
+                    && result.state == omega_core::mission::TaskAttemptState::Running
+            })
+    });
+    if !running_actor_matches {
+        anyhow::bail!(
+            "orchestrator completion refused: session {session} did not author the Running transition"
+        );
+    }
+    Ok(Some(OrchestratorOracleAttempt {
+        mission_id,
+        task_id,
+        attempt_id: attempt.attempt_id.clone(),
+        plan_revision: plan.revision,
+    }))
+}
+
+fn record_orchestrator_oracle_projection<T: serde::Serialize>(
+    state_dir: &std::path::Path,
+    session: &str,
+    value: &T,
+    idempotency_suffix: &str,
+    kind: &str,
+    provider: &str,
+    binding: &OrchestratorOracleAttempt,
+) -> Result<omega_core::done::ProjectionProvenance> {
+    const CAS_ATTEMPTS: usize = 8;
+    let ledger = omega_core::mission_ledger::MissionLedger::open(
+        omega_core::oracle_lifecycle::mission_ledger_path(state_dir),
+    )?;
+    let payload = serde_json::to_value(value)?;
+    for _ in 0..CAS_ATTEMPTS {
+        let current = ledger
+            .mission(&binding.mission_id)?
+            .ok_or_else(|| anyhow::anyhow!("V3 mission projection disappeared"))?;
+        let plan = ledger
+            .active_plan(&binding.mission_id)?
+            .ok_or_else(|| anyhow::anyhow!("V3 active plan disappeared"))?;
+        if plan.revision != binding.plan_revision
+            || !plan
+                .tasks
+                .iter()
+                .any(|task| task.task_id.as_str() == binding.task_id && task.name == "oracle")
+        {
+            anyhow::bail!("V3 Oracle completion binding changed before append");
+        }
+        let attempt = ledger
+            .task_attempt(&binding.attempt_id)?
+            .ok_or_else(|| anyhow::anyhow!("V3 Oracle attempt disappeared"))?;
+        if attempt.mission_id != binding.mission_id
+            || attempt.task_id != binding.task_id
+            || attempt.plan_revision != binding.plan_revision
+        {
+            anyhow::bail!("V3 Oracle attempt no longer matches its immutable binding");
+        }
+        let mut event = omega_core::mission_ledger::AppendEvent::new(
+            binding.mission_id.clone(),
+            current.version,
+            format!("{kind}:{session}:{idempotency_suffix}"),
+            session,
+            kind,
+        );
+        event.provider = Some(provider.to_string());
+        event.correlation_id = Some(session.to_string());
+        event.payload = payload.clone();
+        match attempt.state {
+            omega_core::mission::TaskAttemptState::Running => {
+                event.task_attempt = Some(omega_core::mission_ledger::TaskAttemptMutation {
+                    task_id: binding.task_id.clone(),
+                    attempt_id: binding.attempt_id.clone(),
+                    plan_revision: binding.plan_revision,
+                    expected_version: attempt.version,
+                    next_state: omega_core::mission::TaskAttemptState::CandidateDone,
+                });
+            }
+            omega_core::mission::TaskAttemptState::CandidateDone => {}
+            ref other => {
+                anyhow::bail!("V3 Oracle completion refused from non-candidate state {other:?}")
+            }
+        }
+        match ledger.append(event) {
+            Ok(appended) => {
+                return Ok(omega_core::done::ProjectionProvenance {
+                    source: "mission-engine-v3.sqlite3".to_string(),
+                    event_id: appended.event.event_id,
+                    event_sequence: appended.event.sequence,
+                    mission_version: appended.projection.version,
+                    projection_hash: appended.projection.projection_hash,
+                });
+            }
+            Err(omega_core::mission_ledger::LedgerError::VersionConflict { .. }) => continue,
+            Err(error) => return Err(error.into()),
+        }
+    }
+    anyhow::bail!(
+        "V3 Oracle completion did not converge after {CAS_ATTEMPTS} compare-and-set attempts"
+    )
+}
+
 fn record_done_projection<T: serde::Serialize>(
     state_dir: &std::path::Path,
     session: &str,
     value: &T,
     idempotency_suffix: &str,
     kind: &str,
+    provider: &str,
 ) -> Result<Option<omega_core::done::ProjectionProvenance>> {
+    if let Some(binding) = resolve_orchestrator_oracle_attempt(state_dir, session)? {
+        return record_orchestrator_oracle_projection(
+            state_dir,
+            session,
+            value,
+            idempotency_suffix,
+            kind,
+            provider,
+            &binding,
+        )
+        .map(Some);
+    }
     let ledger_path = state_dir.join("mission-engine-v3.sqlite3");
     if !ledger_path.exists() {
         return Ok(None);
@@ -8041,10 +10331,7 @@ fn record_done_projection<T: serde::Serialize>(
         });
 
     let ledger = omega_core::mission_ledger::MissionLedger::open(&ledger_path)?;
-    let Some(current) = ledger.mission(&oracle.mission_id)? else {
-        // This is a legacy OracleState created before the V3 ledger existed.
-        return Ok(None);
-    };
+    let current = oracle.require_ledger_authority(&ledger)?;
     let mut event = omega_core::mission_ledger::AppendEvent::new(
         oracle.mission_id,
         current.version,
@@ -8052,7 +10339,7 @@ fn record_done_projection<T: serde::Serialize>(
         session,
         kind,
     );
-    event.provider = Some(OmegaConfig::load().unwrap_or_default().agent_command);
+    event.provider = Some(provider.to_string());
     event.correlation_id = Some(oracle.oracle_name);
     event.payload = serde_json::to_value(value)?;
     if let Some((task_id, attempt_id, plan_revision)) = worker_attempt {
@@ -8094,9 +10381,7 @@ fn finalize_v3_oracle_delivery(
         return Ok(None);
     }
     let ledger = omega_core::mission_ledger::MissionLedger::open(ledger_path)?;
-    if ledger.mission(&state.mission_id)?.is_none() {
-        return Ok(None);
-    }
+    state.require_ledger_authority(&ledger)?;
     let Some(plan) = ledger.active_plan(&state.mission_id)? else {
         anyhow::bail!("V3 delivery refused: no accepted immutable plan");
     };
@@ -8110,6 +10395,7 @@ fn finalize_v3_oracle_delivery(
         .filter(|task| {
             !attempts.iter().any(|attempt| {
                 attempt.task_id == task.task_id.as_str()
+                    && attempt.plan_revision == plan.revision
                     && attempt.state == omega_core::mission::TaskAttemptState::Accepted
             })
         })
@@ -8188,8 +10474,279 @@ fn finalize_v3_oracle_delivery(
     }))
 }
 
+fn v3_oracle_delivery_ready(state_dir: &std::path::Path, session: &str) -> Result<Option<bool>> {
+    let Some(state) = omega_core::oracle_lifecycle::OracleState::read(state_dir, session)? else {
+        return Ok(None);
+    };
+    if state.mission_id.as_str().is_empty() {
+        return Ok(None);
+    }
+    let ledger_path = state_dir.join("mission-engine-v3.sqlite3");
+    if !ledger_path.exists() {
+        return Ok(None);
+    }
+    let ledger = omega_core::mission_ledger::MissionLedger::open(ledger_path)?;
+    state.require_ledger_authority(&ledger)?;
+    let Some(plan) = ledger.active_plan(&state.mission_id)? else {
+        return Ok(Some(false));
+    };
+    if plan.tasks.is_empty() {
+        return Ok(Some(false));
+    }
+    let attempts = ledger.task_attempts(&state.mission_id)?;
+    Ok(Some(plan.tasks.iter().all(|task| {
+        attempts.iter().any(|attempt| {
+            attempt.task_id == task.task_id.as_str()
+                && attempt.plan_revision == plan.revision
+                && attempt.state == omega_core::mission::TaskAttemptState::Accepted
+        })
+    })))
+}
+
+fn hold_v3_oracle_candidate(signal: &mut omega_core::done::OracleDoneSignal) {
+    signal.status = omega_core::done::DoneStatus::Pending;
+    signal.gate_pending = false;
+    if !signal
+        .pending_actions
+        .iter()
+        .any(|action| action == V3_ACCEPTANCE_PENDING)
+    {
+        signal
+            .pending_actions
+            .push(V3_ACCEPTANCE_PENDING.to_string());
+    }
+}
+
+fn record_worker_runtime_candidate(
+    config: &OmegaConfig,
+    runtime: &omega_core::worker_runtime::WorkerRuntimeManifest,
+    signal: DoneSignal,
+) -> Result<(
+    DoneSignal,
+    omega_core::worker_runtime::WorkerRuntimeManifest,
+)> {
+    if signal.session != runtime.session().session {
+        anyhow::bail!("worker signal session differs from its exact runtime generation");
+    }
+    if runtime.started().is_none() || !runtime.is_start_gate_released(&config.state_dir)? {
+        anyhow::bail!("worker completion refused before durable activation and gate release");
+    }
+    let ledger = omega_core::mission_ledger::MissionLedger::open(
+        config.state_dir.join("mission-engine-v3.sqlite3"),
+    )?;
+    let mission = ledger
+        .mission_record(&runtime.attempt().mission_id)?
+        .ok_or_else(|| anyhow::anyhow!("worker runtime mission disappeared"))?;
+    if std::fs::canonicalize(&mission.working_dir)? != runtime.authority_workspace()
+        || mission.project != runtime.project()
+    {
+        anyhow::bail!("worker runtime authority workspace/project differs from its mission");
+    }
+    let projection = ledger
+        .mission(&runtime.attempt().mission_id)?
+        .ok_or_else(|| anyhow::anyhow!("worker runtime mission projection disappeared"))?;
+    if projection.state != omega_core::mission::MissionState::Running {
+        anyhow::bail!(
+            "worker completion refused while mission is {:?}",
+            projection.state
+        );
+    }
+    let plan = ledger
+        .active_plan(&runtime.attempt().mission_id)?
+        .ok_or_else(|| anyhow::anyhow!("worker runtime mission has no active plan"))?;
+    if plan.revision != runtime.attempt().plan_revision
+        || plan.content_digest != runtime.attempt().plan_digest
+        || !plan
+            .tasks
+            .iter()
+            .any(|task| task.task_id.as_str() == runtime.attempt().task_id)
+    {
+        anyhow::bail!("worker runtime differs from the active immutable plan");
+    }
+    let task = ledger
+        .task_attempt(&runtime.attempt().attempt_id)?
+        .ok_or_else(|| anyhow::anyhow!("worker runtime attempt disappeared"))?;
+    if task.mission_id != runtime.attempt().mission_id
+        || task.task_id != runtime.attempt().task_id
+        || task.plan_revision != runtime.attempt().plan_revision
+        || !matches!(
+            task.state,
+            omega_core::mission::TaskAttemptState::Running
+                | omega_core::mission::TaskAttemptState::CandidateDone
+        )
+    {
+        anyhow::bail!("worker runtime attempt is not the exact active candidate authority");
+    }
+    let running_actor = ledger
+        .events(&runtime.attempt().mission_id)?
+        .into_iter()
+        .any(|event| {
+            event.actor == runtime.attempt().owner
+                && event
+                    .resulting_task_attempt
+                    .as_ref()
+                    .is_some_and(|attempt| {
+                        attempt.attempt_id == runtime.attempt().attempt_id
+                            && attempt.state == omega_core::mission::TaskAttemptState::Running
+                    })
+        });
+    if !running_actor {
+        anyhow::bail!("worker runtime owner did not author the exact Running transition");
+    }
+    let active_leases = ledger.active_leases_for_attempt(
+        &runtime.attempt().mission_id,
+        &runtime.attempt().task_id,
+        &runtime.attempt().attempt_id,
+    )?;
+    match runtime.scope() {
+        None if !active_leases.is_empty() => {
+            anyhow::bail!("read-only worker runtime unexpectedly has active leases")
+        }
+        Some(scope) => {
+            if active_leases.len() != scope.resources().len()
+                || active_leases.iter().any(|lease| {
+                    lease.owner != runtime.attempt().owner
+                        || !scope.resources().iter().any(|resource| {
+                            resource.resource_key == lease.resource_key
+                                && resource.fencing_token == lease.fencing_token
+                        })
+                })
+            {
+                anyhow::bail!("worker runtime active leases differ from frozen scope fences");
+            }
+        }
+        None => {}
+    }
+    let ledger_parent = ledger.parent_link_for_child(&runtime.attempt().mission_id)?;
+    if ledger_parent.as_ref() != runtime.parent_link() {
+        anyhow::bail!("worker runtime parent link differs from reciprocal ledger authority");
+    }
+
+    let prior = ledger
+        .events(&runtime.attempt().mission_id)?
+        .into_iter()
+        .filter(|event| {
+            event.kind == "worker_runtime_completion_candidate"
+                && event.correlation_id.as_deref() == Some(runtime.runtime_id())
+                && event.attempt_id.as_deref() == Some(runtime.attempt().attempt_id.as_str())
+        })
+        .collect::<Vec<_>>();
+    if prior.len() > 1 {
+        anyhow::bail!("worker runtime has multiple completion candidate events");
+    }
+    let (mut recorded_signal, event, candidate_digest, candidate_projection) =
+        if let Some(event) = prior.into_iter().next() {
+            let recorded_signal: DoneSignal = serde_json::from_value(event.payload.clone())?;
+            let digest = omega_core::worker_runtime::candidate_payload_digest(&event.payload)?;
+            let current = ledger
+                .mission(&runtime.attempt().mission_id)?
+                .ok_or_else(|| {
+                    anyhow::anyhow!("worker mission disappeared during candidate recovery")
+                })?;
+            (recorded_signal, event, digest, current)
+        } else {
+            if task.state != omega_core::mission::TaskAttemptState::Running {
+                anyhow::bail!("CandidateDone attempt has no exact durable candidate event");
+            }
+            let payload = serde_json::to_value(&signal)?;
+            let digest = omega_core::worker_runtime::candidate_payload_digest(&payload)?;
+            let mut append = omega_core::mission_ledger::AppendEvent::new(
+                runtime.attempt().mission_id.clone(),
+                projection.version,
+                format!("worker-runtime:{}:candidate", runtime.runtime_id()),
+                runtime.attempt().owner.clone(),
+                "worker_runtime_completion_candidate",
+            );
+            append.provider = Some(runtime.provider().to_string());
+            append.correlation_id = Some(runtime.runtime_id().to_string());
+            append.payload = payload;
+            append.task_attempt = Some(omega_core::mission_ledger::TaskAttemptMutation {
+                task_id: runtime.attempt().task_id.clone(),
+                attempt_id: runtime.attempt().attempt_id.clone(),
+                plan_revision: runtime.attempt().plan_revision,
+                expected_version: task.version,
+                next_state: omega_core::mission::TaskAttemptState::CandidateDone,
+            });
+            append.lease_assertions = active_leases
+                .iter()
+                .map(omega_core::mission_ledger::LeaseAssertion::from)
+                .collect();
+            let appended = ledger.append(append)?;
+            (signal, appended.event, digest, appended.projection)
+        };
+    let candidate = omega_core::worker_runtime::WorkerCandidateIdentity::new(
+        event.event_id.clone(),
+        candidate_digest,
+    )?;
+    let runtime = runtime.bind_candidate(&config.state_dir, candidate)?;
+    recorded_signal.projection = Some(omega_core::done::ProjectionProvenance {
+        source: "mission-engine-v3.sqlite3".to_string(),
+        event_id: event.event_id,
+        event_sequence: event.sequence,
+        mission_version: candidate_projection.version,
+        projection_hash: candidate_projection.projection_hash,
+    });
+    Ok((recorded_signal, runtime))
+}
+
+fn settle_v3_oracle_candidate(state_dir: &std::path::Path, session: &str) -> Result<bool> {
+    let Some(mut signal) = omega_core::done::OracleDoneSignal::read(state_dir, session)? else {
+        return Ok(false);
+    };
+    if !signal
+        .pending_actions
+        .iter()
+        .any(|action| action == V3_ACCEPTANCE_PENDING)
+    {
+        return Ok(false);
+    }
+    if v3_oracle_delivery_ready(state_dir, session)? != Some(true) {
+        // Guard against any legacy upgrader that looked only at the human plan
+        // and gate: V3 remains pending until every immutable attempt is accepted.
+        signal.status = omega_core::done::DoneStatus::Pending;
+        signal.gate_pending = false;
+        signal.write(state_dir)?;
+        return Ok(false);
+    }
+    let provenance = finalize_v3_oracle_delivery(state_dir, session)?.ok_or_else(|| {
+        anyhow::anyhow!("V3 candidate became ready but has no authoritative delivery")
+    })?;
+    signal.status = omega_core::done::DoneStatus::DoneClean;
+    signal.gate_pending = false;
+    signal
+        .pending_actions
+        .retain(|action| action != V3_ACCEPTANCE_PENDING);
+    signal.finished_at = chrono::Utc::now();
+    signal.duration_secs = (signal.finished_at - signal.started_at)
+        .num_seconds()
+        .max(0) as u64;
+    signal.projection = Some(provenance);
+    signal.write(state_dir)?;
+    omega_core::done::OracleDoneSignal::invalidate_notified(state_dir, session);
+    Ok(true)
+}
+
+fn settle_all_v3_oracle_candidates(state_dir: &std::path::Path) -> Vec<String> {
+    omega_core::oracle_lifecycle::OracleState::read_all(state_dir)
+        .into_iter()
+        .filter_map(
+            |state| match settle_v3_oracle_candidate(state_dir, &state.oracle_name) {
+                Ok(true) => Some(format!(
+                    "{}: authoritative attempts accepted; mission delivered",
+                    state.oracle_name
+                )),
+                Ok(false) => None,
+                Err(error) => Some(format!(
+                    "{}: V3 delivery remains pending ({error})",
+                    state.oracle_name
+                )),
+            },
+        )
+        .collect()
+}
+
 async fn cmd_done(session: &str, status: &str, summary: &str, commit: Option<&str>) -> Result<()> {
-    let config = OmegaConfig::load().unwrap_or_default();
+    let config = OmegaConfig::load().context("cannot load OmegaOS config for completion")?;
     config.ensure_dirs()?;
 
     let done_status = match status {
@@ -8224,6 +10781,14 @@ async fn cmd_done(session: &str, status: &str, summary: &str, commit: Option<&st
             .filter(|(_, n)| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()))
             .map(|(p, _)| p)
             .unwrap_or(key);
+        // `omega orchestrate` owns an exact V3 Oracle task attempt and performs
+        // its quality gate only AFTER it receives CandidateDone. Requiring the
+        // legacy per-session GateResult here creates a circular wait. Detect
+        // that authoritative path before consulting any compatibility gate;
+        // the signal is still forced Pending below, so the Oracle cannot close
+        // or self-deliver while the orchestrator verifies it.
+        let orchestrator_v3_candidate = done_status == DoneStatus::DoneClean
+            && resolve_orchestrator_oracle_attempt(&config.state_dir, session)?.is_some();
         // L4 COMPLETENESS GATE: an oracle cannot claim done_clean while its plan is
         // unfinished. The verdict is the LEDGER's — `omega_core::oracle_todo` reads the
         // same oracle-<key>.progress.json, `honest_status` decides the downgrade and the
@@ -8243,7 +10808,7 @@ async fn cmd_done(session: &str, status: &str, summary: &str, commit: Option<&st
         // separately from the downgrade because it must NOT arm the gate-pending
         // upgrade — see where `osignal.gate_pending` is assigned.
         let mut ledger_unreadable = false;
-        if final_status == omega_core::done::DoneStatus::DoneClean {
+        if final_status == omega_core::done::DoneStatus::DoneClean && !orchestrator_v3_candidate {
             match omega_core::oracle_todo::OracleTodo::load(&config.state_dir, session) {
                 Ok(todo) => {
                     // DIVERGENCE (core wins): a plan carrying a FAILED item now reports
@@ -8306,7 +10871,7 @@ async fn cmd_done(session: &str, status: &str, summary: &str, commit: Option<&st
                 }
             }
         }
-        if final_status == omega_core::done::DoneStatus::DoneClean {
+        if final_status == omega_core::done::DoneStatus::DoneClean && !orchestrator_v3_candidate {
             let gate_passed = omega_core::gate::GateResult::read(&config.state_dir, session)
                 .ok()
                 .flatten()
@@ -8326,7 +10891,7 @@ async fn cmd_done(session: &str, status: &str, summary: &str, commit: Option<&st
         // `evaluate_closure` owns that decision now; the CLI only executes the
         // ClosurePlan it hands back (kill the cascade, release the claims).
         let mut closure = omega_core::oracle_todo::ClosurePlan::default();
-        if final_status == omega_core::done::DoneStatus::DoneClean {
+        if final_status == omega_core::done::DoneStatus::DoneClean && !orchestrator_v3_candidate {
             if let (Some(todo), Ok(live)) = (
                 ledger.as_ref(),
                 async { SessionManager::connect().await?.list_sessions().await }.await,
@@ -8400,7 +10965,8 @@ async fn cmd_done(session: &str, status: &str, summary: &str, commit: Option<&st
         //
         // NOT for an unreadable ledger — see `arms_gate_upgrade`, where that
         // exclusion is stated and tested.
-        osignal.gate_pending = arms_gate_upgrade(done_status, final_status, ledger_unreadable);
+        osignal.gate_pending = !orchestrator_v3_candidate
+            && arms_gate_upgrade(done_status, final_status, ledger_unreadable);
         if osignal.gate_pending {
             // Arming the upgrade hands the verdict to a reader that does NOT use
             // the ledger: patrol recomputes nothing and trusts the on-disk `done`
@@ -8427,18 +10993,55 @@ async fn cmd_done(session: &str, status: &str, summary: &str, commit: Option<&st
                 deploy_status: None,
             });
         }
+        if orchestrator_v3_candidate {
+            // The ledger event must carry the same non-closeable candidate
+            // payload as the file. The orchestrator validates this exact
+            // status+marker pair before bridging only its in-memory view to
+            // DoneClean for independent contract verification.
+            hold_v3_oracle_candidate(&mut osignal);
+        }
         osignal.projection = record_done_projection(
             &config.state_dir,
             session,
             &osignal,
             &osignal.finished_at.to_rfc3339(),
             "legacy_oracle_completion_candidate",
+            &config.agent_command,
         )?;
-        if final_status == omega_core::done::DoneStatus::DoneClean {
-            osignal.projection =
-                finalize_v3_oracle_delivery(&config.state_dir, session)?.or(osignal.projection);
+        let v3_candidate =
+            osignal.projection.is_some() && final_status == omega_core::done::DoneStatus::DoneClean;
+        if v3_candidate && !orchestrator_v3_candidate {
+            // The ledger event above is only a candidate. Keep the filesystem
+            // signal non-closeable until patrol independently verifies every
+            // task attempt; only then may delivery advance and scope be released.
+            hold_v3_oracle_candidate(&mut osignal);
         }
         osignal.write(&config.state_dir)?;
+        if v3_candidate
+            && !orchestrator_v3_candidate
+            && v3_oracle_delivery_ready(&config.state_dir, session)? != Some(true)
+        {
+            let mut patrol = omega_core::patrol::Patrol::new(config.clone());
+            match patrol.run_once().await {
+                Ok(_) => {}
+                Err(error) => println!(
+                    "[!] independent patrol verification did not complete: {error}; V3 delivery remains pending"
+                ),
+            }
+        }
+        if v3_candidate && !orchestrator_v3_candidate {
+            if settle_v3_oracle_candidate(&config.state_dir, session)? {
+                osignal = omega_core::done::OracleDoneSignal::read(&config.state_dir, session)?
+                    .ok_or_else(|| anyhow::anyhow!("settled oracle signal disappeared"))?;
+                println!("[+] V3 attempts accepted; mission delivered");
+            } else {
+                println!("[~] Candidate recorded; waiting for independent V3 attempt acceptance");
+            }
+        } else if orchestrator_v3_candidate {
+            println!(
+                "[~] Candidate recorded; the parent orchestrator now owns verification, gate, and delivery"
+            );
+        }
         // Release the scope claims on a clean close, mirroring the worker path.
         // `ClosurePlan::scopes_to_release` names the oracle PLUS every worker that
         // cascades with it; it is empty only when the daemon was unreachable, and the
@@ -8467,7 +11070,7 @@ async fn cmd_done(session: &str, status: &str, summary: &str, commit: Option<&st
                     "{{\"ts\":\"{}\",\"event\":\"done\",\"oracle\":\"{}\",\"status\":\"{:?}\",\"summary\":{}}}\n",
                     chrono::Utc::now().to_rfc3339(),
                     key,
-                    final_status,
+                    osignal.status,
                     serde_json::to_string(summary).unwrap_or_else(|_| "\"\"".into()),
                 );
                 use std::io::Write;
@@ -8485,7 +11088,7 @@ async fn cmd_done(session: &str, status: &str, summary: &str, commit: Option<&st
         // THIS `omega done` returns cleanly and the done.json is on disk for the
         // notifier cron before the pane is killed. (Non-clean statuses stay open so the
         // operator can inspect a failed/blocked/pending oracle.)
-        if final_status == omega_core::done::DoneStatus::DoneClean {
+        if osignal.is_closeable() {
             // The finished workers die with their oracle; their scope claims were
             // released just above, with the oracle's, from the same ClosurePlan.
             if let Ok(exe) = std::env::current_exe() {
@@ -8519,6 +11122,29 @@ async fn cmd_done(session: &str, status: &str, summary: &str, commit: Option<&st
         return Ok(());
     }
 
+    // A team member is a virtual pane owner, not an rmux session. Resolve that
+    // distinction before writing any completion artifact so the signal cannot
+    // fall through to legacy authority or schedule a reap for a fake session.
+    let team_member_binding =
+        omega_core::team::resolve_team_member_binding(&config.state_dir, session)?;
+    let worker_runtime_binding = if team_member_binding.is_none() {
+        omega_core::worker_runtime::WorkerRuntimeManifest::resolve_session_strict(
+            &config.state_dir,
+            session,
+        )?
+    } else {
+        None
+    };
+    if let Some(runtime) = &worker_runtime_binding {
+        let started = runtime
+            .started()
+            .ok_or_else(|| anyhow::anyhow!("worker runtime has no durable process activation"))?;
+        SessionManager::connect()
+            .await?
+            .validate_live_worker_process(&started.observed)
+            .await
+            .context("worker completion rejected: live rmux generation differs from manifest")?;
+    }
     let mut signal = DoneSignal::new(session, done_status, summary);
     signal.commit = commit.map(|s| s.to_string());
     // A worker session represents one bounded task on the legacy projection.
@@ -8538,7 +11164,11 @@ async fn cmd_done(session: &str, status: &str, summary: &str, commit: Option<&st
     signal
         .corroboration
         .push(CorroborationSource::WorkerSelfReport);
-    if let Ok(cwd) = std::env::current_dir() {
+    let artifact_root = match worker_runtime_binding.as_ref() {
+        Some(runtime) => Some(worker_completion_artifact_root(runtime)?),
+        None => std::env::current_dir().ok(),
+    };
+    if let Some(artifact_root) = artifact_root {
         if let Some(c) = commit.filter(|c| !c.trim().is_empty()) {
             signal.artifacts.push(DoneArtifact::GitSha {
                 sha: c.to_string(),
@@ -8548,7 +11178,7 @@ async fn cmd_done(session: &str, status: &str, summary: &str, commit: Option<&st
 
         let changed = std::process::Command::new("git")
             .args(["status", "--porcelain", "--untracked-files=all"])
-            .current_dir(&cwd)
+            .current_dir(&artifact_root)
             .output()
             .ok()
             .filter(|o| o.status.success())
@@ -8580,13 +11210,30 @@ async fn cmd_done(session: &str, status: &str, summary: &str, commit: Option<&st
     for artifact in v3_declared_artifacts(&config.state_dir, session)? {
         signal.artifacts.push(artifact);
     }
-    signal.projection = record_done_projection(
-        &config.state_dir,
-        session,
-        &signal,
-        &signal.finished_at.to_rfc3339(),
-        "legacy_worker_completion_candidate",
-    )?;
+    if team_member_binding.is_some() {
+        signal = omega_core::team::record_team_member_candidate(
+            &config.state_dir,
+            &signal,
+            &config.agent_command,
+        )?
+        .ok_or_else(|| {
+            anyhow::anyhow!("team member authority disappeared before candidate append")
+        })?
+        .signal;
+    } else if let Some(runtime) = &worker_runtime_binding {
+        if is_stop_status(signal.status) {
+            signal = record_worker_runtime_candidate(&config, runtime, signal)?.0;
+        }
+    } else {
+        signal.projection = record_done_projection(
+            &config.state_dir,
+            session,
+            &signal,
+            &signal.finished_at.to_rfc3339(),
+            "legacy_worker_completion_candidate",
+            &config.agent_command,
+        )?;
+    }
     signal.write(&config.state_dir)?;
 
     println!(
@@ -8610,7 +11257,10 @@ async fn cmd_done(session: &str, status: &str, summary: &str, commit: Option<&st
     // re-derives its decision from the file just written rather than being told
     // what to do, so it is still correct if this scheduling never fires (a later
     // sweep catches it) and a no-op if it fires twice.
-    if is_stop_status(signal.status) {
+    if is_stop_status(signal.status)
+        && team_member_binding.is_none()
+        && worker_runtime_binding.is_none()
+    {
         if let Ok(exe) = std::env::current_exe() {
             // Session names are sanitized to [A-Za-z0-9._-] (no shell
             // metachars), so this format is injection-safe.
@@ -8628,12 +11278,22 @@ async fn cmd_done(session: &str, status: &str, summary: &str, commit: Option<&st
                 session
             );
         }
+    } else if is_stop_status(signal.status) && team_member_binding.is_some() {
+        let binding = team_member_binding.as_ref().expect("checked above");
+        println!(
+            "[~] team member pane is complete; aggregate session {} remains live until every member is independently settled",
+            binding.aggregate_session
+        );
+    } else if is_stop_status(signal.status) {
+        println!(
+            "[~] exact worker candidate is bound; Patrol owns containment, verification and scope release"
+        );
     }
     Ok(())
 }
 
 async fn cmd_inbox(oracle: &str, action: &str) -> Result<()> {
-    let config = OmegaConfig::load().unwrap_or_default();
+    let config = OmegaConfig::load().context("cannot load OmegaOS config for inbox access")?;
     config.ensure_dirs()?;
     let inbox = omega_core::inbox::Inbox::for_oracle(&config.state_dir, oracle);
 
@@ -8674,7 +11334,7 @@ async fn cmd_inbox(oracle: &str, action: &str) -> Result<()> {
 }
 
 async fn cmd_ship(project: &str, message: &str, unfreeze: bool) -> Result<()> {
-    let config = OmegaConfig::load().unwrap_or_default();
+    let config = OmegaConfig::load().context("cannot load OmegaOS config for ship")?;
     config.ensure_dirs()?;
 
     let project_dir = match config.find_project(project) {
@@ -8738,7 +11398,7 @@ async fn cmd_ship(project: &str, message: &str, unfreeze: bool) -> Result<()> {
     Ok(())
 }
 
-/// Interactive AISB Master chat REPL. Runs in the aisb-master pane.
+/// Interactive AISB/Atlas chat REPL. Unlike `aisb-view`, this accepts input.
 /// Each typed line is appended to the local inbox the running Telegram
 /// bridge watches; the bridge processes it as a synthetic Telegram
 /// message (same brain), so the response lands in Telegram AND in the
@@ -8759,7 +11419,7 @@ async fn cmd_aisb_chat() -> Result<()> {
 
     // Header + replay the existing conversation.
     print!("\x1b[2J\x1b[H"); // clear
-    println!("\x1b[1;36m  Ω  AISB Master — chat (local input → Telegram)\x1b[0m");
+    println!("\x1b[1;36m  Ω  AISB/Atlas chat (local input → Telegram)\x1b[0m");
     println!("  Type a message; it goes to AISB exactly like a Telegram message.");
     println!("  The reply appears here AND in your Telegram chat. Ctrl-D to exit.\n");
     if let Ok(existing) = std::fs::read_to_string(&log) {
@@ -8828,12 +11488,13 @@ async fn cmd_aisb_chat() -> Result<()> {
 }
 
 async fn cmd_patrol(interval: u64, once: bool) -> Result<()> {
-    let config = OmegaConfig::load().unwrap_or_default();
+    let config = OmegaConfig::load().context("cannot load OmegaOS config for patrol")?;
     config.ensure_dirs()?;
-    let mut patrol = omega_core::patrol::Patrol::new(config);
+    let mut patrol = omega_core::patrol::Patrol::new(config.clone());
 
     if once {
         let report = patrol.run_once().await?;
+        let v3_actions = settle_all_v3_oracle_candidates(&config.state_dir);
         println!(
             "Sessions: {} (◆{} ●{})",
             report.total_sessions, report.oracles, report.workers
@@ -8853,11 +11514,32 @@ async fn cmd_patrol(interval: u64, once: bool) -> Result<()> {
         for action in &report.actions_taken {
             println!("  → {}", action);
         }
+        for action in v3_actions {
+            println!("  → {}", action);
+        }
     } else {
         println!("Patrol daemon started (interval: {}s)", interval);
-        patrol
-            .run_loop(std::time::Duration::from_secs(interval))
-            .await?;
+        loop {
+            match patrol.run_once().await {
+                Ok(report) => {
+                    let v3_actions = settle_all_v3_oracle_candidates(&config.state_dir);
+                    tracing::info!(
+                        sessions = report.total_sessions,
+                        done_workers = report.done_workers.len(),
+                        stalled = report.stalled_workers.len(),
+                        done_oracles = report.done_oracles.len(),
+                        orphaned = report.orphaned_sessions.len(),
+                        actions = report.actions_taken.len() + v3_actions.len(),
+                        "Patrol tick"
+                    );
+                    for action in v3_actions {
+                        tracing::info!(action = %action, "V3 patrol settlement");
+                    }
+                }
+                Err(error) => tracing::warn!(error = %error, "Patrol tick failed"),
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(interval)).await;
+        }
     }
     Ok(())
 }
@@ -8869,21 +11551,20 @@ async fn cmd_gate(
     approver: Option<&str>,
     evidence: Option<&str>,
 ) -> Result<()> {
-    let config = OmegaConfig::load().unwrap_or_default();
+    let config = OmegaConfig::load().context("cannot load OmegaOS config for gate authority")?;
 
     if accept {
         // Same alias tolerance as `omega status`: the operator reads the mission
         // key off an escalation and types that.
-        let live: Vec<String> = match SessionManager::connect().await {
-            Ok(m) => m
-                .list_sessions()
-                .await
-                .unwrap_or_default()
-                .into_iter()
-                .map(|s| s.name)
-                .collect(),
-            Err(_) => Vec::new(),
-        };
+        let live: Vec<String> = SessionManager::connect()
+            .await
+            .context("gate acceptance refused because the session daemon is unavailable")?
+            .list_sessions()
+            .await
+            .context("gate acceptance refused because live sessions cannot be enumerated")?
+            .into_iter()
+            .map(|session| session.name)
+            .collect();
         let oracle = resolve_oracle_alias(oracle, &live, &config.state_dir);
         let result = omega_core::gate::GateResult::human_acceptance(
             &oracle,
@@ -9104,7 +11785,9 @@ fn closure_remedies(verdict: &ClosureVerdict, session: &str) -> Vec<String> {
         ));
     }
     if has("still running") {
-        out.push("account for the workers: omega workers   (then `omega kill <worker>`)".to_string());
+        out.push(
+            "account for the workers: omega workers   (then `omega kill <worker>`)".to_string(),
+        );
     }
     // The LAST resort, and it is named as one. `omega kill` on an oracle is not
     // a neutral close: `clear_oracle_state` deletes `oracle-<key>.progress.json`,
@@ -9180,7 +11863,8 @@ fn oracle_row(
     live_sessions: &[omega_core::session::OmegaSession],
 ) -> OracleRow {
     let key = name.strip_prefix("oracle-").unwrap_or(name);
-    let workers = omega_core::oracle_lifecycle::live_workers_of_oracle(state_dir, name, live_sessions);
+    let workers =
+        omega_core::oracle_lifecycle::live_workers_of_oracle(state_dir, name, live_sessions);
     let doc: serde_json::Value =
         std::fs::read_to_string(state_dir.join(format!("oracle-{}.progress.json", key)))
             .ok()
@@ -10696,7 +13380,8 @@ fn cmd_update(check: bool, dir: Option<&str>) -> Result<()> {
     // binary thirty commits old.
     let head = git(&["rev-parse", "--short", "HEAD"]);
     let installed = {
-        let cfg = omega_core::config::OmegaConfig::load().unwrap_or_default();
+        let cfg = omega_core::config::OmegaConfig::load()
+            .context("cannot load OmegaOS config for update state")?;
         omega_core::auto_update::AutoUpdateState::load(&cfg.state_dir).last_applied_commit
     };
     // `None` is unknown provenance, never a claim of staleness — an install
@@ -10837,46 +13522,2883 @@ fn node_command(
         .map(|s| s.to_string())
 }
 
-/// Run one node's command and turn the process result into a report.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum BoundedProcessResult {
+    Exited(i32),
+    TimedOut,
+    ContainmentFailed(String),
+    SpawnFailed(String),
+}
+
+const GRAPH_PROCESS_TOKEN_ENV: &str = "OMEGA_GRAPH_PROCESS_TOKEN";
+
+fn new_graph_process_token() -> Result<String> {
+    let random = os_random_authority_key()?;
+    let mut token = String::with_capacity(random.len() * 2);
+    use std::fmt::Write as _;
+    for byte in random {
+        write!(&mut token, "{byte:02x}").expect("writing to a String cannot fail");
+    }
+    Ok(token)
+}
+
+#[cfg(target_os = "linux")]
+fn tagged_graph_processes(token: &str) -> Vec<u32> {
+    use std::io::Read;
+
+    let expected = format!("{GRAPH_PROCESS_TOKEN_ENV}={token}");
+    let mut matches = Vec::new();
+    let Ok(entries) = std::fs::read_dir("/proc") else {
+        return matches;
+    };
+    for entry in entries.flatten() {
+        let Some(pid) = entry
+            .file_name()
+            .to_str()
+            .and_then(|value| value.parse::<u32>().ok())
+        else {
+            continue;
+        };
+        if pid == std::process::id() {
+            continue;
+        }
+        let Ok(file) = std::fs::File::open(entry.path().join("environ")) else {
+            continue;
+        };
+        let mut bytes = Vec::new();
+        if file.take(1024 * 1024).read_to_end(&mut bytes).is_err() {
+            continue;
+        }
+        if bytes
+            .split(|byte| *byte == 0)
+            .any(|field| field == expected.as_bytes())
+        {
+            matches.push(pid);
+        }
+    }
+    matches.sort_unstable();
+    matches
+}
+
+#[cfg(not(target_os = "linux"))]
+fn tagged_graph_processes(_token: &str) -> Vec<u32> {
+    Vec::new()
+}
+
+/// Kill descendants that escaped the original process group.
 ///
-/// Exit 0 is the only success. Everything else carries a reason built from the
-/// tail of stderr, because `advance` records that reason and a later
-/// `Failed` outcome names the cause instead of telling the operator only that
-/// something, somewhere, went wrong.
-fn run_node(
+/// Linux descendants inherit a per-execution environment token. `/proc` lets
+/// the parent find that token even after `setsid(2)` or a double fork severed
+/// the original PPID/PGID relationship. This is a local containment guard, not
+/// a hostile same-UID sandbox: a deliberately malicious command can erase its
+/// own environment before forking. The graph runner treats every observed
+/// escape as failure and never reports the node accepted.
+fn reap_tagged_graph_processes(token: &str) -> std::result::Result<usize, String> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(500);
+    let mut observed = std::collections::BTreeSet::new();
+    loop {
+        let pids = tagged_graph_processes(token);
+        if pids.is_empty() {
+            return Ok(observed.len());
+        }
+        observed.extend(pids.iter().copied());
+        for pid in &pids {
+            let _ = std::process::Command::new("kill")
+                .args(["-KILL", "--", &pid.to_string()])
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status();
+        }
+        if std::time::Instant::now() >= deadline {
+            let remaining = tagged_graph_processes(token);
+            if remaining.is_empty() {
+                return Ok(observed.len());
+            }
+            return Err(format!(
+                "could not terminate tagged descendant process(es): {}",
+                remaining
+                    .iter()
+                    .map(u32::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+
+fn prepare_process_group(command: &mut std::process::Command) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
+}
+
+fn stop_bounded_child(
+    child: &mut std::process::Child,
+    process_token: &str,
+) -> std::result::Result<usize, String> {
+    #[cfg(unix)]
+    {
+        // The verifier command is placed in its own process group. Killing the
+        // group prevents a timed-out wrapper from leaving grandchildren alive.
+        let group = format!("-{}", child.id());
+        let _ = std::process::Command::new("kill")
+            .args(["-KILL", "--", group.as_str()])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    reap_tagged_graph_processes(process_token)
+}
+
+fn run_bounded_status(
+    command: &mut std::process::Command,
+    timeout: std::time::Duration,
+) -> BoundedProcessResult {
+    let process_token = match new_graph_process_token() {
+        Ok(token) => token,
+        Err(error) => return BoundedProcessResult::SpawnFailed(error.to_string()),
+    };
+    command
+        .env(GRAPH_PROCESS_TOKEN_ENV, &process_token)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    prepare_process_group(command);
+    let mut child = match command.spawn() {
+        Ok(child) => child,
+        Err(error) => return BoundedProcessResult::SpawnFailed(error.to_string()),
+    };
+    let started = std::time::Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                let code = status.code().unwrap_or(-1);
+                return match stop_bounded_child(&mut child, &process_token) {
+                    Ok(0) => BoundedProcessResult::Exited(code),
+                    Ok(count) => BoundedProcessResult::ContainmentFailed(format!(
+                        "command left {count} descendant process(es) outside its process group"
+                    )),
+                    Err(error) => BoundedProcessResult::ContainmentFailed(error),
+                };
+            }
+            Ok(None) if started.elapsed() < timeout => {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            Ok(None) => {
+                return match stop_bounded_child(&mut child, &process_token) {
+                    Ok(_) => BoundedProcessResult::TimedOut,
+                    Err(error) => BoundedProcessResult::ContainmentFailed(format!(
+                        "timed out and containment cleanup failed: {error}"
+                    )),
+                };
+            }
+            Err(error) => {
+                let _ = stop_bounded_child(&mut child, &process_token);
+                return BoundedProcessResult::SpawnFailed(error.to_string());
+            }
+        }
+    }
+}
+
+fn run_bounded_capture(
+    command: &mut std::process::Command,
+    timeout: std::time::Duration,
+    capture_limit: usize,
+) -> (BoundedProcessResult, String, String) {
+    let process_token = match new_graph_process_token() {
+        Ok(token) => token,
+        Err(error) => {
+            return (
+                BoundedProcessResult::SpawnFailed(error.to_string()),
+                String::new(),
+                String::new(),
+            )
+        }
+    };
+    run_bounded_capture_with_token(command, timeout, capture_limit, process_token)
+}
+
+fn run_bounded_capture_with_token(
+    command: &mut std::process::Command,
+    timeout: std::time::Duration,
+    capture_limit: usize,
+    process_token: String,
+) -> (BoundedProcessResult, String, String) {
+    use std::io::Read;
+
+    fn drain_capped<R: Read>(mut reader: R, limit: usize) -> String {
+        let mut retained = Vec::with_capacity(limit.min(8 * 1024));
+        let mut chunk = [0_u8; 8 * 1024];
+        loop {
+            let read = match reader.read(&mut chunk) {
+                Ok(0) | Err(_) => break,
+                Ok(read) => read,
+            };
+            if limit == 0 {
+                continue;
+            }
+            if read >= limit {
+                retained.clear();
+                retained.extend_from_slice(&chunk[read - limit..read]);
+                continue;
+            }
+            let overflow = retained.len().saturating_add(read).saturating_sub(limit);
+            if overflow > 0 {
+                retained.drain(..overflow);
+            }
+            retained.extend_from_slice(&chunk[..read]);
+        }
+        String::from_utf8_lossy(&retained).into_owned()
+    }
+
+    command
+        .env(GRAPH_PROCESS_TOKEN_ENV, &process_token)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    prepare_process_group(command);
+    let mut child = match command.spawn() {
+        Ok(child) => child,
+        Err(error) => {
+            return (
+                BoundedProcessResult::SpawnFailed(error.to_string()),
+                String::new(),
+                String::new(),
+            )
+        }
+    };
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
+    let (stdout_tx, stdout_rx) = std::sync::mpsc::sync_channel(1);
+    let (stderr_tx, stderr_rx) = std::sync::mpsc::sync_channel(1);
+    let _stdout_reader = std::thread::spawn(move || {
+        let value = stdout
+            .map(|pipe| drain_capped(pipe, capture_limit))
+            .unwrap_or_default();
+        let _ = stdout_tx.send(value);
+    });
+    let _stderr_reader = std::thread::spawn(move || {
+        let value = stderr
+            .map(|pipe| drain_capped(pipe, capture_limit))
+            .unwrap_or_default();
+        let _ = stderr_tx.send(value);
+    });
+    let started = std::time::Instant::now();
+    let result = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                let code = status.code().unwrap_or(-1);
+                // A shell can exit while a background grandchild still owns
+                // the capture pipes. Kill the isolated group before joining
+                // drainers so the timeout remains a real wall-clock bound.
+                break match stop_bounded_child(&mut child, &process_token) {
+                    Ok(0) => BoundedProcessResult::Exited(code),
+                    Ok(count) => BoundedProcessResult::ContainmentFailed(format!(
+                        "command left {count} descendant process(es) outside its process group"
+                    )),
+                    Err(error) => BoundedProcessResult::ContainmentFailed(error),
+                };
+            }
+            Ok(None) if started.elapsed() < timeout => {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            Ok(None) => {
+                break match stop_bounded_child(&mut child, &process_token) {
+                    Ok(_) => BoundedProcessResult::TimedOut,
+                    Err(error) => BoundedProcessResult::ContainmentFailed(format!(
+                        "timed out and containment cleanup failed: {error}"
+                    )),
+                };
+            }
+            Err(error) => {
+                let _ = stop_bounded_child(&mut child, &process_token);
+                break BoundedProcessResult::SpawnFailed(error.to_string());
+            }
+        }
+    };
+    let drain_deadline = std::time::Duration::from_millis(500);
+    let stdout = stdout_rx.recv_timeout(drain_deadline);
+    let stderr = stderr_rx.recv_timeout(drain_deadline);
+    let (stdout, stderr) = match (stdout, stderr) {
+        (Ok(stdout), Ok(stderr)) => (stdout, stderr),
+        _ => {
+            return (
+                BoundedProcessResult::ContainmentFailed(
+                    "captured output remained open after bounded process cleanup".to_string(),
+                ),
+                String::new(),
+                String::new(),
+            )
+        }
+    };
+    (result, stdout, stderr)
+}
+
+/// Resolve a verifier path underneath the canonical graph directory.
+/// Parent traversal is rejected lexically and a path that exists is also
+/// canonicalized, which closes the symlink escape that a prefix-only check
+/// would leave open.
+fn confined_graph_path(root: &std::path::Path, declared: &str) -> Result<std::path::PathBuf> {
+    use std::path::Component;
+
+    let root = root
+        .canonicalize()
+        .with_context(|| format!("cannot canonicalize graph directory {}", root.display()))?;
+    let declared_path = std::path::Path::new(declared);
+    let relative = if declared_path.is_absolute() {
+        declared_path.strip_prefix(&root).map_err(|_| {
+            anyhow::anyhow!(
+                "absolute path {} escapes graph directory {}",
+                declared_path.display(),
+                root.display()
+            )
+        })?
+    } else {
+        declared_path
+    };
+
+    let mut candidate = root.clone();
+    for component in relative.components() {
+        match component {
+            Component::CurDir => {}
+            Component::Normal(value) => candidate.push(value),
+            Component::ParentDir => {
+                if candidate == root {
+                    anyhow::bail!(
+                        "path {} escapes graph directory {}",
+                        declared,
+                        root.display()
+                    );
+                }
+                candidate.pop();
+            }
+            Component::RootDir | Component::Prefix(_) => {
+                anyhow::bail!("path {} is not confined to the graph directory", declared)
+            }
+        }
+    }
+
+    if candidate.exists() {
+        let canonical = candidate.canonicalize().with_context(|| {
+            format!("cannot canonicalize verifier path {}", candidate.display())
+        })?;
+        if !canonical.starts_with(&root) {
+            anyhow::bail!(
+                "path {} resolves outside graph directory {}",
+                declared,
+                root.display()
+            );
+        }
+        return Ok(canonical);
+    }
+    Ok(candidate)
+}
+
+fn check_timeout(seconds: u64) -> std::time::Duration {
+    // Contract validation rejects zero. The driver additionally caps an
+    // absurd serialized value so a hostile graph cannot turn "bounded" into
+    // an effectively infinite wait.
+    std::time::Duration::from_secs(seconds.clamp(1, 86_400))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct GraphHttpTarget {
+    url: String,
+    host: String,
+    port: u16,
+    pinned_ip: std::net::IpAddr,
+}
+
+impl GraphHttpTarget {
+    fn curl_resolve_arg(&self) -> String {
+        let address = match self.pinned_ip {
+            std::net::IpAddr::V4(address) => address.to_string(),
+            std::net::IpAddr::V6(address) => format!("[{address}]"),
+        };
+        format!("{}:{}:{address}", self.host, self.port)
+    }
+}
+
+fn graph_http_ip_is_forbidden(address: std::net::IpAddr) -> bool {
+    match address {
+        std::net::IpAddr::V4(address) => {
+            let octets = address.octets();
+            address.is_unspecified()
+                || address.is_loopback()
+                || address.is_private()
+                || address.is_link_local()
+                || address.is_multicast()
+                || address.is_broadcast()
+                || octets[0] == 0
+                || (octets[0] == 100 && (64..=127).contains(&octets[1]))
+                || (octets[0] == 192 && octets[1] == 0 && octets[2] == 0)
+                || (octets[0] == 192 && octets[1] == 0 && octets[2] == 2)
+                || (octets[0] == 198 && (octets[1] == 18 || octets[1] == 19))
+                || (octets[0] == 198 && octets[1] == 51 && octets[2] == 100)
+                || (octets[0] == 203 && octets[1] == 0 && octets[2] == 113)
+                || octets[0] >= 240
+        }
+        std::net::IpAddr::V6(address) => {
+            let octets = address.octets();
+            let embedded_v4 = if octets[..10] == [0; 10] && octets[10..12] == [0xff, 0xff] {
+                Some(std::net::Ipv4Addr::new(
+                    octets[12], octets[13], octets[14], octets[15],
+                ))
+            } else {
+                None
+            };
+            address.is_unspecified()
+                || address.is_loopback()
+                || address.is_multicast()
+                || (octets[0] & 0xfe) == 0xfc
+                || (octets[0] == 0xfe && (octets[1] & 0xc0) == 0x80)
+                || (octets[0] == 0xfe && (octets[1] & 0xc0) == 0xc0)
+                || (octets[0..4] == [0x20, 0x01, 0x0d, 0xb8])
+                || embedded_v4
+                    .map(std::net::IpAddr::V4)
+                    .is_some_and(graph_http_ip_is_forbidden)
+        }
+    }
+}
+
+fn graph_http_target_from_addresses(
+    declared_url: &str,
+    addresses: &[std::net::IpAddr],
+) -> Result<GraphHttpTarget> {
+    let parsed = reqwest::Url::parse(declared_url)
+        .with_context(|| format!("invalid verifier URL {declared_url:?}"))?;
+    if !matches!(parsed.scheme(), "http" | "https") {
+        anyhow::bail!("only HTTP(S) verifier URLs are allowed");
+    }
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        anyhow::bail!("verifier URLs may not contain credentials");
+    }
+    let declared_host = parsed
+        .host_str()
+        .ok_or_else(|| anyhow::anyhow!("verifier URL has no host"))?;
+    if declared_host.ends_with('.') {
+        anyhow::bail!(
+            "trailing-dot verifier hosts are forbidden because they can bypass DNS pinning"
+        );
+    }
+    let host = declared_host.to_ascii_lowercase();
+    if host.is_empty()
+        || host == "localhost"
+        || host.ends_with(".localhost")
+        || host == "local"
+        || host.ends_with(".local")
+    {
+        anyhow::bail!("local verifier host {host:?} is forbidden");
+    }
+    let port = parsed
+        .port_or_known_default()
+        .ok_or_else(|| anyhow::anyhow!("verifier URL has no declared or default port"))?;
+
+    let mut resolved = addresses.to_vec();
+    resolved.sort();
+    resolved.dedup();
+    if resolved.is_empty() {
+        anyhow::bail!("verifier host {host:?} resolved to no addresses");
+    }
+    if let Some(forbidden) = resolved
+        .iter()
+        .copied()
+        .find(|ip| graph_http_ip_is_forbidden(*ip))
+    {
+        anyhow::bail!("verifier host {host:?} resolves to forbidden address {forbidden}");
+    }
+    Ok(GraphHttpTarget {
+        url: parsed.to_string(),
+        host,
+        port,
+        pinned_ip: resolved[0],
+    })
+}
+
+fn resolve_graph_http_target(
+    declared_url: &str,
+    timeout: std::time::Duration,
+) -> Result<GraphHttpTarget> {
+    let parsed = reqwest::Url::parse(declared_url)
+        .with_context(|| format!("invalid verifier URL {declared_url:?}"))?;
+    let declared_host = parsed
+        .host_str()
+        .ok_or_else(|| anyhow::anyhow!("verifier URL has no host"))?;
+    if declared_host.ends_with('.') {
+        anyhow::bail!(
+            "trailing-dot verifier hosts are forbidden because they can bypass DNS pinning"
+        );
+    }
+    let host = declared_host.trim_matches(['[', ']']).to_ascii_lowercase();
+    if let Ok(address) = host.parse::<std::net::IpAddr>() {
+        return graph_http_target_from_addresses(declared_url, &[address]);
+    }
+
+    // Resolve before the request, reject if ANY answer is non-public, then pin
+    // curl to one accepted answer. This closes DNS rebinding between policy
+    // evaluation and connection establishment. `getent` is process-contained
+    // and bounded just like every other graph effect on the Linux OmegaOS host.
+    let mut command = std::process::Command::new("getent");
+    command.args(["ahosts", host.as_str()]);
+    let (outcome, stdout, stderr) = run_bounded_capture(&mut command, timeout, 64 * 1024);
+    if outcome != BoundedProcessResult::Exited(0) {
+        anyhow::bail!(
+            "DNS resolution failed closed for {host:?}: {:?} {}",
+            outcome,
+            stderr.trim()
+        );
+    }
+    let mut addresses = Vec::new();
+    for line in stdout.lines().filter(|line| !line.trim().is_empty()) {
+        let raw = line.split_whitespace().next().unwrap_or("");
+        let address = raw
+            .parse::<std::net::IpAddr>()
+            .with_context(|| format!("resolver returned invalid address {raw:?}"))?;
+        addresses.push(address);
+    }
+    graph_http_target_from_addresses(declared_url, &addresses)
+}
+
+fn classify_graph_http_status(observed: u16, expected: u16) -> (u16, String) {
+    if matches!(observed, 401 | 403) {
+        return (
+            0,
+            format!("HTTP authentication failure {observed}; 401/403 can never satisfy a verifier"),
+        );
+    }
+    (
+        observed,
+        format!("HTTP status {observed}, expected {expected}"),
+    )
+}
+
+fn graph_http_curl_command(
+    target: &GraphHttpTarget,
+    timeout: std::time::Duration,
+) -> std::process::Command {
+    let timeout_arg = timeout.as_secs_f64().max(0.001).to_string();
+    let resolve_arg = target.curl_resolve_arg();
+    let mut command = std::process::Command::new("curl");
+    command.args([
+        // Must be argv[1]: curl reads its default config before later options
+        // unless --disable/-q is the first flag. A hostile .curlrc
+        // `--connect-to` would otherwise route an approved public hostname to a
+        // private address after the DNS policy and --resolve pinning completed.
+        "--disable",
+        "--silent",
+        "--show-error",
+        "--proto",
+        "=http,https",
+        "--max-redirs",
+        "0",
+        "--noproxy",
+        "*",
+        "--resolve",
+        resolve_arg.as_str(),
+        "--output",
+        "/dev/null",
+        "--write-out",
+        "%{http_code}",
+        "--max-time",
+        timeout_arg.as_str(),
+        "--connect-timeout",
+        timeout_arg.as_str(),
+    ]);
+    if target.pinned_ip.is_ipv4() {
+        command.arg("--ipv4");
+    } else {
+        command.arg("--ipv6");
+    }
+    command.args(["--", target.url.as_str()]);
+    command
+}
+
+fn observe_node_check(
+    check: &omega_core::mission::VerifierCheck,
+    reservation: &omega_core::graph::NodeReservation,
+    graph_dir: &std::path::Path,
+    authority: &omega_core::graph::GraphExecutionAuthority,
+) -> Result<omega_core::graph_executor::NodeCheckResult> {
+    use omega_core::graph_executor::{CheckObservation, NodeCheckResult};
+    use omega_core::mission::VerifierCheckKind;
+
+    let timeout = check_timeout(check.timeout_secs);
+    let (observation, detail) = match &check.kind {
+        VerifierCheckKind::Command {
+            argv,
+            cwd,
+            expected_exit_code,
+        } => {
+            let resolved_cwd = cwd
+                .as_deref()
+                .map(|path| confined_graph_path(graph_dir, path))
+                .transpose();
+            let result = match resolved_cwd {
+                Ok(Some(path)) if !path.is_dir() => BoundedProcessResult::SpawnFailed(format!(
+                    "declared cwd {} is not a directory",
+                    path.display()
+                )),
+                Ok(path) => match argv.split_first() {
+                    Some((program, args)) => {
+                        let mut command = std::process::Command::new(program);
+                        command
+                            .args(args)
+                            .current_dir(path.as_deref().unwrap_or(graph_dir));
+                        run_bounded_status(&mut command, timeout)
+                    }
+                    None => BoundedProcessResult::SpawnFailed(
+                        "verifier command has no program".to_string(),
+                    ),
+                },
+                Err(error) => {
+                    BoundedProcessResult::SpawnFailed(format!("refused verifier cwd: {error}"))
+                }
+            };
+            let (exit_code, detail) = match result {
+                BoundedProcessResult::Exited(code) => (
+                    code,
+                    format!("direct argv exited {code}, expected {expected_exit_code}"),
+                ),
+                BoundedProcessResult::TimedOut => (
+                    -1,
+                    format!(
+                        "timed out after {}s and process group was killed",
+                        timeout.as_secs()
+                    ),
+                ),
+                BoundedProcessResult::ContainmentFailed(error) => {
+                    (-1, format!("process containment failed: {error}"))
+                }
+                BoundedProcessResult::SpawnFailed(error) => {
+                    (-1, format!("could not execute direct argv: {error}"))
+                }
+            };
+            (
+                CheckObservation::Command {
+                    argv: argv.clone(),
+                    cwd: cwd.clone(),
+                    exit_code,
+                },
+                detail,
+            )
+        }
+        VerifierCheckKind::Http {
+            url,
+            expected_status,
+        } => {
+            let started = std::time::Instant::now();
+            let (status, detail) = match resolve_graph_http_target(url, timeout) {
+                Err(error) => (0, format!("refused HTTP verifier target: {error}")),
+                Ok(target) => {
+                    let remaining = timeout.saturating_sub(started.elapsed());
+                    if remaining.is_zero() {
+                        return NodeCheckResult::observed(
+                            check,
+                            reservation,
+                            CheckObservation::Http {
+                                url: url.clone(),
+                                status: 0,
+                            },
+                            "HTTP verifier exhausted its timeout during DNS policy evaluation",
+                            authority,
+                        )
+                        .map_err(|error| {
+                            anyhow::anyhow!("could not mint verifier receipt: {error}")
+                        });
+                    }
+                    let mut command = graph_http_curl_command(&target, remaining);
+                    let (result, output, _) = run_bounded_capture(&mut command, remaining, 64);
+                    match result {
+                        BoundedProcessResult::Exited(0) => match output.trim().parse::<u16>() {
+                            Ok(status) => classify_graph_http_status(status, *expected_status),
+                            Err(_) => (0, "curl returned no readable HTTP status".to_string()),
+                        },
+                        BoundedProcessResult::Exited(code) => (
+                            0,
+                            format!("curl exited {code} without an accepted response"),
+                        ),
+                        BoundedProcessResult::TimedOut => (
+                            0,
+                            format!("HTTP check timed out after {}s", timeout.as_secs()),
+                        ),
+                        BoundedProcessResult::ContainmentFailed(error) => {
+                            (0, format!("HTTP process containment failed: {error}"))
+                        }
+                        BoundedProcessResult::SpawnFailed(error) => {
+                            (0, format!("could not execute curl: {error}"))
+                        }
+                    }
+                }
+            };
+            (
+                CheckObservation::Http {
+                    url: url.clone(),
+                    status,
+                },
+                detail,
+            )
+        }
+        VerifierCheckKind::FileExists { path } => {
+            let (exists, detail) = match confined_graph_path(graph_dir, path) {
+                Ok(resolved) => {
+                    let exists = resolved.exists();
+                    (
+                        exists,
+                        format!(
+                            "confined path {} {}",
+                            resolved.display(),
+                            if exists { "exists" } else { "is missing" }
+                        ),
+                    )
+                }
+                Err(error) => (false, format!("refused verifier path: {error}")),
+            };
+            (
+                CheckObservation::FileExists {
+                    path: path.clone(),
+                    exists,
+                },
+                detail,
+            )
+        }
+        VerifierCheckKind::GitObject { sha } => {
+            let valid_sha =
+                (4..=64).contains(&sha.len()) && sha.bytes().all(|byte| byte.is_ascii_hexdigit());
+            let (exists, detail) = if valid_sha {
+                let object = format!("{sha}^{{object}}");
+                let mut command = std::process::Command::new("git");
+                command
+                    .args(["cat-file", "-e", object.as_str()])
+                    .current_dir(graph_dir);
+                match run_bounded_status(&mut command, timeout) {
+                    BoundedProcessResult::Exited(0) => (true, format!("git object {sha} exists")),
+                    BoundedProcessResult::Exited(code) => {
+                        (false, format!("git cat-file exited {code}"))
+                    }
+                    BoundedProcessResult::TimedOut => (
+                        false,
+                        format!("git object check timed out after {}s", timeout.as_secs()),
+                    ),
+                    BoundedProcessResult::ContainmentFailed(error) => {
+                        (false, format!("git process containment failed: {error}"))
+                    }
+                    BoundedProcessResult::SpawnFailed(error) => {
+                        (false, format!("could not execute git cat-file: {error}"))
+                    }
+                }
+            } else {
+                (false, "refused malformed hexadecimal object id".to_string())
+            };
+            (
+                CheckObservation::GitObject {
+                    sha: sha.clone(),
+                    exists,
+                },
+                detail,
+            )
+        }
+    };
+
+    NodeCheckResult::observed(check, reservation, observation, detail, authority)
+        .map_err(|error| anyhow::anyhow!("could not mint verifier receipt: {error}"))
+}
+
+fn report_after_successful_effect(
+    graph: &omega_core::graph::Graph,
+    reservation: &omega_core::graph::NodeReservation,
+    graph_dir: &std::path::Path,
+    authority: &omega_core::graph::GraphExecutionAuthority,
+    stdout: Option<&str>,
+) -> omega_core::graph_executor::NodeReport {
+    use omega_core::graph_executor::{NodeOutputReceipt, NodeReport};
+
+    let Some(node) = graph.node(&reservation.node) else {
+        return NodeReport::failed_for(reservation, "reservation names an unknown graph node");
+    };
+    let requires_structured_output = graph.routers.contains_key(&reservation.node)
+        || graph
+            .loop_bounds
+            .iter()
+            .any(|bound| bound.from == reservation.node && bound.stop_after_dry_rounds.is_some());
+    let output = if requires_structured_output {
+        let Some(stdout) = stdout else {
+            return NodeReport::failed_for(
+                reservation,
+                "successful router/dry-loop effect has no captured structured output",
+            );
+        };
+        let value: serde_json::Value = match serde_json::from_str(stdout.trim()) {
+            Ok(value) => value,
+            Err(error) => {
+                return NodeReport::failed_for(
+                    reservation,
+                    format!(
+                        "successful router/dry-loop effect did not emit one JSON object: {error}"
+                    ),
+                )
+            }
+        };
+        let serde_json::Value::Object(fields) = value else {
+            return NodeReport::failed_for(
+                reservation,
+                "successful router/dry-loop effect must emit a top-level JSON object",
+            );
+        };
+        let fields = fields.into_iter().collect();
+        match NodeOutputReceipt::new(reservation, fields, authority) {
+            Ok(receipt) => Some(receipt),
+            Err(error) => {
+                return NodeReport::failed_for(
+                    reservation,
+                    format!("could not authenticate structured output: {error}"),
+                )
+            }
+        }
+    } else {
+        None
+    };
+    let mut results = Vec::with_capacity(node.checks.len());
+    for check in &node.checks {
+        match observe_node_check(check, reservation, graph_dir, authority) {
+            Ok(result) => results.push(result),
+            Err(error) => {
+                return NodeReport::failed_for(
+                    reservation,
+                    format!("could not produce a trusted verifier receipt: {error}"),
+                )
+            }
+        }
+    }
+    let failures: Vec<String> = results
+        .iter()
+        .filter(|result| !result.passed)
+        .map(|result| format!("{}: {}", result.check_id, result.detail))
+        .collect();
+    let mut report = if failures.is_empty() {
+        NodeReport::succeeded_for(reservation)
+    } else {
+        NodeReport::failed_for(
+            reservation,
+            format!("declared verifier checks failed: {}", failures.join("; ")),
+        )
+    };
+    for result in results {
+        report = report.with_check_result(result);
+    }
+    if matches!(
+        report.result,
+        omega_core::graph_executor::NodeResult::Succeeded
+    ) {
+        if let Some(output) = output {
+            report = report.with_output(output);
+        }
+    }
+    report
+}
+
+fn node_effect_timeout(
     graph: &omega_core::graph::Graph,
     id: &omega_core::graph::NodeId,
+) -> std::time::Duration {
+    const DEFAULT_NODE_TIMEOUT_SECS: u64 = 60 * 60;
+    let seconds = graph
+        .node(id)
+        .and_then(|node| node.extra.get("command_timeout_secs"))
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(DEFAULT_NODE_TIMEOUT_SECS);
+    std::time::Duration::from_secs(seconds.clamp(1, 86_400))
+}
+
+/// Run one node effect, then independently execute every verifier declared on
+/// that node. Exit 0 from the effect is necessary but never sufficient.
+fn run_node(
+    graph: &omega_core::graph::Graph,
+    reservation: &omega_core::graph::NodeReservation,
     cwd: &std::path::Path,
+    authority: &omega_core::graph::GraphExecutionAuthority,
 ) -> omega_core::graph_executor::NodeReport {
     use omega_core::graph_executor::NodeReport;
 
+    let id = &reservation.node;
     let Some(command) = node_command(graph, id) else {
-        return NodeReport::failed(
-            id.clone(),
+        if graph
+            .node(id)
+            .is_some_and(|node| node.kind == omega_core::graph::NodeKind::Verifier)
+        {
+            return report_after_successful_effect(graph, reservation, cwd, authority, None);
+        }
+        return NodeReport::failed_for(
+            reservation,
             "node declares no `command`, so the driver has nothing to run for it",
         );
     };
 
-    match std::process::Command::new("bash")
-        .arg("-c")
-        .arg(&command)
-        .current_dir(cwd)
-        .output()
-    {
-        Ok(out) if out.status.success() => NodeReport::succeeded(id.clone()),
-        Ok(out) => {
-            let stderr = String::from_utf8_lossy(&out.stderr);
+    let timeout = node_effect_timeout(graph, id);
+    let mut process = std::process::Command::new("bash");
+    process.arg("-c").arg(&command).current_dir(cwd);
+    let (result, stdout, stderr) = run_bounded_capture(&mut process, timeout, 64 * 1024);
+    match result {
+        BoundedProcessResult::Exited(0) => {
+            report_after_successful_effect(graph, reservation, cwd, authority, Some(&stdout))
+        }
+        BoundedProcessResult::Exited(code) => {
             let tail: String = stderr.lines().rev().take(3).collect::<Vec<_>>().join(" / ");
-            NodeReport::failed(
-                id.clone(),
+            NodeReport::failed_for(
+                reservation,
                 format!(
                     "exit {}: {}",
-                    out.status.code().unwrap_or(-1),
-                    if tail.is_empty() { "no stderr" } else { tail.trim() }
+                    code,
+                    if tail.is_empty() {
+                        "no stderr"
+                    } else {
+                        tail.trim()
+                    }
                 ),
             )
         }
-        Err(e) => NodeReport::failed(id.clone(), format!("could not spawn the command: {e}")),
+        BoundedProcessResult::TimedOut => NodeReport::failed_for(
+            reservation,
+            format!(
+                "node effect timed out after {}s; its process group was killed",
+                timeout.as_secs()
+            ),
+        ),
+        BoundedProcessResult::ContainmentFailed(error) => NodeReport::failed_for(
+            reservation,
+            format!("node effect containment failed: {error}"),
+        ),
+        BoundedProcessResult::SpawnFailed(error) => {
+            NodeReport::failed_for(reservation, format!("could not spawn the command: {error}"))
+        }
+    }
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "event", rename_all = "snake_case")]
+enum GraphJournalRecord {
+    Checkpoint {
+        state: omega_core::graph::GraphState,
+        recorded_at: chrono::DateTime<chrono::Utc>,
+    },
+    Authorized {
+        reservations: Vec<omega_core::graph::NodeReservation>,
+        state_version: u64,
+        recorded_at: chrono::DateTime<chrono::Utc>,
+    },
+    DispatchIntent {
+        record: omega_core::graph_executor::DispatchWalRecord,
+        recorded_at: chrono::DateTime<chrono::Utc>,
+    },
+    EffectStarted {
+        record: omega_core::graph_executor::DispatchWalRecord,
+        recorded_at: chrono::DateTime<chrono::Utc>,
+    },
+    /// Legacy pre-WAL dispatch evidence. It remains parseable for forensic
+    /// recovery, but can never authorize an automatic replay.
+    Dispatch {
+        reservation: omega_core::graph::NodeReservation,
+        command: String,
+        recorded_at: chrono::DateTime<chrono::Utc>,
+    },
+    Result {
+        report: omega_core::graph_executor::NodeReport,
+        recorded_at: chrono::DateTime<chrono::Utc>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reconciled_by: Option<String>,
+    },
+    RetryScheduled {
+        reservation: omega_core::graph::NodeReservation,
+        retry_not_before: chrono::DateTime<chrono::Utc>,
+        recorded_at: chrono::DateTime<chrono::Utc>,
+    },
+}
+
+const GRAPH_JOURNAL_CHAIN_ROOT: &str =
+    "0000000000000000000000000000000000000000000000000000000000000000";
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AuthenticatedGraphJournalRecord {
+    schema_version: u32,
+    sequence: u64,
+    previous_hash: String,
+    payload_digest: String,
+    authority_mac: String,
+    record: GraphJournalRecord,
+}
+
+fn graph_journal_payload_digest(record: &GraphJournalRecord) -> Result<String> {
+    Ok(
+        omega_core::graph::GraphExecutionAuthority::journal_payload_digest(&serde_json::to_vec(
+            record,
+        )?),
+    )
+}
+
+fn graph_journal_record_hash(record: &AuthenticatedGraphJournalRecord) -> String {
+    omega_core::graph::GraphExecutionAuthority::journal_record_hash(
+        record.sequence,
+        &record.previous_hash,
+        &record.payload_digest,
+        &record.authority_mac,
+    )
+}
+
+fn pristine_graph_checkpoint(record: &GraphJournalRecord) -> bool {
+    let GraphJournalRecord::Checkpoint { state, .. } = record else {
+        return false;
+    };
+    state.version == 0
+        && state.extra.is_empty()
+        && state.nodes.values().all(|run| {
+            run.attempts == 0
+                && run.generation == 0
+                && run.reservation.is_none()
+                && run.acceptance.is_none()
+                && run.extra.is_empty()
+        })
+}
+
+struct GraphJournal {
+    path: std::path::PathBuf,
+    records: Vec<GraphJournalRecord>,
+    authority: omega_core::graph::GraphExecutionAuthority,
+    identity: Option<PrivateFileIdentity>,
+    legacy_records: usize,
+    last_sequence: u64,
+    last_hash: String,
+    unterminated_valid_tail: bool,
+}
+
+#[derive(Default)]
+struct JournalRecovery {
+    pending_gate: Vec<omega_core::graph::NodeReservation>,
+    pending_dispatch: Vec<omega_core::graph::NodeReservation>,
+    completed: Vec<omega_core::graph_executor::NodeReport>,
+    unknown_effect: Vec<omega_core::graph::NodeReservation>,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn decode_graph_journal_line(
+    line: &str,
+    line_number: usize,
+    path: &std::path::Path,
+    authority: &omega_core::graph::GraphExecutionAuthority,
+    records: &mut Vec<GraphJournalRecord>,
+    legacy_records: &mut usize,
+    last_sequence: &mut u64,
+    last_hash: &mut String,
+) -> Result<()> {
+    if line.trim().is_empty() {
+        return Ok(());
+    }
+    match serde_json::from_str::<AuthenticatedGraphJournalRecord>(line) {
+        Ok(envelope) => {
+            if *legacy_records > 0 && *last_sequence == 0 {
+                anyhow::bail!(
+                    "graph journal {} mixes unsigned legacy records with an authenticated chain",
+                    path.display()
+                );
+            }
+            let expected_sequence = last_sequence
+                .checked_add(1)
+                .ok_or_else(|| anyhow::anyhow!("graph journal sequence counter overflow"))?;
+            let digest = graph_journal_payload_digest(&envelope.record)?;
+            if envelope.schema_version != 1
+                || envelope.sequence != expected_sequence
+                || envelope.previous_hash != *last_hash
+                || envelope.payload_digest != digest
+                || !authority.verify_journal_record(
+                    envelope.sequence,
+                    &envelope.previous_hash,
+                    &envelope.payload_digest,
+                    &envelope.authority_mac,
+                )
+            {
+                anyhow::bail!(
+                    "graph journal {} has a broken authenticated chain at line {}",
+                    path.display(),
+                    line_number
+                );
+            }
+            *last_sequence = envelope.sequence;
+            *last_hash = graph_journal_record_hash(&envelope);
+            records.push(envelope.record);
+            Ok(())
+        }
+        Err(_) if *last_sequence == 0 => {
+            let record: GraphJournalRecord = serde_json::from_str(line).with_context(|| {
+                format!(
+                    "graph journal {} has a corrupt complete record at line {}",
+                    path.display(),
+                    line_number
+                )
+            })?;
+            *legacy_records += 1;
+            records.push(record);
+            Ok(())
+        }
+        Err(_) => anyhow::bail!(
+            "graph journal {} has an unsigned record after its authenticated chain at line {}",
+            path.display(),
+            line_number
+        ),
+    }
+}
+
+impl GraphJournal {
+    fn load(
+        state_path: &std::path::Path,
+        authority: &omega_core::graph::GraphExecutionAuthority,
+    ) -> Result<Self> {
+        Self::load_internal(state_path, authority, None)
+    }
+
+    fn load_recovering(
+        state_path: &std::path::Path,
+        authority: &omega_core::graph::GraphExecutionAuthority,
+        state: &omega_core::graph::GraphState,
+        state_lock: &GraphStateLock,
+    ) -> Result<Self> {
+        Self::load_internal(state_path, authority, Some((state, state_lock)))
+    }
+
+    fn load_internal(
+        state_path: &std::path::Path,
+        authority: &omega_core::graph::GraphExecutionAuthority,
+        recovery: Option<(&omega_core::graph::GraphState, &GraphStateLock)>,
+    ) -> Result<Self> {
+        let path = sidecar_path(state_path, "journal.jsonl");
+        let mut records = Vec::new();
+        let mut legacy_records = 0usize;
+        let mut last_sequence = 0u64;
+        let mut last_hash = GRAPH_JOURNAL_CHAIN_ROOT.to_string();
+        let mut identity = None;
+        let mut unterminated_valid_tail = false;
+        if let Some(metadata) = path_metadata_if_present(&path, "graph execution journal")? {
+            validate_private_metadata(
+                &metadata,
+                &path,
+                "graph execution journal",
+                MAX_GRAPH_JOURNAL_BYTES,
+            )?;
+            let snapshot =
+                read_private_snapshot(&path, "graph execution journal", MAX_GRAPH_JOURNAL_BYTES)?;
+            identity = Some(snapshot.identity);
+            let split_at = snapshot
+                .bytes
+                .iter()
+                .rposition(|byte| *byte == b'\n')
+                .map_or(0, |index| index + 1);
+            let complete = std::str::from_utf8(&snapshot.bytes[..split_at]).map_err(|error| {
+                anyhow::anyhow!(
+                    "graph execution journal {} has invalid UTF-8 before its final record: {error}",
+                    path.display()
+                )
+            })?;
+            for (index, line) in complete.lines().enumerate() {
+                decode_graph_journal_line(
+                    line,
+                    index + 1,
+                    &path,
+                    authority,
+                    &mut records,
+                    &mut legacy_records,
+                    &mut last_sequence,
+                    &mut last_hash,
+                )?;
+            }
+
+            let tail_bytes = &snapshot.bytes[split_at..];
+            if !tail_bytes.is_empty() {
+                let tail = match std::str::from_utf8(tail_bytes) {
+                    Ok(value) => Some(value),
+                    Err(error) if error.error_len().is_none() => None,
+                    Err(error) => {
+                        anyhow::bail!(
+                            "graph journal {} has invalid UTF-8 in its final record: {error}",
+                            path.display()
+                        )
+                    }
+                };
+                let partial = match tail {
+                    Some(value) if value.trim().is_empty() => true,
+                    Some(value) => match serde_json::from_str::<serde_json::Value>(value) {
+                        Ok(_) => {
+                            decode_graph_journal_line(
+                                value,
+                                complete.lines().count() + 1,
+                                &path,
+                                authority,
+                                &mut records,
+                                &mut legacy_records,
+                                &mut last_sequence,
+                                &mut last_hash,
+                            )?;
+                            unterminated_valid_tail = true;
+                            false
+                        }
+                        Err(error) if error.is_eof() => true,
+                        Err(error) => {
+                            anyhow::bail!(
+                                "graph journal {} has a complete invalid final record: {error}",
+                                path.display()
+                            )
+                        }
+                    },
+                    None => true,
+                };
+                if partial {
+                    let Some((state, state_lock)) = recovery else {
+                        anyhow::bail!(
+                            "graph journal {} ends with a partial record; an exclusive graph run must recover it",
+                            path.display()
+                        );
+                    };
+                    let checkpoint = records.iter().rev().find_map(|record| match record {
+                        GraphJournalRecord::Checkpoint { state, .. } => Some(state),
+                        _ => None,
+                    });
+                    if checkpoint != Some(state) {
+                        anyhow::bail!(
+                            "graph journal {} has a torn tail but its last intact checkpoint does not match durable state",
+                            path.display()
+                        );
+                    }
+                    state_lock.assert_current()?;
+                    let mut options = std::fs::OpenOptions::new();
+                    options.read(true).write(true);
+                    apply_no_follow(&mut options);
+                    let file = options.open(&path).with_context(|| {
+                        format!("cannot recover graph journal {}", path.display())
+                    })?;
+                    let opened = validate_opened_private_file(
+                        &file,
+                        &path,
+                        "graph execution journal",
+                        MAX_GRAPH_JOURNAL_BYTES,
+                    )?;
+                    if opened != snapshot.identity {
+                        anyhow::bail!(
+                            "graph journal {} changed before torn-tail recovery",
+                            path.display()
+                        );
+                    }
+                    file.set_len(split_at as u64).with_context(|| {
+                        format!("cannot truncate torn graph journal {}", path.display())
+                    })?;
+                    file.sync_all().with_context(|| {
+                        format!("cannot sync recovered graph journal {}", path.display())
+                    })?;
+                    let recovered = validate_opened_private_file(
+                        &file,
+                        &path,
+                        "graph execution journal",
+                        MAX_GRAPH_JOURNAL_BYTES,
+                    )?;
+                    if recovered != snapshot.identity {
+                        anyhow::bail!(
+                            "graph journal {} was replaced during torn-tail recovery",
+                            path.display()
+                        );
+                    }
+                    state_lock.assert_current()?;
+                }
+            }
+        }
+        Ok(Self {
+            path,
+            records,
+            authority: authority.clone(),
+            identity,
+            legacy_records,
+            last_sequence,
+            last_hash,
+            unterminated_valid_tail,
+        })
+    }
+
+    fn append(&mut self, record: GraphJournalRecord) -> Result<()> {
+        use std::io::Write;
+
+        if self.legacy_records > 0 {
+            if !self.records.iter().all(pristine_graph_checkpoint) {
+                anyhow::bail!(
+                    "cannot extend an unsigned graph journal containing execution effects"
+                );
+            }
+            // A version-zero checkpoint contains no execution evidence. Replace
+            // that legacy prefix before the first authenticated append so every
+            // effect/result that follows belongs to one unbroken MAC chain.
+            atomic_write_private(&self.path, b"")?;
+            self.records.clear();
+            self.legacy_records = 0;
+            self.last_sequence = 0;
+            self.last_hash = GRAPH_JOURNAL_CHAIN_ROOT.to_string();
+            self.unterminated_valid_tail = false;
+            let metadata = validate_private_regular_file(
+                &self.path,
+                "graph execution journal",
+                MAX_GRAPH_JOURNAL_BYTES,
+            )?;
+            self.identity = Some(validate_private_metadata(
+                &metadata,
+                &self.path,
+                "graph execution journal",
+                MAX_GRAPH_JOURNAL_BYTES,
+            )?);
+        }
+
+        let parent = self
+            .path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or_else(|| std::path::Path::new("."));
+        if !parent.is_dir() {
+            anyhow::bail!("journal directory {} does not exist", parent.display());
+        }
+        let current_identity =
+            match path_metadata_if_present(&self.path, "graph execution journal")? {
+                Some(metadata) => Some(validate_private_metadata(
+                    &metadata,
+                    &self.path,
+                    "graph execution journal",
+                    MAX_GRAPH_JOURNAL_BYTES,
+                )?),
+                None => None,
+            };
+        if current_identity != self.identity {
+            anyhow::bail!(
+                "graph journal {} changed outside the active transaction",
+                self.path.display()
+            );
+        }
+        let was_missing = self.identity.is_none();
+        let mut options = std::fs::OpenOptions::new();
+        options.append(true);
+        if was_missing {
+            options.create_new(true);
+        }
+        apply_no_follow(&mut options);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = options
+            .open(&self.path)
+            .with_context(|| format!("cannot append graph journal {}", self.path.display()))?;
+        let opened_identity = validate_opened_private_file(
+            &file,
+            &self.path,
+            "graph execution journal",
+            MAX_GRAPH_JOURNAL_BYTES,
+        )?;
+        if self
+            .identity
+            .is_some_and(|expected| expected != opened_identity)
+        {
+            anyhow::bail!(
+                "graph journal {} changed while opening",
+                self.path.display()
+            );
+        }
+        let sequence = self
+            .last_sequence
+            .checked_add(1)
+            .ok_or_else(|| anyhow::anyhow!("graph journal sequence counter overflow"))?;
+        let payload_digest = graph_journal_payload_digest(&record)?;
+        let envelope = AuthenticatedGraphJournalRecord {
+            schema_version: 1,
+            sequence,
+            previous_hash: self.last_hash.clone(),
+            authority_mac: self.authority.sign_journal_record(
+                sequence,
+                &self.last_hash,
+                &payload_digest,
+            ),
+            payload_digest,
+            record: record.clone(),
+        };
+        let mut line = serde_json::to_vec(&envelope)?;
+        line.push(b'\n');
+        let opened_size = file
+            .metadata()
+            .with_context(|| format!("cannot inspect graph journal {}", self.path.display()))?
+            .len();
+        let terminator_len = u64::from(self.unterminated_valid_tail);
+        if opened_size
+            .saturating_add(terminator_len)
+            .saturating_add(line.len() as u64)
+            > MAX_GRAPH_JOURNAL_BYTES
+        {
+            anyhow::bail!(
+                "graph journal {} would exceed its {} byte safety bound",
+                self.path.display(),
+                MAX_GRAPH_JOURNAL_BYTES
+            );
+        }
+        if self.unterminated_valid_tail {
+            file.write_all(b"\n").with_context(|| {
+                format!("cannot terminate graph journal {}", self.path.display())
+            })?;
+        }
+        file.write_all(&line)
+            .with_context(|| format!("cannot append graph journal {}", self.path.display()))?;
+        file.sync_all()
+            .with_context(|| format!("cannot sync graph journal {}", self.path.display()))?;
+        let synced_identity = validate_opened_private_file(
+            &file,
+            &self.path,
+            "graph execution journal",
+            MAX_GRAPH_JOURNAL_BYTES,
+        )?;
+        if synced_identity != opened_identity {
+            anyhow::bail!(
+                "graph journal {} was replaced while appending",
+                self.path.display()
+            );
+        }
+        if was_missing {
+            std::fs::File::open(parent)
+                .and_then(|directory| directory.sync_all())
+                .with_context(|| format!("cannot sync journal directory {}", parent.display()))?;
+        }
+        self.last_sequence = sequence;
+        self.last_hash = graph_journal_record_hash(&envelope);
+        self.records.push(record);
+        self.identity = Some(opened_identity);
+        self.unterminated_valid_tail = false;
+        Ok(())
+    }
+
+    fn append_checkpoint(&mut self, state: &omega_core::graph::GraphState) -> Result<()> {
+        if self.records.iter().any(|record| {
+            matches!(record, GraphJournalRecord::Checkpoint { state: existing, .. } if existing == state)
+        }) {
+            return Ok(());
+        }
+        self.append(GraphJournalRecord::Checkpoint {
+            state: state.clone(),
+            recorded_at: chrono::Utc::now(),
+        })
+    }
+
+    fn append_dispatch_intent(
+        &mut self,
+        record: &omega_core::graph_executor::DispatchWalRecord,
+    ) -> Result<()> {
+        let matching = self.records.iter().filter_map(|entry| match entry {
+            GraphJournalRecord::DispatchIntent {
+                record: candidate, ..
+            } if candidate.reservation.reservation_id == record.reservation.reservation_id => {
+                Some(candidate)
+            }
+            _ => None,
+        });
+        let matching = matching.collect::<Vec<_>>();
+        if matching.len() > 1 || matching.first().is_some_and(|current| *current != record) {
+            anyhow::bail!(
+                "journal already binds reservation {} to another dispatch intent",
+                record.reservation.reservation_id
+            );
+        }
+        if matching.len() == 1 {
+            return Ok(());
+        }
+        self.append(GraphJournalRecord::DispatchIntent {
+            record: record.clone(),
+            recorded_at: chrono::Utc::now(),
+        })
+    }
+
+    fn append_effect_started(
+        &mut self,
+        record: &omega_core::graph_executor::DispatchWalRecord,
+    ) -> Result<()> {
+        let intents = self
+            .records
+            .iter()
+            .filter_map(|entry| match entry {
+                GraphJournalRecord::DispatchIntent {
+                    record: candidate, ..
+                } if candidate.reservation.reservation_id == record.reservation.reservation_id => {
+                    Some(candidate)
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        if intents.len() != 1 {
+            anyhow::bail!(
+                "effect start for reservation {} requires exactly one durable dispatch intent",
+                record.reservation.reservation_id
+            );
+        }
+        let intent = intents[0];
+        if intent.phase != omega_core::graph_executor::DispatchWalPhase::IntentRecorded
+            || record.phase != omega_core::graph_executor::DispatchWalPhase::EffectStarted
+            || intent.reservation != record.reservation
+            || intent.intent_id != record.intent_id
+            || intent.effect_digest != record.effect_digest
+            || intent.risk != record.risk
+            || intent.mode != record.mode
+            || intent.approval_subject_digest != record.approval_subject_digest
+            || intent.intent_state_version != record.intent_state_version
+        {
+            anyhow::bail!(
+                "effect start differs from the durable dispatch intent for reservation {}",
+                record.reservation.reservation_id
+            );
+        }
+        let matching = self.records.iter().filter_map(|entry| match entry {
+            GraphJournalRecord::EffectStarted {
+                record: candidate, ..
+            } if candidate.reservation.reservation_id == record.reservation.reservation_id => {
+                Some(candidate)
+            }
+            _ => None,
+        });
+        let matching = matching.collect::<Vec<_>>();
+        if matching.len() > 1 || matching.first().is_some_and(|current| *current != record) {
+            anyhow::bail!(
+                "journal already binds reservation {} to another effect start",
+                record.reservation.reservation_id
+            );
+        }
+        if matching.len() == 1 {
+            return Ok(());
+        }
+        self.append(GraphJournalRecord::EffectStarted {
+            record: record.clone(),
+            recorded_at: chrono::Utc::now(),
+        })
+    }
+
+    fn schedule_retry(
+        &mut self,
+        reservation: &omega_core::graph::NodeReservation,
+        backoff_secs: u64,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> Result<chrono::DateTime<chrono::Utc>> {
+        if let Some(existing) = self.records.iter().find_map(|record| match record {
+            GraphJournalRecord::RetryScheduled {
+                reservation: candidate,
+                retry_not_before,
+                ..
+            } if candidate.reservation_id == reservation.reservation_id => {
+                Some((candidate, *retry_not_before))
+            }
+            _ => None,
+        }) {
+            if existing.0 != reservation {
+                anyhow::bail!(
+                    "retry schedule reuses reservation id {} for a different attempt",
+                    reservation.reservation_id
+                );
+            }
+            return Ok(existing.1);
+        }
+        let seconds = i64::try_from(backoff_secs)
+            .ok()
+            .filter(|seconds| *seconds <= 86_400)
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "retry backoff for node {} exceeds the graph driver's one-day safety bound",
+                    reservation.node.as_str()
+                )
+            })?;
+        let retry_not_before = now
+            .checked_add_signed(chrono::Duration::seconds(seconds))
+            .ok_or_else(|| anyhow::anyhow!("retry deadline overflow"))?;
+        self.append(GraphJournalRecord::RetryScheduled {
+            reservation: reservation.clone(),
+            retry_not_before,
+            recorded_at: now,
+        })?;
+        Ok(retry_not_before)
+    }
+
+    fn retry_not_before(
+        &self,
+        reservation: &omega_core::graph::NodeReservation,
+    ) -> Result<Option<chrono::DateTime<chrono::Utc>>> {
+        let matching: Vec<_> = self
+            .records
+            .iter()
+            .filter_map(|record| match record {
+                GraphJournalRecord::RetryScheduled {
+                    reservation: candidate,
+                    retry_not_before,
+                    ..
+                } if candidate.reservation_id == reservation.reservation_id => {
+                    Some((candidate, *retry_not_before))
+                }
+                _ => None,
+            })
+            .collect();
+        if matching.len() > 1
+            || matching
+                .first()
+                .is_some_and(|(candidate, _)| *candidate != reservation)
+        {
+            anyhow::bail!(
+                "journal has conflicting retry schedules for reservation {}",
+                reservation.reservation_id
+            );
+        }
+        Ok(matching.first().map(|(_, deadline)| *deadline))
+    }
+
+    fn validate_state_provenance(
+        &self,
+        graph: &omega_core::graph::Graph,
+        state: &omega_core::graph::GraphState,
+    ) -> Result<()> {
+        use omega_core::graph_executor::NodeResult;
+        use omega_core::mission::TaskAttemptState;
+
+        let pristine = state.version == 0
+            && state.extra.is_empty()
+            && graph.nodes.iter().all(|node| {
+                state.nodes.get(&node.id).is_some_and(|run| {
+                    run.state == node.state
+                        && run.attempts == 0
+                        && run.generation == 0
+                        && run.reservation.is_none()
+                        && run.acceptance.is_none()
+                        && run.extra.is_empty()
+                })
+            });
+        if self.legacy_records > 0
+            && (!pristine || !self.records.iter().all(pristine_graph_checkpoint))
+        {
+            anyhow::bail!("non-pristine graph state requires an authenticated journal chain");
+        }
+        if !pristine
+            && !self.records.iter().any(|record| {
+                matches!(record, GraphJournalRecord::Checkpoint { state: checkpoint, .. } if checkpoint == state)
+            })
+        {
+            anyhow::bail!(
+                "non-initial graph state has no exact durable journal checkpoint; refusing forged or unjournaled progress"
+            );
+        }
+
+        for node in &graph.nodes {
+            let run = state
+                .nodes
+                .get(&node.id)
+                .ok_or_else(|| anyhow::anyhow!("run state is missing node {}", node.id.as_str()))?;
+            if run.state != TaskAttemptState::Accepted {
+                continue;
+            }
+            let acceptance = run.acceptance.as_ref().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "accepted node {} has no acceptance receipt",
+                    node.id.as_str()
+                )
+            })?;
+            let matching_results: Vec<&omega_core::graph_executor::NodeReport> = self
+                .records
+                .iter()
+                .filter_map(|record| match record {
+                    GraphJournalRecord::Result { report, .. }
+                        if report.reservation.as_ref() == Some(&acceptance.reservation)
+                            && matches!(report.result, NodeResult::Succeeded) =>
+                    {
+                        Some(report)
+                    }
+                    _ => None,
+                })
+                .collect();
+            if matching_results.len() != 1 {
+                anyhow::bail!(
+                    "accepted node {} is not backed by exactly one durable successful result",
+                    node.id.as_str()
+                );
+            }
+            let mut receipt_ids: Vec<String> = matching_results[0]
+                .checks
+                .iter()
+                .filter_map(|result| {
+                    result
+                        .receipt
+                        .as_ref()
+                        .map(|receipt| receipt.receipt_id.clone())
+                })
+                .collect();
+            receipt_ids.sort();
+            if receipt_ids != acceptance.check_receipt_ids {
+                anyhow::bail!(
+                    "accepted node {} journal receipts do not match its acceptance",
+                    node.id.as_str()
+                );
+            }
+            let dispatch_count = self
+                .records
+                .iter()
+                .filter(|record| {
+                    matches!(
+                        record,
+                        GraphJournalRecord::Dispatch { reservation, .. }
+                            if reservation == &acceptance.reservation
+                    )
+                })
+                .count();
+            let intent_count = self
+                .records
+                .iter()
+                .filter(|record| {
+                    matches!(
+                        record,
+                        GraphJournalRecord::DispatchIntent { record, .. }
+                            if record.reservation == acceptance.reservation
+                    )
+                })
+                .count();
+            let started_count = self
+                .records
+                .iter()
+                .filter(|record| {
+                    matches!(
+                        record,
+                        GraphJournalRecord::EffectStarted { record, .. }
+                            if record.reservation == acceptance.reservation
+                    )
+                })
+                .count();
+            let authorization_count = self
+                .records
+                .iter()
+                .filter(|record| match record {
+                    GraphJournalRecord::Authorized { reservations, .. } => reservations
+                        .iter()
+                        .any(|reservation| reservation == &acceptance.reservation),
+                    _ => false,
+                })
+                .count();
+            let node_has_shell_effect = graph
+                .node(&node.id)
+                .is_some_and(omega_core::graph::Node::has_shell_effect);
+            let wal_exact = intent_count == 1 && started_count == 1;
+            let legacy_exact = authorization_count == 1 && dispatch_count == 1;
+            if node_has_shell_effect && !wal_exact && !legacy_exact {
+                anyhow::bail!(
+                    "accepted node {} is not backed by exactly one durable dispatch intent and effect-start record",
+                    node.id.as_str()
+                );
+            }
+        }
+        Ok(())
+    }
+
+    fn recovery_for(&self, state: &omega_core::graph::GraphState) -> Result<JournalRecovery> {
+        let mut recovery = JournalRecovery::default();
+        for reservation in state
+            .nodes
+            .values()
+            .filter_map(|run| run.reservation.as_ref())
+        {
+            let intents: Vec<&omega_core::graph_executor::DispatchWalRecord> = self
+                .records
+                .iter()
+                .filter_map(|record| match record {
+                    GraphJournalRecord::DispatchIntent { record, .. }
+                        if record.reservation.reservation_id == reservation.reservation_id =>
+                    {
+                        Some(record)
+                    }
+                    _ => None,
+                })
+                .collect();
+            if intents.len() > 1
+                || intents
+                    .first()
+                    .is_some_and(|record| record.reservation != *reservation)
+            {
+                anyhow::bail!(
+                    "journal has conflicting dispatch intents for reservation {}",
+                    reservation.reservation_id
+                );
+            }
+
+            let starts: Vec<&omega_core::graph_executor::DispatchWalRecord> = self
+                .records
+                .iter()
+                .filter_map(|entry| match entry {
+                    GraphJournalRecord::EffectStarted { record, .. }
+                        if record.reservation.reservation_id == reservation.reservation_id =>
+                    {
+                        Some(record)
+                    }
+                    _ => None,
+                })
+                .collect();
+            if starts.len() > 1
+                || starts
+                    .first()
+                    .is_some_and(|record| record.reservation != *reservation)
+            {
+                anyhow::bail!(
+                    "journal has conflicting effect-start records for reservation {}",
+                    reservation.reservation_id
+                );
+            }
+            if let Some(started) = starts.first() {
+                let intent = intents.first().ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "effect-start record has no dispatch intent for reservation {}",
+                        reservation.reservation_id
+                    )
+                })?;
+                if started.intent_id != intent.intent_id
+                    || started.effect_digest != intent.effect_digest
+                    || started.phase != omega_core::graph_executor::DispatchWalPhase::EffectStarted
+                    || intent.phase != omega_core::graph_executor::DispatchWalPhase::IntentRecorded
+                {
+                    anyhow::bail!(
+                        "effect-start record differs from dispatch intent for reservation {}",
+                        reservation.reservation_id
+                    );
+                }
+            }
+
+            let legacy_dispatches: Vec<&omega_core::graph::NodeReservation> = self
+                .records
+                .iter()
+                .filter_map(|record| match record {
+                    GraphJournalRecord::Dispatch {
+                        reservation: candidate,
+                        ..
+                    } if candidate.reservation_id == reservation.reservation_id => Some(candidate),
+                    _ => None,
+                })
+                .collect();
+            if legacy_dispatches.len() > 1
+                || legacy_dispatches
+                    .first()
+                    .is_some_and(|candidate| *candidate != reservation)
+            {
+                anyhow::bail!(
+                    "journal has conflicting legacy dispatch records for reservation {}",
+                    reservation.reservation_id
+                );
+            }
+
+            let results: Vec<&omega_core::graph_executor::NodeReport> = self
+                .records
+                .iter()
+                .filter_map(|record| match record {
+                    GraphJournalRecord::Result { report, .. }
+                        if report.reservation.as_ref().is_some_and(|candidate| {
+                            candidate.reservation_id == reservation.reservation_id
+                        }) =>
+                    {
+                        Some(report)
+                    }
+                    _ => None,
+                })
+                .collect();
+            if results.len() > 1
+                || results
+                    .first()
+                    .is_some_and(|report| report.reservation.as_ref() != Some(reservation))
+            {
+                anyhow::bail!(
+                    "journal has conflicting result records for reservation {}",
+                    reservation.reservation_id
+                );
+            }
+
+            let _ = self.retry_not_before(reservation)?;
+            if results.is_empty() && starts.is_empty() && legacy_dispatches.is_empty() {
+                if intents.is_empty() {
+                    recovery.pending_gate.push(reservation.clone());
+                } else {
+                    recovery.pending_dispatch.push(reservation.clone());
+                }
+                continue;
+            }
+            if let Some(report) = results.first() {
+                if starts.is_empty() && legacy_dispatches.is_empty() {
+                    anyhow::bail!(
+                        "journal records a result without effect-start evidence for reservation {}",
+                        reservation.reservation_id
+                    );
+                }
+                recovery.completed.push((*report).clone());
+            } else {
+                recovery.unknown_effect.push(reservation.clone());
+            }
+        }
+        Ok(recovery)
+    }
+}
+
+fn persist_graph_state(
+    graph: &omega_core::graph::Graph,
+    state: &omega_core::graph::GraphState,
+    authority: &omega_core::graph::GraphExecutionAuthority,
+    durable_state: &mut DurableGraphState,
+    journal: &mut GraphJournal,
+    state_lock: &GraphStateLock,
+) -> Result<()> {
+    // Write-ahead checkpoint: after a crash, either disk still contains the
+    // previously checkpointed state or it exactly matches this record.
+    under_graph_state_lock(state_lock, || journal.append_checkpoint(state))?;
+    under_graph_state_lock(state_lock, || {
+        durable_state.persist(graph, state, authority)
+    })
+}
+
+/// Resolve the exact dispatch authority minted by the executor for `node`.
+///
+/// The CLI deliberately does not reconstruct reservations from graph or state
+/// fields. A missing reservation means this node was not authorized by this
+/// step, so dispatch must fail closed before a command can start.
+fn require_node_reservation(
+    step: &omega_core::graph_executor::StepOutcome,
+    node: &omega_core::graph::NodeId,
+) -> Result<omega_core::graph::NodeReservation> {
+    step.reservation_for(node).cloned().ok_or_else(|| {
+        anyhow::anyhow!(
+            "executor returned ready node `{}` without a dispatch reservation",
+            node.as_str()
+        )
+    })
+}
+
+fn canonical_graph_directory(graph_path: &str) -> Result<std::path::PathBuf> {
+    let graph_file = std::path::Path::new(graph_path)
+        .canonicalize()
+        .with_context(|| format!("cannot canonicalize graph document {graph_path}"))?;
+    graph_file
+        .parent()
+        .map(std::path::Path::to_path_buf)
+        .ok_or_else(|| anyhow::anyhow!("graph document {graph_path} has no parent directory"))
+}
+
+fn schedule_step_retries(
+    graph: &omega_core::graph::Graph,
+    step: &omega_core::graph_executor::StepOutcome,
+    journal: &mut GraphJournal,
+    state_lock: &GraphStateLock,
+) -> Result<()> {
+    let now = chrono::Utc::now();
+    for node_id in &step.retrying {
+        let node = graph.node(node_id).ok_or_else(|| {
+            anyhow::anyhow!(
+                "executor scheduled retry for unknown node {}",
+                node_id.as_str()
+            )
+        })?;
+        let reservation = require_node_reservation(step, node_id)?;
+        under_graph_state_lock(state_lock, || {
+            journal.schedule_retry(&reservation, node.retry.backoff_secs, now)
+        })?;
+    }
+    Ok(())
+}
+
+async fn wait_for_retry_deadlines(
+    journal: &GraphJournal,
+    reservations: &[omega_core::graph::NodeReservation],
+) -> Result<()> {
+    let deadline = reservations
+        .iter()
+        .map(|reservation| journal.retry_not_before(reservation))
+        .collect::<Result<Vec<_>>>()?
+        .into_iter()
+        .flatten()
+        .max();
+    let Some(deadline) = deadline else {
+        return Ok(());
+    };
+    let now = chrono::Utc::now();
+    if deadline <= now {
+        return Ok(());
+    }
+    let wait = (deadline - now).to_std().map_err(|_| {
+        anyhow::anyhow!("retry deadline cannot be represented by the runtime clock")
+    })?;
+    println!(
+        "  [~] retry backoff is durable; waiting {:.3}s until {}",
+        wait.as_secs_f64(),
+        deadline.to_rfc3339()
+    );
+    tokio::time::sleep(wait).await;
+    Ok(())
+}
+
+fn print_graph_step_events(step: &omega_core::graph_executor::StepOutcome) {
+    for id in &step.retrying {
+        println!(
+            "  [~] {} failed, retrying after durable backoff",
+            id.as_str()
+        );
+    }
+    for id in &step.exhausted {
+        println!(
+            "  [x] {} failed terminally (retry budget spent)",
+            id.as_str()
+        );
+    }
+    for id in &step.fallbacks {
+        println!("  [>] fallback {} unlocked", id.as_str());
+    }
+    for (from, to) in &step.loops_taken {
+        println!(
+            "  [o] loop edge {} -> {} traversed",
+            from.as_str(),
+            to.as_str()
+        );
+    }
+}
+
+/// Execute a set whose authorizations are already durable. Every dispatch
+/// record is synced before the first command starts; every result is synced
+/// before it can be handed to `advance`.
+fn execute_reserved_nodes(
+    graph: &omega_core::graph::Graph,
+    state: &mut omega_core::graph::GraphState,
+    reservations: &[omega_core::graph::NodeReservation],
+    graph_path: &str,
+    graph_dir: &std::path::Path,
+    journal: &mut GraphJournal,
+    authority: &omega_core::graph::GraphExecutionAuthority,
+    state_lock: &GraphStateLock,
+    durable_state: &mut DurableGraphState,
+    binding: Option<&GraphLedgerBinding>,
+    mode: omega_core::graph_risk::ExecutionMode,
+) -> Result<Vec<omega_core::graph_executor::NodeReport>> {
+    use omega_core::graph_executor::{
+        mark_effect_started, record_dispatch_intent_at, EffectStartOutcome,
+    };
+
+    let mut reports = Vec::with_capacity(reservations.len());
+    for reservation in reservations {
+        let node = graph.node(&reservation.node).ok_or_else(|| {
+            anyhow::anyhow!(
+                "reservation names unknown node {}",
+                reservation.node.as_str()
+            )
+        })?;
+        if node.has_shell_effect() {
+            let observed_at = chrono::Utc::now();
+            let runtime = binding
+                .map(|binding| fresh_graph_runtime_context(graph, state, binding, observed_at))
+                .transpose()?;
+            let expected_version = state.version;
+            let dispatch_record = record_dispatch_intent_at(
+                graph,
+                state,
+                reservation,
+                mode,
+                observed_at,
+                expected_version,
+                runtime.as_ref(),
+                authority,
+            )
+            .map_err(|error| anyhow::anyhow!("dispatch intent refused: {error}"))?;
+            let started = match dispatch_record.phase {
+                omega_core::graph_executor::DispatchWalPhase::IntentRecorded => {
+                    // The intent is journaled before its state mutation is
+                    // persisted. A crash in that window is safe to replay:
+                    // no effect-start marker exists and the risk gate will be
+                    // consumed only by the eventually durable state.
+                    under_graph_state_lock(state_lock, || {
+                        journal.append_dispatch_intent(&dispatch_record)
+                    })?;
+                    persist_graph_state(
+                        graph,
+                        state,
+                        authority,
+                        durable_state,
+                        journal,
+                        state_lock,
+                    )?;
+
+                    let started_at = chrono::Utc::now();
+                    let runtime = binding
+                        .map(|binding| {
+                            fresh_graph_runtime_context(graph, state, binding, started_at)
+                        })
+                        .transpose()?;
+                    let expected_version = state.version;
+                    let started = mark_effect_started(
+                        graph,
+                        state,
+                        reservation,
+                        &dispatch_record.intent_id,
+                        expected_version,
+                        runtime.as_ref(),
+                        authority,
+                    )
+                    .map_err(|error| anyhow::anyhow!("effect-start transition refused: {error}"))?;
+                    let started = match started {
+                        EffectStartOutcome::Started(record) => record,
+                        EffectStartOutcome::AlreadyStarted(_) => {
+                            return Err(unknown_effect_error(
+                                graph_path,
+                                &durable_state.path,
+                                std::slice::from_ref(reservation),
+                            ));
+                        }
+                    };
+                    // Persist the core WAL first. If the process dies before
+                    // the journal append, restart can prove that no command was
+                    // spawned and finish this exact start transaction. Once
+                    // the journal marker is durable, replay becomes forbidden.
+                    persist_graph_state(
+                        graph,
+                        state,
+                        authority,
+                        durable_state,
+                        journal,
+                        state_lock,
+                    )?;
+                    started
+                }
+                omega_core::graph_executor::DispatchWalPhase::EffectStarted => {
+                    // Recovery of the only safe start gap: core state is
+                    // durable, while the journal marker (which precedes spawn)
+                    // is absent. `recovery_for` routes this reservation here.
+                    dispatch_record
+                }
+                omega_core::graph_executor::DispatchWalPhase::ResultRecorded => {
+                    anyhow::bail!(
+                        "reservation {} is still active after its core WAL recorded a result",
+                        reservation.reservation_id
+                    )
+                }
+            };
+            under_graph_state_lock(state_lock, || journal.append_effect_started(&started))?;
+        }
+
+        state_lock.assert_current()?;
+        if let Some(binding) = binding {
+            let now = chrono::Utc::now();
+            fresh_graph_runtime_context(graph, state, binding, now)
+                .context("fresh ledger check immediately before graph effect")?;
+        }
+        println!("    ▸ {}", reservation.node.as_str());
+        let report = run_node(graph, reservation, graph_dir, authority);
+        state_lock.assert_current()?;
+        under_graph_state_lock(state_lock, || {
+            journal.append(GraphJournalRecord::Result {
+                report: report.clone(),
+                recorded_at: chrono::Utc::now(),
+                reconciled_by: None,
+            })
+        })?;
+        reports.push(report);
+    }
+    Ok(reports)
+}
+
+fn unknown_effect_error(
+    graph_path: &str,
+    state_path: &std::path::Path,
+    reservations: &[omega_core::graph::NodeReservation],
+) -> anyhow::Error {
+    let commands = reservations
+        .iter()
+        .map(|reservation| {
+            format!(
+                "omega graph reconcile {} {} --state {} --result <succeeded|failed> --approver <who>",
+                graph_path,
+                reservation.node.as_str(),
+                state_path.display()
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n  ");
+    anyhow::anyhow!(
+        "UNKNOWN EFFECT: {} dispatch(es) were durable but have no durable result. \
+         OmegaOS will not replay them. Reconcile each explicitly:\n  {}",
+        reservations.len(),
+        commands
+    )
+}
+
+fn cmd_graph_reconcile(
+    graph_path: &str,
+    node: &str,
+    state_path: Option<&str>,
+    result: GraphReconcileResult,
+    reason: Option<&str>,
+    approver: &str,
+) -> Result<()> {
+    if approver.trim().is_empty() {
+        anyhow::bail!("--approver must identify the reconciliation authority");
+    }
+    if result == GraphReconcileResult::Failed && reason.is_none_or(|value| value.trim().is_empty())
+    {
+        anyhow::bail!("--reason is required when reconciling an effect as failed");
+    }
+
+    let graph = load_graph(graph_path)?;
+    graph
+        .validate()
+        .map_err(|error| anyhow::anyhow!("{} is not a runnable graph: {error:?}", graph_path))?;
+    let default_state = format!("{}.state.json", graph_path);
+    let state_path = std::path::Path::new(state_path.unwrap_or(&default_state));
+    let state_lock = GraphStateLock::acquire(state_path)?;
+    let authority = load_graph_authority(Some(state_path), false)?;
+    let (_durable_state, state) = DurableGraphState::load(state_path, &graph, &authority)?;
+    let graph_dir = canonical_graph_directory(graph_path)?;
+    let mut journal = GraphJournal::load_recovering(state_path, &authority, &state, &state_lock)?;
+    journal.validate_state_provenance(&graph, &state)?;
+    let recovery = journal.recovery_for(&state)?;
+    let id = omega_core::graph::NodeId::new(node);
+    let reservation = recovery
+        .unknown_effect
+        .iter()
+        .find(|reservation| reservation.node == id)
+        .cloned()
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "node {} has no dispatched reservation awaiting reconciliation",
+                node
+            )
+        })?;
+
+    let report = match result {
+        GraphReconcileResult::Succeeded => {
+            report_after_successful_effect(&graph, &reservation, &graph_dir, &authority, None)
+        }
+        GraphReconcileResult::Failed => omega_core::graph_executor::NodeReport::failed_for(
+            &reservation,
+            format!(
+                "effect reconciled as failed by {}: {}",
+                approver.trim(),
+                reason.expect("validated above").trim()
+            ),
+        ),
+    };
+    let reconciled_as = match &report.result {
+        omega_core::graph_executor::NodeResult::Succeeded => "succeeded",
+        omega_core::graph_executor::NodeResult::Failed { .. } => "failed",
+    };
+    under_graph_state_lock(&state_lock, || {
+        journal.append(GraphJournalRecord::Result {
+            report,
+            recorded_at: chrono::Utc::now(),
+            reconciled_by: Some(approver.trim().to_string()),
+        })
+    })?;
+    println!(
+        "reconciled node {} as {} by {}; rerun `omega graph run` to advance the state",
+        node,
+        reconciled_as,
+        approver.trim()
+    );
+    Ok(())
+}
+
+struct GraphGateContext<'a> {
+    graph: &'a omega_core::graph::Graph,
+    mode: omega_core::graph_risk::ExecutionMode,
+    graph_path: &'a str,
+    state_path: &'a std::path::Path,
+    unattended: bool,
+}
+
+fn authorize_reservation_batch(
+    context: &GraphGateContext<'_>,
+    state: &omega_core::graph::GraphState,
+    reservations: &[omega_core::graph::NodeReservation],
+    consume: bool,
+    authority: &omega_core::graph::GraphExecutionAuthority,
+    state_lock: Option<&GraphStateLock>,
+) -> Result<omega_core::graph::GraphState> {
+    use omega_core::graph_risk::{authorize_gate_at, evaluate_gate_at, GateDecision};
+
+    let now = chrono::Utc::now();
+    let mut candidate = state.clone();
+    for reservation in reservations {
+        let decision = if consume {
+            authorize_gate_at(
+                context.graph,
+                &mut candidate,
+                &reservation.node,
+                context.mode,
+                now,
+                authority,
+            )
+        } else {
+            evaluate_gate_at(
+                context.graph,
+                state,
+                &reservation.node,
+                context.mode,
+                now,
+                authority,
+            )
+        };
+        match decision {
+            GateDecision::Proceed => {}
+            GateDecision::RequireApproval {
+                node,
+                risk,
+                reason,
+                what_is_lost,
+            } => {
+                if context.unattended {
+                    let escalation = GateDecision::RequireApproval {
+                        node: node.clone(),
+                        risk,
+                        reason: reason.clone(),
+                        what_is_lost: what_is_lost.clone(),
+                    }
+                    .into_escalation(now);
+                    if let Some(escalation) = escalation {
+                        let path = sidecar_path(context.state_path, "escalation.json");
+                        let mut json = serde_json::to_vec_pretty(&escalation)?;
+                        json.push(b'\n');
+                        let state_lock = state_lock.ok_or_else(|| {
+                            anyhow::anyhow!(
+                                "unattended escalation mutation requires the graph state lock"
+                            )
+                        })?;
+                        under_graph_state_lock(state_lock, || atomic_write_private(&path, &json))?;
+                        eprintln!("escalation written to {}", path.display());
+                    }
+                }
+                anyhow::bail!(
+                    "HELD node {} ({risk:?}): {}. What is lost: {}. Resolve with: \
+                     omega risk-gate approve {} {} --state {} --approver <who>",
+                    node.as_str(),
+                    reason,
+                    what_is_lost,
+                    context.graph_path,
+                    node.as_str(),
+                    context.state_path.display()
+                );
+            }
+            GateDecision::Refuse { node, reason } => {
+                anyhow::bail!(
+                    "REFUSED node {}: {}. Fix the graph before execution",
+                    node.as_str(),
+                    reason
+                );
+            }
+        }
+    }
+    Ok(candidate)
+}
+
+struct GraphLedgerBinding {
+    state_dir: std::path::PathBuf,
+    oracle_state: omega_core::oracle_lifecycle::OracleState,
+    ledger: omega_core::mission_ledger::MissionLedger,
+    plan: omega_core::mission::PlanContract,
+}
+
+fn resolve_graph_ledger_binding(oracle: Option<&str>) -> Result<Option<GraphLedgerBinding>> {
+    let Some(oracle) = oracle else {
+        return Ok(None);
+    };
+    if oracle.trim().is_empty() {
+        anyhow::bail!("--oracle must name the Oracle that owns the V3 mission");
+    }
+    let config = OmegaConfig::load().context("cannot load OmegaOS config for graph binding")?;
+    let oracle_state =
+        omega_core::oracle_lifecycle::OracleState::read(&config.state_dir, oracle.trim())?
+            .ok_or_else(|| anyhow::anyhow!("Oracle {} has no durable state", oracle.trim()))?;
+    let ledger_path = omega_core::oracle_lifecycle::mission_ledger_path(&config.state_dir);
+    let metadata = path_metadata_if_present(&ledger_path, "mission ledger")?.ok_or_else(|| {
+        anyhow::anyhow!(
+            "Oracle {} requested a graph binding but MissionLedger {} is missing",
+            oracle.trim(),
+            ledger_path.display()
+        )
+    })?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        anyhow::bail!(
+            "mission ledger {} must be a regular file, never a symlink",
+            ledger_path.display()
+        );
+    }
+    let ledger = omega_core::mission_ledger::MissionLedger::open(&ledger_path)?;
+    let projection = oracle_state.require_ledger_authority(&ledger)?;
+    let plan = ledger
+        .active_plan(&oracle_state.mission_id)?
+        .ok_or_else(|| anyhow::anyhow!("Oracle {} has no active V3 plan", oracle.trim()))?;
+    if projection.active_plan_revision != Some(plan.revision) {
+        anyhow::bail!(
+            "Oracle {} projection and active plan revision disagree",
+            oracle.trim()
+        );
+    }
+    plan.verify_integrity()
+        .context("Oracle active plan failed integrity verification")?;
+    Ok(Some(GraphLedgerBinding {
+        state_dir: config.state_dir,
+        oracle_state,
+        ledger,
+        plan,
+    }))
+}
+
+fn require_active_graph_plan(
+    binding: &GraphLedgerBinding,
+) -> Result<omega_core::mission_ledger::MissionProjection> {
+    let projection = binding
+        .oracle_state
+        .require_ledger_authority(&binding.ledger)?;
+    let active = binding
+        .ledger
+        .active_plan(&binding.oracle_state.mission_id)?
+        .ok_or_else(|| anyhow::anyhow!("bound Oracle no longer has an active V3 plan"))?;
+    if active != binding.plan || projection.active_plan_revision != Some(binding.plan.revision) {
+        anyhow::bail!(
+            "bound graph plan is no longer the exact active plan for mission {}",
+            binding.oracle_state.mission_id.as_str()
+        );
+    }
+    Ok(projection)
+}
+
+fn graph_executable_node(node: &omega_core::graph::Node) -> bool {
+    matches!(
+        node.kind,
+        omega_core::graph::NodeKind::Agent
+            | omega_core::graph::NodeKind::Router
+            | omega_core::graph::NodeKind::Verifier
+            | omega_core::graph::NodeKind::Synthesis
+    )
+}
+
+fn ensure_bound_graph_runtime_authority(
+    graph: &omega_core::graph::Graph,
+    state: &omega_core::graph::GraphState,
+    binding: &GraphLedgerBinding,
+) -> Result<()> {
+    use omega_core::mission::{MissionState, TaskAttemptState};
+    use omega_core::mission_ledger::{AppendEvent, TaskAttemptMutation};
+
+    let mission_record = binding
+        .ledger
+        .mission_record(&binding.oracle_state.mission_id)?
+        .ok_or_else(|| anyhow::anyhow!("bound graph mission record disappeared"))?;
+    let owner = omega_core::session::sanitize_session_name(&format!("graph-{}", state.run_id));
+    for node in graph
+        .nodes
+        .iter()
+        .filter(|node| graph_executable_node(node))
+    {
+        let task_id = node
+            .task_id
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("executable graph node {} has no task id", node.id))?;
+        let task = binding
+            .plan
+            .tasks
+            .iter()
+            .find(|task| task.task_id == *task_id)
+            .ok_or_else(|| {
+                anyhow::anyhow!("graph task {} is absent from active plan", task_id.as_str())
+            })?;
+        let mut candidates = binding
+            .ledger
+            .task_attempts(&binding.oracle_state.mission_id)?
+            .into_iter()
+            .filter(|attempt| {
+                attempt.task_id == task_id.as_str()
+                    && attempt.plan_revision == binding.plan.revision
+                    && !attempt.state.is_terminal()
+            })
+            .collect::<Vec<_>>();
+        if candidates.len() > 1 {
+            anyhow::bail!(
+                "graph task {} has multiple non-terminal attempts",
+                task_id.as_str()
+            );
+        }
+        if candidates.is_empty() {
+            let projection = require_active_graph_plan(binding)?;
+            let attempt_id = format!(
+                "attempt-{}-{}-graph-{}",
+                binding.oracle_state.mission_id.as_str(),
+                task_id.as_str(),
+                state.run_id
+            );
+            let mut queued = AppendEvent::new(
+                binding.oracle_state.mission_id.clone(),
+                projection.version,
+                format!("graph:{}:{}:queued", state.run_id, task_id.as_str()),
+                &owner,
+                "graph_task_attempt_queued",
+            );
+            queued.task_attempt = Some(TaskAttemptMutation {
+                task_id: task_id.as_str().to_string(),
+                attempt_id: attempt_id.clone(),
+                plan_revision: binding.plan.revision,
+                expected_version: 0,
+                next_state: TaskAttemptState::Queued,
+            });
+            queued.payload = serde_json::json!({
+                "run_id": state.run_id,
+                "node_id": node.id.as_str(),
+                "task_id": task_id.as_str(),
+            });
+            binding.ledger.append(queued)?;
+            candidates.push(
+                binding
+                    .ledger
+                    .task_attempt(&attempt_id)?
+                    .ok_or_else(|| anyhow::anyhow!("queued graph attempt disappeared"))?,
+            );
+        }
+        let candidate = candidates.pop().expect("one graph attempt candidate");
+        if candidate.state == TaskAttemptState::Queued {
+            let mut authority = omega_core::orchestration::AuthoritativeTaskAttempt {
+                mission_id: candidate.mission_id.clone(),
+                task_id: candidate.task_id.clone(),
+                attempt_id: candidate.attempt_id.clone(),
+                plan_revision: candidate.plan_revision,
+                owner: None,
+                leases: Vec::new(),
+                scope_receipt: None,
+            };
+            omega_core::orchestration::claim_authoritative_scopes(
+                &binding.ledger,
+                &binding.state_dir,
+                &mission_record.working_dir,
+                &mut authority,
+                &owner,
+                &task.scope,
+                std::time::Duration::from_secs(24 * 60 * 60),
+            )?;
+            let mission = binding
+                .ledger
+                .mission(&binding.oracle_state.mission_id)?
+                .ok_or_else(|| anyhow::anyhow!("bound graph mission disappeared"))?;
+            if mission.state == MissionState::Planned {
+                omega_core::orchestration::transition_authoritative_mission(
+                    &binding.ledger,
+                    &binding.oracle_state.mission_id,
+                    MissionState::Running,
+                    &owner,
+                )?;
+            } else if mission.state != MissionState::Running {
+                anyhow::bail!(
+                    "bound graph cannot start task {} while mission is {:?}",
+                    task_id.as_str(),
+                    mission.state
+                );
+            }
+            omega_core::orchestration::transition_authoritative_attempt(
+                &binding.ledger,
+                &authority,
+                TaskAttemptState::Running,
+                &owner,
+            )?;
+        } else if !matches!(
+            candidate.state,
+            TaskAttemptState::Running
+                | TaskAttemptState::CandidateDone
+                | TaskAttemptState::Verifying
+        ) {
+            anyhow::bail!(
+                "graph task {} has unusable attempt state {:?}",
+                task_id.as_str(),
+                candidate.state
+            );
+        }
+    }
+    let mission = binding
+        .ledger
+        .mission(&binding.oracle_state.mission_id)?
+        .ok_or_else(|| anyhow::anyhow!("bound graph mission disappeared"))?;
+    if mission.state == MissionState::Planned {
+        omega_core::orchestration::transition_authoritative_mission(
+            &binding.ledger,
+            &binding.oracle_state.mission_id,
+            MissionState::Running,
+            &owner,
+        )?;
+    }
+    Ok(())
+}
+
+fn fresh_graph_runtime_context(
+    graph: &omega_core::graph::Graph,
+    state: &omega_core::graph::GraphState,
+    binding: &GraphLedgerBinding,
+    observed_at: chrono::DateTime<chrono::Utc>,
+) -> Result<omega_core::graph_executor::GraphRuntimeContext> {
+    use std::collections::BTreeMap;
+    const SNAPSHOT_RETRIES: usize = 8;
+
+    let mission_record = binding
+        .ledger
+        .mission_record(&binding.oracle_state.mission_id)?
+        .ok_or_else(|| anyhow::anyhow!("bound graph mission record disappeared"))?;
+    let workspace_id =
+        omega_core::graph::canonical_graph_workspace_identity(&mission_record.working_dir)?;
+    for _ in 0..SNAPSHOT_RETRIES {
+        let mission = require_active_graph_plan(binding)?;
+        let all_attempts = binding
+            .ledger
+            .task_attempts(&binding.oracle_state.mission_id)?;
+        let mut attempts = BTreeMap::new();
+        for node in graph
+            .nodes
+            .iter()
+            .filter(|node| graph_executable_node(node))
+        {
+            let task_id = node.task_id.as_ref().ok_or_else(|| {
+                anyhow::anyhow!("executable graph node {} has no task id", node.id)
+            })?;
+            let exact_attempt_id = state
+                .nodes
+                .get(&node.id)
+                .and_then(|run| run.attempt_binding.as_ref())
+                .map(|attempt| attempt.attempt_id.0.as_str());
+            let matching = all_attempts
+                .iter()
+                .filter(|attempt| {
+                    attempt.task_id == task_id.as_str()
+                        && attempt.plan_revision == binding.plan.revision
+                        && exact_attempt_id.is_none_or(|id| attempt.attempt_id == id)
+                        && matches!(
+                            attempt.state,
+                            omega_core::mission::TaskAttemptState::Running
+                                | omega_core::mission::TaskAttemptState::CandidateDone
+                                | omega_core::mission::TaskAttemptState::Verifying
+                        )
+                })
+                .collect::<Vec<_>>();
+            if matching.len() > 1 {
+                anyhow::bail!(
+                    "graph node {} has multiple live attempts in the active plan",
+                    node.id.as_str()
+                );
+            }
+            if let Some(attempt) = matching.first() {
+                let leases = binding.ledger.active_leases_for_attempt(
+                    &attempt.mission_id,
+                    &attempt.task_id,
+                    &attempt.attempt_id,
+                )?;
+                attempts.insert(
+                    node.id.clone(),
+                    omega_core::graph_executor::GraphTaskRuntime {
+                        attempt: (*attempt).clone(),
+                        leases,
+                    },
+                );
+            }
+        }
+        let confirmed = require_active_graph_plan(binding)?;
+        if confirmed == mission {
+            return Ok(omega_core::graph_executor::GraphRuntimeContext {
+                workspace_id,
+                mission,
+                plan: binding.plan.clone(),
+                attempts,
+                observed_at,
+            });
+        }
+    }
+    anyhow::bail!(
+        "bound graph MissionLedger snapshot did not stabilize after {} retries",
+        SNAPSHOT_RETRIES
+    )
+}
+
+fn enforce_graph_plan_binding(
+    graph: &omega_core::graph::Graph,
+    state: &mut omega_core::graph::GraphState,
+    binding: Option<&GraphLedgerBinding>,
+) -> Result<bool> {
+    match (state.mission_binding.as_ref(), binding) {
+        (None, None) => Ok(false),
+        (Some(_), None) => {
+            anyhow::bail!("this graph state is mission-bound; resume it with the same --oracle")
+        }
+        (Some(_), Some(binding)) => {
+            require_active_graph_plan(binding)?;
+            state
+                .validate_plan_binding(graph, &binding.plan)
+                .map_err(|error| anyhow::anyhow!("graph mission binding mismatch: {error}"))?;
+            Ok(false)
+        }
+        (None, Some(binding)) => {
+            require_active_graph_plan(binding)?;
+            state
+                .bind_to_plan(graph, &binding.plan)
+                .map_err(|error| anyhow::anyhow!("cannot bind graph to Oracle plan: {error}"))?;
+            Ok(true)
+        }
+    }
+}
+
+fn graph_state_path_digest(path: &std::path::Path) -> Result<String> {
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| std::path::Path::new("."))
+        .canonicalize()
+        .with_context(|| format!("cannot canonicalize state directory for {}", path.display()))?;
+    let name = path
+        .file_name()
+        .ok_or_else(|| anyhow::anyhow!("graph state path {} has no file name", path.display()))?;
+    let canonical_identity = parent.join(name);
+    Ok(
+        omega_core::graph::GraphExecutionAuthority::journal_payload_digest(
+            canonical_identity.to_string_lossy().as_bytes(),
+        ),
+    )
+}
+
+fn graph_ledger_payload(
+    binding: &GraphLedgerBinding,
+    state: &omega_core::graph::GraphState,
+    state_path: &std::path::Path,
+) -> Result<serde_json::Value> {
+    let state_binding = state
+        .mission_binding
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("bound graph state lost its immutable mission binding"))?;
+    Ok(serde_json::json!({
+        "schema_version": 1,
+        "oracle": binding.oracle_state.oracle_name,
+        "run_id": state.run_id,
+        "graph_digest": state.graph_digest,
+        "mission_id": state_binding.mission_id.as_str(),
+        "plan_id": state_binding.plan_id.0,
+        "plan_revision": state_binding.plan_revision,
+        "plan_digest": state_binding.plan_digest,
+        "state_path_digest": graph_state_path_digest(state_path)?,
+    }))
+}
+
+fn ensure_graph_ledger_event(
+    binding: &GraphLedgerBinding,
+    state: &omega_core::graph::GraphState,
+    kind: &str,
+    mut payload: serde_json::Value,
+) -> Result<()> {
+    const CAS_ATTEMPTS: usize = 8;
+    let idempotency_key = format!("{kind}:{}", state.run_id);
+    if let Some(object) = payload.as_object_mut() {
+        object.insert("event".to_string(), serde_json::json!(kind));
+    }
+    for _ in 0..CAS_ATTEMPTS {
+        let projection = require_active_graph_plan(binding)?;
+        if let Some(existing) = binding
+            .ledger
+            .events(&binding.oracle_state.mission_id)?
+            .into_iter()
+            .find(|event| event.idempotency_key == idempotency_key)
+        {
+            if existing.kind != kind || existing.payload != payload {
+                anyhow::bail!(
+                    "MissionLedger event {} conflicts with the exact graph binding",
+                    idempotency_key
+                );
+            }
+            return Ok(());
+        }
+        let mut event = omega_core::mission_ledger::AppendEvent::new(
+            binding.oracle_state.mission_id.clone(),
+            projection.version,
+            idempotency_key.clone(),
+            binding.oracle_state.oracle_name.clone(),
+            kind,
+        );
+        event.correlation_id = Some(binding.oracle_state.oracle_name.clone());
+        event.payload = payload.clone();
+        match binding.ledger.append(event) {
+            Ok(outcome) => {
+                if outcome.event.kind != kind || outcome.event.payload != payload {
+                    anyhow::bail!("MissionLedger replayed a conflicting graph event");
+                }
+                return Ok(());
+            }
+            Err(omega_core::mission_ledger::LedgerError::VersionConflict { .. }) => continue,
+            Err(error) => return Err(error.into()),
+        }
+    }
+    anyhow::bail!(
+        "MissionLedger graph event {} did not converge after {} compare-and-set attempts",
+        idempotency_key,
+        CAS_ATTEMPTS
+    )
+}
+
+fn record_graph_run_bound(
+    binding: &GraphLedgerBinding,
+    state: &omega_core::graph::GraphState,
+    state_path: &std::path::Path,
+) -> Result<()> {
+    let mut payload = graph_ledger_payload(binding, state, state_path)?;
+    payload["state_version"] = serde_json::json!(state.version);
+    ensure_graph_ledger_event(binding, state, "graph_run_bound", payload)
+}
+
+fn graph_terminal_event_kind(status: &str) -> Result<&'static str> {
+    match status {
+        "complete" => Ok("graph_run_completed"),
+        "blocked" => Ok("graph_run_blocked"),
+        "failed" => Ok("graph_run_failed"),
+        other => anyhow::bail!("unsupported graph terminal status {other:?}"),
+    }
+}
+
+fn record_graph_run_terminal(
+    binding: Option<&GraphLedgerBinding>,
+    state: &omega_core::graph::GraphState,
+    state_path: &std::path::Path,
+    status: &str,
+) -> Result<()> {
+    let Some(binding) = binding else {
+        return Ok(());
+    };
+    let mut acceptance_receipt_ids = state
+        .nodes
+        .values()
+        .filter_map(|node| {
+            node.acceptance
+                .as_ref()
+                .map(|receipt| receipt.acceptance_id.clone())
+        })
+        .collect::<Vec<_>>();
+    acceptance_receipt_ids.sort();
+    let state_digest = omega_core::graph::GraphExecutionAuthority::journal_payload_digest(
+        &serde_json::to_vec(state)?,
+    );
+    let mut payload = graph_ledger_payload(binding, state, state_path)?;
+    payload["status"] = serde_json::json!(status);
+    payload["state_version"] = serde_json::json!(state.version);
+    payload["state_digest"] = serde_json::json!(state_digest);
+    payload["acceptance_receipt_ids"] = serde_json::json!(acceptance_receipt_ids);
+    let kind = graph_terminal_event_kind(status)?;
+    ensure_graph_ledger_event(binding, state, kind, payload)
+}
+
+fn advance_graph_runtime(
+    graph: &omega_core::graph::Graph,
+    state: &mut omega_core::graph::GraphState,
+    reports: &[omega_core::graph_executor::NodeReport],
+    binding: Option<&GraphLedgerBinding>,
+    authority: &omega_core::graph::GraphExecutionAuthority,
+) -> Result<omega_core::graph_executor::StepOutcome> {
+    match binding {
+        Some(binding) => {
+            let observed_at = chrono::Utc::now();
+            let runtime = fresh_graph_runtime_context(graph, state, binding, observed_at)?;
+            omega_core::graph_executor::advance_bound(graph, state, reports, &runtime, authority)
+                .map_err(|error| anyhow::anyhow!("bound executor refused the step: {error}"))
+        }
+        None => omega_core::graph_executor::advance(graph, state, reports, authority)
+            .map_err(|error| anyhow::anyhow!("standalone executor refused the step: {error}")),
     }
 }
 
@@ -10885,10 +16407,15 @@ fn run_node(
 /// The loop is the one `docs/GRAPH-EXECUTION-LAYER.md` prescribes, with two
 /// things the doc leaves to the caller made explicit here.
 ///
-/// STATE IS PERSISTED AFTER EVERY STEP, before anything is dispatched. A run
-/// killed mid-dispatch must resume knowing the node was attempted; writing
-/// afterwards would hand a thrashing node a fresh retry budget on every crash,
-/// which is exactly the unbounded loop the retry policy exists to prevent.
+/// State and the effect journal form an ordered protocol. A reservation is
+/// persisted before gating. The core dispatch intent atomically consumes any
+/// approval and records its authenticated proof; its journal intent is synced
+/// before that state is persisted, so the pre-state crash window is safely
+/// repeatable. EffectStarted is persisted in core state before its journal
+/// marker, and the command may spawn only after both are durable. Every result
+/// is synced before `advance`. A crash can therefore be classified as
+/// safe-to-gate, safe-to-finish-starting, safe-to-apply, or UNKNOWN EFFECT.
+/// Only the last class requires attributed reconciliation and is never replayed.
 ///
 /// A HELD NODE STOPS THE RUN rather than being skipped. Skipping it would let
 /// the graph converge around a step a human refused to authorize and report
@@ -10900,19 +16427,79 @@ async fn cmd_graph_run(
     dry_run: bool,
     max_steps: usize,
 ) -> Result<()> {
-    use omega_core::graph_executor::{advance, ExecutionOutcome, NodeReport};
-    use omega_core::graph_risk::{evaluate_gate, ExecutionMode, GateDecision};
+    cmd_graph_run_with_binding(graph_path, state_path, unattended, dry_run, max_steps, None).await
+}
+
+async fn cmd_graph_run_for_oracle(
+    graph_path: &str,
+    state_path: Option<&str>,
+    unattended: bool,
+    dry_run: bool,
+    max_steps: usize,
+    oracle: Option<&str>,
+) -> Result<()> {
+    if oracle.is_none() {
+        return cmd_graph_run(graph_path, state_path, unattended, dry_run, max_steps).await;
+    }
+    let binding = resolve_graph_ledger_binding(oracle)?;
+    cmd_graph_run_with_binding(
+        graph_path,
+        state_path,
+        unattended,
+        dry_run,
+        max_steps,
+        binding.as_ref(),
+    )
+    .await
+}
+
+async fn cmd_graph_run_with_binding(
+    graph_path: &str,
+    state_path: Option<&str>,
+    unattended: bool,
+    dry_run: bool,
+    max_steps: usize,
+    binding: Option<&GraphLedgerBinding>,
+) -> Result<()> {
+    use omega_core::graph_executor::{ExecutionOutcome, NodeReport};
+    use omega_core::graph_risk::ExecutionMode;
 
     let graph = load_graph(graph_path)?;
     graph
         .validate()
         .map_err(|e| anyhow::anyhow!("{} is not a runnable graph: {:?}", graph_path, e))?;
+    if let Some(reduce) = graph
+        .nodes
+        .iter()
+        .find(|node| node.kind == omega_core::graph::NodeKind::Reduce)
+    {
+        anyhow::bail!(
+            "graph run refused before state mutation: Reduce node `{}` requires a typed pure reducer driver, which the CLI does not implement yet",
+            reduce.id.as_str()
+        );
+    }
+    if let Some(node) = graph.nodes.iter().find(|node| {
+        matches!(
+            node.kind,
+            omega_core::graph::NodeKind::Agent
+                | omega_core::graph::NodeKind::Router
+                | omega_core::graph::NodeKind::Synthesis
+        ) && !node.has_shell_effect()
+    }) {
+        anyhow::bail!(
+            "graph run refused before state mutation: {:?} node `{}` declares no typed `command` effect",
+            node.kind,
+            node.id.as_str()
+        );
+    }
+    if !(1..=1_000_000).contains(&max_steps) {
+        anyhow::bail!("--max-steps must be between 1 and 1000000");
+    }
 
     // Default the state beside the graph so a resumed run needs no extra flag —
     // the common case is re-running the same command after an interruption.
     let default_state = format!("{}.state.json", graph_path);
-    let state_path = state_path.unwrap_or(&default_state);
-    let mut state = load_graph_state(Some(state_path), &graph)?;
+    let state_path = std::path::Path::new(state_path.unwrap_or(&default_state));
 
     // Node commands run in the GRAPH's directory, not the caller's.
     //
@@ -10923,164 +16510,347 @@ async fn cmd_graph_run(
     // root, because the shell read the arrow as a redirect and the cwd was
     // wherever the command was typed. Anchoring to the graph makes a mission
     // self-contained and its side effects land where its author can see them.
-    let graph_dir = std::path::Path::new(graph_path)
-        .parent()
-        .filter(|p| !p.as_os_str().is_empty())
-        .unwrap_or_else(|| std::path::Path::new("."))
-        .to_path_buf();
+    let graph_dir = canonical_graph_directory(graph_path)?;
 
     let mode = if unattended {
         ExecutionMode::Unattended
     } else {
         ExecutionMode::Attended
     };
-
-    println!("◆ graph {} ({} nodes)", graph_path, graph.nodes.len());
-    println!("  state: {}", state_path);
-    println!("  mode:  {}", if unattended { "unattended" } else { "attended" });
-    println!();
-
-    let persist = |state: &omega_core::graph::GraphState| -> Result<()> {
-        let json = serde_json::to_string_pretty(state)?;
-        let tmp = format!("{}.tmp", state_path);
-        std::fs::write(&tmp, json).with_context(|| format!("writing {}", tmp))?;
-        std::fs::rename(&tmp, state_path).with_context(|| format!("replacing {}", state_path))?;
-        Ok(())
+    let gate_context = GraphGateContext {
+        graph: &graph,
+        mode,
+        graph_path,
+        state_path,
+        unattended,
     };
 
-    let mut reports: Vec<NodeReport> = Vec::new();
+    println!("◆ graph {} ({} nodes)", graph_path, graph.nodes.len());
+    println!("  state: {}", state_path.display());
+    println!(
+        "  mode:  {}",
+        if unattended { "unattended" } else { "attended" }
+    );
+    println!();
 
-    for step_no in 1..=max_steps {
-        let step = advance(&graph, &mut state, &reports)
-            .map_err(|e| anyhow::anyhow!("executor refused the step: {:?}", e))?;
-        persist(&state)?;
-        reports.clear();
+    // A dry-run is a pure simulation over a clone. It does not acquire the
+    // lock (which would create a sidecar), create a state/journal/escalation,
+    // consume approval, or rewrite an existing byte.
+    if dry_run {
+        let authority = load_graph_authority(Some(state_path), false)?;
+        let mut state = load_graph_state(state_path.to_str(), &graph, &authority)?;
+        let journal = GraphJournal::load(state_path, &authority)?;
+        journal.validate_state_provenance(&graph, &state)?;
+        enforce_graph_plan_binding(&graph, &mut state, binding)?;
+        let recovery = journal.recovery_for(&state)?;
+        if !recovery.unknown_effect.is_empty() {
+            return Err(unknown_effect_error(
+                graph_path,
+                state_path,
+                &recovery.unknown_effect,
+            ));
+        }
+        if !recovery.pending_dispatch.is_empty() || !recovery.pending_gate.is_empty() {
+            if !recovery.pending_gate.is_empty() {
+                let _ = authorize_reservation_batch(
+                    &gate_context,
+                    &state,
+                    &recovery.pending_gate,
+                    false,
+                    &authority,
+                    None,
+                )?;
+            }
+            let reservations = recovery
+                .pending_dispatch
+                .iter()
+                .chain(&recovery.pending_gate)
+                .collect::<Vec<_>>();
+            println!("(--dry-run) would resume this authorized batch; no files were touched:");
+            for reservation in &reservations {
+                println!(
+                    "    {}  {}",
+                    reservation.node.as_str(),
+                    node_command(&graph, &reservation.node)
+                        .unwrap_or_else(|| "<no command>".to_string())
+                );
+            }
+            return Ok(());
+        }
 
-        for id in &step.retrying {
-            println!("  [~] {} failed, retrying (budget left)", id.as_str());
-        }
-        for id in &step.exhausted {
-            println!("  [x] {} failed terminally (retry budget spent)", id.as_str());
-        }
-        for id in &step.fallbacks {
-            println!("  [>] fallback {} unlocked", id.as_str());
-        }
-        for (from, to) in &step.loops_taken {
-            println!("  [o] loop edge {} -> {} traversed", from.as_str(), to.as_str());
-        }
-
+        let reports = recovery.completed;
+        let step = advance_graph_runtime(&graph, &mut state, &reports, binding, &authority)
+            .context("executor refused dry-run step")?;
         match &step.outcome {
             ExecutionOutcome::Complete => {
-                println!("\n✓ complete — every node settled, nothing failed unrecovered");
-                return Ok(());
+                println!("(--dry-run) graph is already complete; no files were touched");
+                Ok(())
             }
-            ExecutionOutcome::Blocked { unreachable } => {
-                println!("\n✗ blocked — nothing can become ready. Unreachable:");
-                for id in unreachable {
-                    println!("    {}", id.as_str());
-                }
-                std::process::exit(1);
-            }
+            ExecutionOutcome::Blocked { unreachable } => anyhow::bail!(
+                "dry-run found a blocked graph; unreachable: {}",
+                unreachable
+                    .iter()
+                    .map(|id| id.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
             ExecutionOutcome::Failed { node, reason } => {
-                println!("\n✗ failed — {} : {}", node.as_str(), reason);
-                std::process::exit(1);
+                anyhow::bail!(
+                    "dry-run found terminal failure {}: {}",
+                    node.as_str(),
+                    reason
+                )
             }
             ExecutionOutcome::Progressing { ready } => {
-                println!("  step {}: {} ready", step_no, ready.len());
-
-                // GATE EVERY node before ANY of them runs. Gating inside the
-                // dispatch loop would let the nodes ahead of a held one run
-                // first, so a refusal would arrive after the run had already
-                // moved — the approval would be for a state that no longer
-                // exists.
-                let mut authorized = Vec::new();
-                for id in ready {
-                    match evaluate_gate(&graph, &state, id, mode) {
-                        GateDecision::Proceed => authorized.push(id.clone()),
-                        GateDecision::RequireApproval {
-                            node,
-                            risk,
-                            reason,
-                            what_is_lost,
-                        } => {
-                            println!("\n⛔ HELD  {} ({:?})", node.as_str(), risk);
-                            println!("   reason:       {}", reason);
-                            println!("   what is lost: {}", what_is_lost);
-                            if unattended {
-                                // Unattended, a prompt is not a safety
-                                // mechanism, it is a mission that stalls in
-                                // silence. Leave the durable artifact instead.
-                                let record = GateDecision::RequireApproval {
-                                    node: node.clone(),
-                                    risk,
-                                    reason: reason.clone(),
-                                    what_is_lost: what_is_lost.clone(),
-                                }
-                                .into_escalation(chrono::Utc::now());
-                                if let Some(record) = record {
-                                    let path = format!("{}.escalation.json", state_path);
-                                    std::fs::write(&path, serde_json::to_string_pretty(&record)?)?;
-                                    println!("   escalation written to {}", path);
-                                }
-                            }
-                            println!(
-                                "   resolve with: omega risk-gate approve {} {} --state {} --approver <who>",
-                                graph_path,
-                                node.as_str(),
-                                state_path
-                            );
-                            std::process::exit(2);
-                        }
-                        GateDecision::Refuse { node, reason } => {
-                            println!("\n⛔ REFUSED {} — {}", node.as_str(), reason);
-                            println!("   the gate will not put this in front of a human as it stands; fix the graph");
-                            std::process::exit(2);
-                        }
-                    }
+                let reservations: Vec<_> = ready
+                    .iter()
+                    .map(|id| require_node_reservation(&step, id))
+                    .collect::<Result<_>>()?;
+                let _ = authorize_reservation_batch(
+                    &gate_context,
+                    &state,
+                    &reservations,
+                    false,
+                    &authority,
+                    None,
+                )?;
+                println!("(--dry-run) step 1 would run now; no files were touched:");
+                for reservation in &reservations {
+                    println!(
+                        "    {}  {}",
+                        reservation.node.as_str(),
+                        node_command(&graph, &reservation.node)
+                            .unwrap_or_else(|| "<no command>".to_string())
+                    );
                 }
+                Ok(())
+            }
+        }
+    } else {
+        // Every state-changing operation below, including long-running effects,
+        // holds this same cross-process lock. Risk-gate decisions use it too.
+        let state_lock = GraphStateLock::acquire(state_path)?;
+        let authority =
+            under_graph_state_lock(&state_lock, || load_graph_authority(Some(state_path), true))?;
+        let (mut durable_state, mut state) =
+            DurableGraphState::load(state_path, &graph, &authority)?;
+        let mut journal =
+            GraphJournal::load_recovering(state_path, &authority, &state, &state_lock)?;
+        journal.validate_state_provenance(&graph, &state)?;
+        let binding_added = enforce_graph_plan_binding(&graph, &mut state, binding)?;
+        if binding_added {
+            persist_graph_state(
+                &graph,
+                &state,
+                &authority,
+                &mut durable_state,
+                &mut journal,
+                &state_lock,
+            )?;
+        }
+        if let Some(binding) = binding {
+            under_graph_state_lock(&state_lock, || {
+                ensure_bound_graph_runtime_authority(&graph, &state, binding)
+            })?;
+            under_graph_state_lock(&state_lock, || {
+                record_graph_run_bound(binding, &state, state_path)
+            })?;
+        }
+        let recovery = journal.recovery_for(&state)?;
+        if !recovery.unknown_effect.is_empty() {
+            return Err(unknown_effect_error(
+                graph_path,
+                state_path,
+                &recovery.unknown_effect,
+            ));
+        }
+        let mut reports: Vec<NodeReport> = recovery.completed;
+        if !recovery.pending_dispatch.is_empty() {
+            wait_for_retry_deadlines(&journal, &recovery.pending_dispatch).await?;
+            reports.extend(execute_reserved_nodes(
+                &graph,
+                &mut state,
+                &recovery.pending_dispatch,
+                graph_path,
+                &graph_dir,
+                &mut journal,
+                &authority,
+                &state_lock,
+                &mut durable_state,
+                binding,
+                mode,
+            )?);
+        }
+        if !recovery.pending_gate.is_empty() {
+            wait_for_retry_deadlines(&journal, &recovery.pending_gate).await?;
+            let _ = authorize_reservation_batch(
+                &gate_context,
+                &state,
+                &recovery.pending_gate,
+                false,
+                &authority,
+                Some(&state_lock),
+            )?;
+            reports.extend(execute_reserved_nodes(
+                &graph,
+                &mut state,
+                &recovery.pending_gate,
+                graph_path,
+                &graph_dir,
+                &mut journal,
+                &authority,
+                &state_lock,
+                &mut durable_state,
+                binding,
+                mode,
+            )?);
+        }
 
-                if dry_run {
-                    println!("\n(--dry-run) would run now, and nothing else was touched:");
-                    for id in &authorized {
-                        println!(
-                            "    {}  {}",
-                            id.as_str(),
-                            node_command(&graph, id).unwrap_or_else(|| "<no command>".into())
-                        );
-                    }
+        for step_no in 1..=max_steps {
+            let step = advance_graph_runtime(&graph, &mut state, &reports, binding, &authority)?;
+            schedule_step_retries(&graph, &step, &mut journal, &state_lock)?;
+            // This persists applied results and the next reservations. Persisting a
+            // reservation does not authorize its effect; absence of a committed
+            // journal authorization routes restart back through the risk gate.
+            persist_graph_state(
+                &graph,
+                &state,
+                &authority,
+                &mut durable_state,
+                &mut journal,
+                &state_lock,
+            )?;
+            reports.clear();
+
+            print_graph_step_events(&step);
+
+            match &step.outcome {
+                ExecutionOutcome::Complete => {
+                    under_graph_state_lock(&state_lock, || {
+                        record_graph_run_terminal(binding, &state, state_path, "complete")
+                    })?;
+                    println!("\n✓ complete — every node settled, nothing failed unrecovered");
                     return Ok(());
                 }
-
-                // The ready set is exactly what may run CONCURRENTLY — that is
-                // the whole reason to express a mission as a graph rather than
-                // a list, so running it serially here would throw the value
-                // away while keeping the ceremony.
-                reports = std::thread::scope(|scope| {
-                    let handles: Vec<_> = authorized
+                ExecutionOutcome::Blocked { unreachable } => {
+                    under_graph_state_lock(&state_lock, || {
+                        record_graph_run_terminal(binding, &state, state_path, "blocked")
+                    })?;
+                    anyhow::bail!(
+                        "blocked: nothing can become ready; unreachable: {}",
+                        unreachable
+                            .iter()
+                            .map(|id| id.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    );
+                }
+                ExecutionOutcome::Failed { node, reason } => {
+                    under_graph_state_lock(&state_lock, || {
+                        record_graph_run_terminal(binding, &state, state_path, "failed")
+                    })?;
+                    anyhow::bail!("failed: {}: {}", node.as_str(), reason);
+                }
+                ExecutionOutcome::Progressing { ready } => {
+                    println!("  step {}: {} ready", step_no, ready.len());
+                    let reservations: Vec<_> = ready
                         .iter()
-                        .map(|id| {
-                            let graph = &graph;
-                            let cwd = graph_dir.as_path();
-                            scope.spawn(move || {
-                                println!("    ▸ {}", id.as_str());
-                                run_node(graph, id, cwd)
-                            })
-                        })
-                        .collect();
-                    handles
-                        .into_iter()
-                        .filter_map(|h| h.join().ok())
+                        .map(|id| require_node_reservation(&step, id))
+                        .collect::<Result<_>>()?;
+                    wait_for_retry_deadlines(&journal, &reservations).await?;
+                    // GATE THE WHOLE SET before any dispatch marker or effect. A
+                    // held sibling prevents all siblings from starting.
+                    let _ = authorize_reservation_batch(
+                        &gate_context,
+                        &state,
+                        &reservations,
+                        false,
+                        &authority,
+                        Some(&state_lock),
+                    )?;
+                    reports = execute_reserved_nodes(
+                        &graph,
+                        &mut state,
+                        &reservations,
+                        graph_path,
+                        &graph_dir,
+                        &mut journal,
+                        &authority,
+                        &state_lock,
+                        &mut durable_state,
+                        binding,
+                        mode,
+                    )?;
+                }
+            }
+        }
+
+        // The last dispatched batch still owns durable reservations and reports.
+        // Apply it once before yielding; otherwise a max-step stop strands its
+        // result only in the journal and makes the next invocation appear to do
+        // work the previous invocation already completed.
+        let settled = advance_graph_runtime(&graph, &mut state, &reports, binding, &authority)
+            .context("executor refused final settlement")?;
+        schedule_step_retries(&graph, &settled, &mut journal, &state_lock)?;
+        persist_graph_state(
+            &graph,
+            &state,
+            &authority,
+            &mut durable_state,
+            &mut journal,
+            &state_lock,
+        )?;
+        print_graph_step_events(&settled);
+        match settled.outcome {
+            ExecutionOutcome::Complete => {
+                under_graph_state_lock(&state_lock, || {
+                    record_graph_run_terminal(binding, &state, state_path, "complete")
+                })?;
+                println!("\n✓ complete — every node settled, nothing failed unrecovered");
+                Ok(())
+            }
+            ExecutionOutcome::Blocked { unreachable } => {
+                under_graph_state_lock(&state_lock, || {
+                    record_graph_run_terminal(binding, &state, state_path, "blocked")
+                })?;
+                anyhow::bail!(
+                    "blocked after final settlement: nothing can become ready; unreachable: {}",
+                    unreachable
+                        .iter()
+                        .map(|id| id.as_str())
                         .collect::<Vec<_>>()
-                });
+                        .join(", ")
+                )
+            }
+            ExecutionOutcome::Failed { node, reason } => {
+                under_graph_state_lock(&state_lock, || {
+                    record_graph_run_terminal(binding, &state, state_path, "failed")
+                })?;
+                anyhow::bail!(
+                    "failed after final settlement: {}: {}",
+                    node.as_str(),
+                    reason
+                )
+            }
+            ExecutionOutcome::Progressing { ready } => {
+                println!(
+                    "\n[~] paused cleanly after {} dispatched step(s); {} node(s) are durably reserved for resume",
+                    max_steps,
+                    ready.len()
+                );
+                println!(
+                    "    resume: omega graph run {} --state {}{}{}",
+                    graph_path,
+                    state_path.display(),
+                    if unattended { " --unattended" } else { "" },
+                    binding
+                        .map(|binding| format!(" --oracle {}", binding.oracle_state.oracle_name))
+                        .unwrap_or_default()
+                );
+                Ok(())
             }
         }
     }
-
-    anyhow::bail!(
-        "stopped after {} steps without a terminal outcome — the graph's own bounds should have \
-         ended it, so this is a driver bug worth reporting, not a graph to re-run",
-        max_steps
-    )
 }
 
 /// Stamp `auto-update.json` with the commit that was just installed.
@@ -11178,7 +16948,8 @@ fn cmd_update_record_installed(dir: Option<&str>) -> Result<()> {
         return Ok(());
     }
 
-    let config = omega_core::config::OmegaConfig::load().unwrap_or_default();
+    let config = omega_core::config::OmegaConfig::load()
+        .context("cannot load OmegaOS config for installed revision mutation")?;
     let state_dir = config.state_dir.clone();
     let mut history = AutoUpdateState::load(&state_dir);
     history.record_success(&head, chrono::Utc::now());
@@ -11201,7 +16972,8 @@ fn cmd_update_record_installed(dir: Option<&str>) -> Result<()> {
 /// a report written against un-regenerated doctrine would accuse the machine of
 /// drift the reconciler was about to fix itself.
 async fn cmd_reconcile(report_only: bool) -> Result<()> {
-    let config = omega_core::config::OmegaConfig::load().unwrap_or_default();
+    let config = omega_core::config::OmegaConfig::load()
+        .context("cannot load OmegaOS config for reconciliation")?;
     let mut needs_human: Vec<String> = Vec::new();
 
     println!(
@@ -11357,11 +17129,11 @@ fn sessions_older_than(cutoff: chrono::DateTime<chrono::Utc>) -> Vec<String> {
         .collect()
 }
 
-
 async fn cmd_update_auto(dir: Option<&str>) -> Result<()> {
     use omega_core::auto_update::{decide, AutoUpdateState, CheckoutState, Decision, SkipReason};
 
-    let config = omega_core::config::OmegaConfig::load().unwrap_or_default();
+    let config = omega_core::config::OmegaConfig::load()
+        .context("cannot load OmegaOS config for automatic update")?;
     let state_dir = config.state_dir.clone();
     let stamp = chrono::Utc::now();
 
@@ -12033,7 +17805,9 @@ fn cmd_sync() -> Result<()> {
     prune_dangling_omega_links(&codex_skills, &omega_dir);
     let skills_dir = omega_dir.join("skills");
     if skills_dir.exists() {
-        let registry = omega_core::skill_registry::SkillRegistry::discover(&skills_dir)?;
+        use omega_core::skill_registry::{OwnedSkillRoot, SkillCatalogV1, SkillRegistry};
+        let catalog = SkillCatalogV1::compile(&[OwnedSkillRoot::new("installed", &skills_dir)])?;
+        let registry = SkillRegistry::from_catalog(&catalog, &skills_dir);
         for skill in registry.list() {
             let Some(skill_dir) = skill.path.parent() else {
                 continue;
@@ -12086,6 +17860,2178 @@ async fn cmd_init() -> Result<()> {
 #[cfg(test)]
 mod phase1_tests {
     use super::*;
+
+    static TEST_DIR_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+    struct TestDir(std::path::PathBuf);
+
+    impl TestDir {
+        fn new(label: &str) -> Self {
+            use std::sync::atomic::Ordering;
+            let sequence = TEST_DIR_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+            let path = std::env::temp_dir().join(format!(
+                "omega-graph-cli-{label}-{}-{sequence}",
+                std::process::id()
+            ));
+            std::fs::create_dir(&path).unwrap();
+            Self(path)
+        }
+
+        fn path(&self) -> &std::path::Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TestDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn test_authority() -> omega_core::graph::GraphExecutionAuthority {
+        omega_core::graph::GraphExecutionAuthority::from_key([0x5a; 32])
+    }
+
+    #[test]
+    fn plan_create_and_aisb_view_cli_contracts_parse_with_compatibility_aliases() {
+        let parsed = Cli::try_parse_from(["omega", "plan-create", "/tmp/project"]).unwrap();
+        assert!(matches!(
+            parsed.command,
+            Some(Commands::PlanCreate { path }) if path == "/tmp/project"
+        ));
+
+        for command in ["aisb-view", "master", "aisb"] {
+            let parsed = Cli::try_parse_from(["omega", command]).unwrap();
+            assert!(
+                matches!(parsed.command, Some(Commands::AisbView)),
+                "{command} must resolve to the read-only viewer"
+            );
+        }
+    }
+
+    #[test]
+    fn team_scopes_are_explicit_and_cli_preserves_read_only_members() {
+        let parsed = Cli::try_parse_from([
+            "omega",
+            "team",
+            "OmegaOS",
+            "writer:Implement core",
+            "reviewer:Review core",
+            "--scope",
+            "writer=src/core.rs,tests/core.rs",
+        ])
+        .unwrap();
+        assert!(matches!(
+            parsed.command,
+            Some(Commands::Team { scopes, .. })
+                if scopes == vec!["writer=src/core.rs,tests/core.rs"]
+        ));
+        let scopes =
+            parse_team_member_scopes(&["writer=src/core.rs,tests/core.rs".to_string()]).unwrap();
+        assert_eq!(
+            scopes.get("writer").unwrap(),
+            &["src/core.rs".to_string(), "tests/core.rs".to_string()]
+        );
+        assert!(parse_team_member_scopes(&["writer=".to_string()]).is_err());
+        assert!(
+            parse_team_member_scopes(&["writer=a.rs".to_string(), "writer=b.rs".to_string(),])
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn router_output_is_one_authenticated_json_object_and_plain_nodes_ignore_stdout_shape() {
+        use omega_core::graph::{Graph, GraphState, Node, NodeKind, Router};
+        use omega_core::graph_executor::{advance, NodeResult};
+
+        let authority = test_authority();
+        let mut router = Node::new("classify", NodeKind::Router);
+        router.extra.insert(
+            "command".to_string(),
+            serde_json::json!("printf '{\"kind\":\"left\"}'"),
+        );
+        let graph = Graph::new()
+            .with_node(router)
+            .with_node(Node::new("left", NodeKind::Agent))
+            .with_edge("classify", "left")
+            .with_router("classify", Router::new("kind").with_route("left", "left"));
+        let mut state = GraphState::for_graph_with_authority(&graph, "router-output", &authority);
+        let step = advance(&graph, &mut state, &[], &authority).unwrap();
+        let report = run_node(
+            &graph,
+            &step.reservations[0],
+            std::path::Path::new("."),
+            &authority,
+        );
+        assert!(matches!(report.result, NodeResult::Succeeded));
+        let output = report.output.expect("router output receipt");
+        assert_eq!(output.field("kind"), Some(&serde_json::json!("left")));
+        assert!(!output.authority_mac.is_empty());
+
+        let mut noisy_router = graph.clone();
+        noisy_router.nodes[0].extra.insert(
+            "command".to_string(),
+            serde_json::json!("printf 'log\\n{\"kind\":\"left\"}'"),
+        );
+        let mut noisy_state =
+            GraphState::for_graph_with_authority(&noisy_router, "noisy-router", &authority);
+        let step = advance(&noisy_router, &mut noisy_state, &[], &authority).unwrap();
+        let report = run_node(
+            &noisy_router,
+            &step.reservations[0],
+            std::path::Path::new("."),
+            &authority,
+        );
+        assert!(matches!(
+            report.result,
+            NodeResult::Failed { ref reason } if reason.contains("one JSON object")
+        ));
+
+        let mut plain = Node::new("plain", NodeKind::Agent);
+        plain.extra.insert(
+            "command".to_string(),
+            serde_json::json!("printf 'ordinary log output'"),
+        );
+        let plain_graph = Graph::new().with_node(plain);
+        let mut plain_state =
+            GraphState::for_graph_with_authority(&plain_graph, "plain-output", &authority);
+        let step = advance(&plain_graph, &mut plain_state, &[], &authority).unwrap();
+        let report = run_node(
+            &plain_graph,
+            &step.reservations[0],
+            std::path::Path::new("."),
+            &authority,
+        );
+        assert!(matches!(report.result, NodeResult::Succeeded));
+        assert!(report.output.is_none());
+    }
+
+    #[test]
+    fn risk_gate_resolution_requires_a_durable_state_path() {
+        let missing_state = Cli::try_parse_from([
+            "omega",
+            "risk-gate",
+            "approve",
+            "graph.json",
+            "work",
+            "--approver",
+            "operator",
+        ]);
+        assert!(missing_state.is_err());
+
+        let parsed = Cli::try_parse_from([
+            "omega",
+            "risk-gate",
+            "approve",
+            "graph.json",
+            "work",
+            "--state",
+            "run.json",
+            "--approver",
+            "operator",
+        ])
+        .unwrap();
+        assert!(matches!(
+            parsed.command,
+            Some(Commands::RiskGate {
+                action: RiskGateAction::Approve { state, .. }
+            }) if state == "run.json"
+        ));
+    }
+
+    #[test]
+    fn cli_and_tui_share_the_two_implemented_new_project_strategies() {
+        let ids: Vec<&str> = omega_tui::app::NEW_PROJECT_STACKS
+            .iter()
+            .map(|(id, _)| *id)
+            .collect();
+        assert_eq!(ids, vec!["nextstack", "custom"]);
+        for id in ids {
+            validate_new_project_stack(id).unwrap();
+        }
+        let err = validate_new_project_stack("expo-mobile").unwrap_err();
+        assert!(err.to_string().contains("unsupported project strategy"));
+    }
+
+    #[test]
+    fn shipped_rmux_menu_bindings_match_the_installer_contract() {
+        let shipped = include_str!("../../../config/rmux.conf.omega");
+        for (key, _) in OMEGA_MENU_ROOT_BINDINGS {
+            let line = format!("bind-key -n {key} display-popup");
+            assert_eq!(
+                shipped.matches(&line).count(),
+                1,
+                "root binding {key} must appear exactly once"
+            );
+        }
+        for (key, _) in OMEGA_MENU_PREFIX_BINDINGS {
+            let line = format!("bind-key {key} display-popup");
+            assert_eq!(
+                shipped.matches(&line).count(),
+                1,
+                "prefix binding {key} must appear exactly once"
+            );
+        }
+        for stale in ["bind-key -n M-z", "bind-key -n M-/"] {
+            assert!(
+                !shipped.contains(stale),
+                "stale popup binding remains: {stale}"
+            );
+        }
+    }
+
+    #[test]
+    fn graph_driver_binds_reports_to_the_current_reservation_and_fails_closed_without_one() {
+        use omega_core::graph::{Graph, GraphState, Node, NodeId, NodeKind};
+        use omega_core::graph_executor::{advance, NodeResult};
+
+        let mut node = Node::new("work", NodeKind::Agent);
+        node.extra
+            .insert("command".to_string(), serde_json::json!("true"));
+        let graph = Graph::new().with_node(node);
+        let authority = test_authority();
+        let mut state =
+            GraphState::for_graph_with_authority(&graph, "cli-reservation-test", &authority);
+        let step = advance(&graph, &mut state, &[], &authority).unwrap();
+        let node_id = NodeId::new("work");
+        let reservation = require_node_reservation(&step, &node_id).unwrap();
+
+        let report = run_node(&graph, &reservation, std::path::Path::new("."), &authority);
+        assert!(matches!(report.result, NodeResult::Succeeded));
+        assert_eq!(report.node, node_id);
+        assert_eq!(report.reservation.as_ref(), Some(&reservation));
+
+        let err = require_node_reservation(&step, &NodeId::new("not-ready")).unwrap_err();
+        assert!(err.to_string().contains("without a dispatch reservation"));
+    }
+
+    #[test]
+    fn verifier_checks_are_direct_bounded_and_confined_with_receipts() {
+        use omega_core::graph::{Graph, GraphState, Node, NodeKind};
+        use omega_core::graph_executor::advance;
+        use omega_core::mission::{VerifierCheck, VerifierCheckKind, CONTRACT_SCHEMA_VERSION};
+
+        let dir = TestDir::new("checks");
+        let checks = vec![
+            VerifierCheck {
+                schema_version: CONTRACT_SCHEMA_VERSION,
+                check_id: "missing".to_string(),
+                kind: VerifierCheckKind::FileExists {
+                    path: "missing.txt".to_string(),
+                },
+                timeout_secs: 1,
+            },
+            VerifierCheck {
+                schema_version: CONTRACT_SCHEMA_VERSION,
+                check_id: "escape".to_string(),
+                kind: VerifierCheckKind::FileExists {
+                    path: "../outside.txt".to_string(),
+                },
+                timeout_secs: 1,
+            },
+            VerifierCheck {
+                schema_version: CONTRACT_SCHEMA_VERSION,
+                check_id: "failed-command".to_string(),
+                kind: VerifierCheckKind::Command {
+                    argv: vec!["sh".to_string(), "-c".to_string(), "exit 7".to_string()],
+                    cwd: None,
+                    expected_exit_code: 0,
+                },
+                timeout_secs: 1,
+            },
+            VerifierCheck {
+                schema_version: CONTRACT_SCHEMA_VERSION,
+                check_id: "timeout".to_string(),
+                kind: VerifierCheckKind::Command {
+                    argv: vec!["sh".to_string(), "-c".to_string(), "sleep 3".to_string()],
+                    cwd: None,
+                    expected_exit_code: 0,
+                },
+                timeout_secs: 1,
+            },
+        ];
+        let mut node = Node::new("work", NodeKind::Agent).with_checks(checks.clone());
+        node.extra
+            .insert("command".to_string(), serde_json::json!("true"));
+        let graph = Graph::new().with_node(node);
+        let authority = test_authority();
+        let mut state = GraphState::for_graph_with_authority(&graph, "check-run", &authority);
+        let step = advance(&graph, &mut state, &[], &authority).unwrap();
+        let reservation = step.reservations[0].clone();
+
+        let started = std::time::Instant::now();
+        let results: Vec<_> = checks
+            .iter()
+            .map(|check| observe_node_check(check, &reservation, dir.path(), &authority).unwrap())
+            .collect();
+        assert!(started.elapsed() < std::time::Duration::from_secs(3));
+        assert!(results.iter().all(|result| !result.passed));
+        assert!(results.iter().all(|result| result.receipt.is_some()));
+        assert!(results[1].detail.contains("escapes graph directory"));
+        assert!(results[2].detail.contains("exited 7"));
+        assert!(results[3].detail.contains("timed out"));
+    }
+
+    #[test]
+    fn http_policy_rejects_internal_targets_and_git_checks_observe_exact_results() {
+        use omega_core::graph::{Graph, GraphState, Node, NodeKind};
+        use omega_core::graph_executor::advance;
+        use omega_core::mission::{VerifierCheck, VerifierCheckKind, CONTRACT_SCHEMA_VERSION};
+        let head = std::process::Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .output()
+            .unwrap();
+        assert!(head.status.success());
+        let sha = String::from_utf8(head.stdout).unwrap().trim().to_string();
+        let checks = vec![
+            VerifierCheck {
+                schema_version: CONTRACT_SCHEMA_VERSION,
+                check_id: "http".to_string(),
+                kind: VerifierCheckKind::Http {
+                    url: "http://127.0.0.1:8080/health".to_string(),
+                    expected_status: 204,
+                },
+                timeout_secs: 2,
+            },
+            VerifierCheck {
+                schema_version: CONTRACT_SCHEMA_VERSION,
+                check_id: "git".to_string(),
+                kind: VerifierCheckKind::GitObject { sha },
+                timeout_secs: 2,
+            },
+        ];
+        let mut node = Node::new("work", NodeKind::Agent).with_checks(checks.clone());
+        node.extra
+            .insert("command".to_string(), serde_json::json!("true"));
+        let graph = Graph::new().with_node(node);
+        let authority = test_authority();
+        let mut state =
+            GraphState::for_graph_with_authority(&graph, "external-check-run", &authority);
+        let step = advance(&graph, &mut state, &[], &authority).unwrap();
+        let reservation = step.reservations[0].clone();
+        let repo = std::env::current_dir().unwrap();
+
+        let http = observe_node_check(&checks[0], &reservation, &repo, &authority).unwrap();
+        let git = observe_node_check(&checks[1], &reservation, &repo, &authority).unwrap();
+        assert!(!http.passed);
+        assert!(http.detail.contains("forbidden address 127.0.0.1"));
+        assert!(git.passed, "{}", git.detail);
+        assert!(http.receipt.is_some() && git.receipt.is_some());
+    }
+
+    #[test]
+    fn graph_http_policy_rejects_loopback_metadata_credentials_and_private_redirects() {
+        use std::net::{IpAddr, Ipv4Addr};
+
+        for (url, address) in [
+            (
+                "http://127.0.0.1:9000/health",
+                IpAddr::V4(Ipv4Addr::LOCALHOST),
+            ),
+            (
+                "http://169.254.169.254/latest/meta-data",
+                IpAddr::V4(Ipv4Addr::new(169, 254, 169, 254)),
+            ),
+            (
+                "http://10.0.0.8/admin",
+                IpAddr::V4(Ipv4Addr::new(10, 0, 0, 8)),
+            ),
+        ] {
+            let error = graph_http_target_from_addresses(url, &[address]).unwrap_err();
+            assert!(error.to_string().contains("forbidden address"));
+        }
+        let credential_error = graph_http_target_from_addresses(
+            "https://user:secret@example.com/health",
+            &[IpAddr::V4(Ipv4Addr::new(93, 184, 216, 34))],
+        )
+        .unwrap_err();
+        assert!(credential_error.to_string().contains("credentials"));
+        let trailing_dot_error = graph_http_target_from_addresses(
+            "https://example.com./health",
+            &[IpAddr::V4(Ipv4Addr::new(93, 184, 216, 34))],
+        )
+        .unwrap_err();
+        assert!(trailing_dot_error.to_string().contains("trailing-dot"));
+
+        // Redirects are never followed by observe_node_check. If a future
+        // implementation validates a Location target before following it, the
+        // same policy rejects a redirect to RFC1918 instead of treating a safe
+        // public first hop as authorization for an internal second hop.
+        let redirect_error = graph_http_target_from_addresses(
+            "http://10.0.0.9/private",
+            &[IpAddr::V4(Ipv4Addr::new(10, 0, 0, 9))],
+        )
+        .unwrap_err();
+        assert!(redirect_error.to_string().contains("forbidden address"));
+
+        let public = graph_http_target_from_addresses(
+            "https://example.com/health",
+            &[IpAddr::V4(Ipv4Addr::new(93, 184, 216, 34))],
+        )
+        .unwrap();
+        assert_eq!(public.host, "example.com");
+        assert_eq!(public.port, 443);
+        assert_eq!(public.curl_resolve_arg(), "example.com:443:93.184.216.34");
+        for status in [401, 403] {
+            let (accepted, detail) = classify_graph_http_status(status, status);
+            assert_eq!(accepted, 0);
+            assert!(detail.contains("authentication failure"));
+        }
+    }
+
+    #[test]
+    fn graph_http_curl_ignores_default_config_connect_to_bypass() {
+        use std::io::Write as _;
+        use std::net::{IpAddr, Ipv4Addr, TcpListener};
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let hits = Arc::new(AtomicUsize::new(0));
+        let stop = Arc::new(AtomicBool::new(false));
+        let server_hits = Arc::clone(&hits);
+        let server_stop = Arc::clone(&stop);
+        let server = std::thread::spawn(move || {
+            while !server_stop.load(Ordering::SeqCst) {
+                match listener.accept() {
+                    Ok((mut stream, _)) => {
+                        server_hits.fetch_add(1, Ordering::SeqCst);
+                        let _ = stream.write_all(
+                            b"HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                        );
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(std::time::Duration::from_millis(5));
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+
+        let curl_home = TestDir::new("curl-home");
+        std::fs::write(
+            curl_home.path().join(".curlrc"),
+            format!("connect-to = \"omega.invalid:{port}:127.0.0.1:{port}\"\n"),
+        )
+        .unwrap();
+        let url = format!("http://omega.invalid:{port}/health");
+        let resolve = format!("omega.invalid:{port}:192.0.2.1");
+
+        // Control: without --disable first, curl loads CURL_HOME/.curlrc and the
+        // connect-to rule reaches the private listener despite the public pin.
+        let mut control = std::process::Command::new("curl");
+        control
+            .args([
+                "--silent",
+                "--show-error",
+                "--noproxy",
+                "*",
+                "--resolve",
+                resolve.as_str(),
+                "--output",
+                "/dev/null",
+                "--write-out",
+                "%{http_code}",
+                "--max-time",
+                "2",
+                "--",
+                url.as_str(),
+            ])
+            .env("CURL_HOME", curl_home.path());
+        let (control_result, control_status, _) =
+            run_bounded_capture(&mut control, std::time::Duration::from_secs(3), 64);
+
+        let target = GraphHttpTarget {
+            url,
+            host: "omega.invalid".to_string(),
+            port,
+            pinned_ip: IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)),
+        };
+        let mut hardened = graph_http_curl_command(&target, std::time::Duration::from_millis(400));
+        hardened.env("CURL_HOME", curl_home.path());
+        let (hardened_result, hardened_status, _) =
+            run_bounded_capture(&mut hardened, std::time::Duration::from_secs(1), 64);
+
+        stop.store(true, Ordering::SeqCst);
+        server.join().unwrap();
+        assert_eq!(control_result, BoundedProcessResult::Exited(0));
+        assert_eq!(control_status.trim(), "204");
+        assert_ne!(hardened_result, BoundedProcessResult::Exited(0));
+        assert_ne!(hardened_status.trim(), "204");
+        assert_eq!(
+            hits.load(Ordering::SeqCst),
+            1,
+            "the hardened verifier must not load .curlrc or connect to loopback"
+        );
+    }
+
+    #[test]
+    fn node_effect_timeout_is_bounded_and_returns_a_failed_report() {
+        use omega_core::graph::{Graph, GraphState, Node, NodeKind};
+        use omega_core::graph_executor::{advance, NodeResult};
+
+        let dir = TestDir::new("node-timeout");
+        let mut node = Node::new("slow", NodeKind::Agent);
+        node.extra
+            .insert("command".to_string(), serde_json::json!("sleep 3"));
+        node.extra
+            .insert("command_timeout_secs".to_string(), serde_json::json!(1));
+        let graph = Graph::new().with_node(node);
+        let authority = test_authority();
+        let mut state = GraphState::for_graph_with_authority(&graph, "timeout-run", &authority);
+        let step = advance(&graph, &mut state, &[], &authority).unwrap();
+        let started = std::time::Instant::now();
+        let report = run_node(&graph, &step.reservations[0], dir.path(), &authority);
+        assert!(started.elapsed() < std::time::Duration::from_secs(3));
+        assert!(matches!(
+            report.result,
+            NodeResult::Failed { ref reason } if reason.contains("timed out")
+        ));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn bounded_capture_kills_a_setsid_descendant_and_never_reports_success() {
+        let token = new_graph_process_token().unwrap();
+        let mut command = std::process::Command::new("bash");
+        command.arg("-c").arg("setsid sh -c 'sleep 2' & exit 0");
+        let started = std::time::Instant::now();
+        let (result, _, _) = run_bounded_capture_with_token(
+            &mut command,
+            std::time::Duration::from_secs(1),
+            1024,
+            token.clone(),
+        );
+        assert!(
+            started.elapsed() < std::time::Duration::from_millis(1800),
+            "escaped descendant kept bounded capture alive for its full sleep"
+        );
+        assert!(
+            matches!(
+                result,
+                BoundedProcessResult::ContainmentFailed(_) | BoundedProcessResult::TimedOut
+            ),
+            "an escaped descendant must never be reported as success: {result:?}"
+        );
+        assert!(
+            tagged_graph_processes(&token).is_empty(),
+            "tagged setsid descendant survived cleanup"
+        );
+    }
+
+    #[test]
+    fn journal_blocks_unknown_effect_and_consumed_result_replay() {
+        use omega_core::graph::{Graph, GraphState, Node, NodeKind};
+        use omega_core::graph_executor::{
+            advance, mark_effect_started, record_dispatch_intent_at, EffectStartOutcome, NodeResult,
+        };
+        use omega_core::graph_risk::{approve, evaluate_gate_at, record_resolution, ExecutionMode};
+
+        let dir = TestDir::new("journal");
+        let state_path = dir.path().join("run.json");
+        let mut node = Node::new("work", NodeKind::Agent);
+        node.extra
+            .insert("command".to_string(), serde_json::json!("true"));
+        let graph = Graph::new().with_node(node);
+        let authority = test_authority();
+        let mut state = GraphState::for_graph_with_authority(&graph, "journal-run", &authority);
+        let step = advance(&graph, &mut state, &[], &authority).unwrap();
+        let reservation = step.reservations[0].clone();
+        let now = chrono::Utc::now();
+        let escalation = evaluate_gate_at(
+            &graph,
+            &state,
+            &reservation.node,
+            ExecutionMode::Unattended,
+            now,
+            &authority,
+        )
+        .into_escalation(now)
+        .unwrap();
+        let approval = approve(&graph, &state, escalation, "operator", &authority).unwrap();
+        record_resolution(&graph, &mut state, &approval, &authority).unwrap();
+
+        let mut journal = GraphJournal::load(&state_path, &authority).unwrap();
+        let expected_version = state.version;
+        let intent = record_dispatch_intent_at(
+            &graph,
+            &mut state,
+            &reservation,
+            ExecutionMode::Unattended,
+            chrono::Utc::now(),
+            expected_version,
+            None,
+            &authority,
+        )
+        .unwrap();
+        journal.append_dispatch_intent(&intent).unwrap();
+        let expected_version = state.version;
+        let started = mark_effect_started(
+            &graph,
+            &mut state,
+            &reservation,
+            &intent.intent_id,
+            expected_version,
+            None,
+            &authority,
+        )
+        .unwrap();
+        let EffectStartOutcome::Started(started) = started else {
+            panic!("fresh intent must produce one effect-start transition")
+        };
+        journal.append_checkpoint(&state).unwrap();
+        journal.append_effect_started(&started).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(&journal.path)
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o600
+            );
+        }
+        let unknown = journal.recovery_for(&state).unwrap();
+        assert_eq!(unknown.unknown_effect, vec![reservation.clone()]);
+        assert!(
+            unknown_effect_error("graph.json", &state_path, &unknown.unknown_effect)
+                .to_string()
+                .contains("will not replay")
+        );
+
+        let report = run_node(&graph, &reservation, dir.path(), &authority);
+        assert!(matches!(report.result, NodeResult::Succeeded));
+        journal
+            .append(GraphJournalRecord::Result {
+                report: report.clone(),
+                recorded_at: chrono::Utc::now(),
+                reconciled_by: None,
+            })
+            .unwrap();
+        let completed = journal.recovery_for(&state).unwrap();
+        assert_eq!(completed.completed, vec![report.clone()]);
+        advance(
+            &graph,
+            &mut state,
+            std::slice::from_ref(&report),
+            &authority,
+        )
+        .unwrap();
+        journal.append_checkpoint(&state).unwrap();
+        journal.validate_state_provenance(&graph, &state).unwrap();
+        assert!(advance(&graph, &mut state, &[report], &authority).is_err());
+        assert!(journal.recovery_for(&state).unwrap().completed.is_empty());
+    }
+
+    #[test]
+    fn journal_chain_rejects_tampering_and_retry_deadline_survives_reload() {
+        use omega_core::graph::{Graph, GraphState, Node, NodeKind};
+        use omega_core::graph_executor::advance;
+
+        let dir = TestDir::new("journal-auth");
+        let state_path = dir.path().join("run.json");
+        let node = Node::new("work", NodeKind::Verifier);
+        let graph = Graph::new().with_node(node);
+        let authority = test_authority();
+        let mut state = GraphState::for_graph_with_authority(&graph, "journal-auth", &authority);
+        let first = advance(&graph, &mut state, &[], &authority).unwrap();
+        let failed = omega_core::graph_executor::NodeReport::failed_for(
+            &first.reservations[0],
+            "expected test failure",
+        );
+        let retry = advance(&graph, &mut state, &[failed], &authority).unwrap();
+        let reservation = retry.reservations[0].clone();
+
+        let mut journal = GraphJournal::load(&state_path, &authority).unwrap();
+        journal.append_checkpoint(&state).unwrap();
+        let before = chrono::Utc::now();
+        let deadline = journal.schedule_retry(&reservation, 1, before).unwrap();
+        journal
+            .append(GraphJournalRecord::Checkpoint {
+                state: state.clone(),
+                recorded_at: chrono::Utc::now(),
+            })
+            .unwrap();
+        drop(journal);
+
+        let reloaded = GraphJournal::load(&state_path, &authority).unwrap();
+        assert_eq!(
+            reloaded.retry_not_before(&reservation).unwrap(),
+            Some(deadline)
+        );
+        let journal_path = sidecar_path(&state_path, "journal.jsonl");
+        let raw = std::fs::read_to_string(&journal_path).unwrap();
+        let mut lines: Vec<serde_json::Value> = raw
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert!(lines.len() >= 3, "fixture must corrupt a mid-chain record");
+        lines[1]["record"]["recorded_at"] = serde_json::json!("2000-01-01T00:00:00Z");
+        let forged = lines
+            .into_iter()
+            .map(|line| serde_json::to_string(&line).unwrap())
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n";
+        std::fs::write(&journal_path, forged).unwrap();
+        let error = match GraphJournal::load(&state_path, &authority) {
+            Ok(_) => panic!("tampered journal must be rejected"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("broken authenticated chain"));
+    }
+
+    #[test]
+    fn accepted_state_without_result_journal_is_rejected_even_with_valid_mac() {
+        use omega_core::graph::{Graph, GraphState, Node, NodeKind};
+        use omega_core::graph_executor::advance;
+
+        let dir = TestDir::new("forged-accepted");
+        let node = Node::new("work", NodeKind::Verifier);
+        let graph = Graph::new().with_node(node);
+        let authority = test_authority();
+        let mut state = GraphState::for_graph_with_authority(&graph, "accepted-run", &authority);
+        let step = advance(&graph, &mut state, &[], &authority).unwrap();
+        let report = run_node(&graph, &step.reservations[0], dir.path(), &authority);
+        advance(&graph, &mut state, &[report], &authority).unwrap();
+        state
+            .validate_for_graph_with_authority(&graph, &authority)
+            .unwrap();
+
+        let empty_journal = GraphJournal::load(&dir.path().join("state.json"), &authority).unwrap();
+        let error = empty_journal
+            .validate_state_provenance(&graph, &state)
+            .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("no exact durable journal checkpoint"));
+    }
+
+    #[test]
+    fn graph_state_lock_excludes_a_concurrent_writer() {
+        let dir = TestDir::new("lock");
+        let state_path = dir.path().join("state.json");
+        let first =
+            GraphStateLock::acquire_with_timeout(&state_path, std::time::Duration::from_secs(1))
+                .unwrap();
+        let contender_path = state_path.clone();
+        let contender = std::thread::spawn(move || {
+            GraphStateLock::acquire_with_timeout(
+                &contender_path,
+                std::time::Duration::from_millis(100),
+            )
+            .map(|_| ())
+        });
+        assert!(contender.join().unwrap().is_err());
+        drop(first);
+        GraphStateLock::acquire_with_timeout(&state_path, std::time::Duration::from_secs(1))
+            .unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn graph_artifacts_reject_dangling_symlinks_without_creating_targets() {
+        use omega_core::graph::{Graph, Node, NodeKind};
+        use std::os::unix::fs::symlink;
+
+        let dir = TestDir::new("dangling-graph-artifacts");
+
+        let lock_state = dir.path().join("lock-state.json");
+        let lock_target = dir.path().join("missing-lock-target");
+        symlink(&lock_target, sidecar_path(&lock_state, "lock")).unwrap();
+        assert!(GraphStateLock::acquire(&lock_state).is_err());
+        assert!(!lock_target.exists());
+
+        let key_state = dir.path().join("key-state.json");
+        let key_target = dir.path().join("missing-key-target");
+        symlink(&key_target, sidecar_path(&key_state, "key")).unwrap();
+        assert!(load_graph_authority(Some(&key_state), false).is_err());
+        assert!(!key_target.exists());
+
+        let journal_state = dir.path().join("journal-state.json");
+        let journal_target = dir.path().join("missing-journal-target");
+        symlink(
+            &journal_target,
+            sidecar_path(&journal_state, "journal.jsonl"),
+        )
+        .unwrap();
+        assert!(GraphJournal::load(&journal_state, &test_authority()).is_err());
+        assert!(!journal_target.exists());
+
+        let state_path = dir.path().join("state.json");
+        let state_target = dir.path().join("missing-state-target");
+        symlink(&state_target, &state_path).unwrap();
+        let mut node = Node::new("work", NodeKind::Agent);
+        node.extra
+            .insert("command".to_string(), serde_json::json!("true"));
+        let graph = Graph::new().with_node(node);
+        assert!(DurableGraphState::load(&state_path, &graph, &test_authority()).is_err());
+        assert!(atomic_write_private(&state_path, b"{}\n").is_err());
+        assert!(!state_target.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn lock_and_journal_detect_inode_replacement() {
+        use omega_core::graph::{Graph, GraphState, Node, NodeKind};
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = TestDir::new("graph-inode-replacement");
+        let state_path = dir.path().join("state.json");
+        let state_lock = GraphStateLock::acquire(&state_path).unwrap();
+        let lock_path = sidecar_path(&state_path, "lock");
+        std::fs::rename(&lock_path, dir.path().join("old.lock")).unwrap();
+        std::fs::write(&lock_path, b"").unwrap();
+        std::fs::set_permissions(&lock_path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(state_lock.assert_current().is_err());
+        drop(state_lock);
+
+        let journal_state = dir.path().join("journal-state.json");
+        let mut node = Node::new("work", NodeKind::Agent);
+        node.extra
+            .insert("command".to_string(), serde_json::json!("true"));
+        let graph = Graph::new().with_node(node);
+        let authority = test_authority();
+        let state = GraphState::for_graph_with_authority(&graph, "inode-run", &authority);
+        let mut journal = GraphJournal::load(&journal_state, &authority).unwrap();
+        journal.append_checkpoint(&state).unwrap();
+        let journal_path = sidecar_path(&journal_state, "journal.jsonl");
+        std::fs::rename(&journal_path, dir.path().join("old.journal")).unwrap();
+        std::fs::write(&journal_path, b"").unwrap();
+        std::fs::set_permissions(&journal_path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let error = journal.append(GraphJournalRecord::Checkpoint {
+            state,
+            recorded_at: chrono::Utc::now(),
+        });
+        assert!(error.is_err(), "journal inode replacement must fail closed");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn journal_recovers_only_a_torn_final_record_with_an_exact_checkpoint() {
+        use omega_core::graph::{Graph, GraphState, Node, NodeKind};
+        use std::io::Write;
+
+        let dir = TestDir::new("journal-torn-tail");
+        let state_path = dir.path().join("state.json");
+        let mut node = Node::new("work", NodeKind::Agent);
+        node.extra
+            .insert("command".to_string(), serde_json::json!("true"));
+        let graph = Graph::new().with_node(node);
+        let authority = test_authority();
+        let state = GraphState::for_graph_with_authority(&graph, "torn-run", &authority);
+        let mut raw_state = serde_json::to_vec_pretty(&state).unwrap();
+        raw_state.push(b'\n');
+        atomic_write_private(&state_path, &raw_state).unwrap();
+
+        let state_lock = GraphStateLock::acquire(&state_path).unwrap();
+        let mut journal = GraphJournal::load(&state_path, &authority).unwrap();
+        journal.append_checkpoint(&state).unwrap();
+        let journal_path = sidecar_path(&state_path, "journal.jsonl");
+        let intact_len = std::fs::metadata(&journal_path).unwrap().len();
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&journal_path)
+            .unwrap();
+        file.write_all(b"{\"schema_version\":1,\"sequence\":2")
+            .unwrap();
+        file.sync_all().unwrap();
+        drop(file);
+        drop(journal);
+
+        assert!(GraphJournal::load(&state_path, &authority).is_err());
+        let recovered =
+            GraphJournal::load_recovering(&state_path, &authority, &state, &state_lock).unwrap();
+        assert_eq!(std::fs::metadata(&journal_path).unwrap().len(), intact_len);
+        assert_eq!(recovered.records.len(), 1);
+        GraphJournal::load(&state_path, &authority).unwrap();
+    }
+
+    #[test]
+    fn authority_key_is_owner_only_and_missing_key_fails_closed() {
+        let dir = TestDir::new("authority");
+        let state_path = dir.path().join("state.json");
+        let authority = load_graph_authority(Some(&state_path), true).unwrap();
+        let key_path = sidecar_path(&state_path, "key");
+        assert_eq!(std::fs::read(&key_path).unwrap().len(), 32);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(&key_path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+        assert!(!format!("{authority:?}").contains("["));
+
+        let orphan_state = dir.path().join("orphan.json");
+        std::fs::write(&orphan_state, b"{}").unwrap();
+        assert!(load_graph_authority(Some(&orphan_state), false).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn authority_key_rejects_symlinks_hardlinks_and_permissive_modes() {
+        use std::os::unix::fs::{symlink, PermissionsExt};
+
+        let dir = TestDir::new("authority-file-security");
+
+        let symlink_state = dir.path().join("symlink-state.json");
+        let symlink_key = sidecar_path(&symlink_state, "key");
+        let target = dir.path().join("secret-target");
+        std::fs::write(&target, [0x31; 32]).unwrap();
+        symlink(&target, &symlink_key).unwrap();
+        let symlink_error = load_graph_authority(Some(&symlink_state), false).unwrap_err();
+        assert!(symlink_error.to_string().contains("never a symlink"));
+        assert_eq!(std::fs::read(&target).unwrap(), [0x31; 32]);
+
+        let hardlink_state = dir.path().join("hardlink-state.json");
+        let hardlink_key = sidecar_path(&hardlink_state, "key");
+        let hardlink_target = dir.path().join("hardlink-target");
+        std::fs::write(&hardlink_target, [0x42; 32]).unwrap();
+        std::fs::hard_link(&hardlink_target, &hardlink_key).unwrap();
+        let hardlink_error = load_graph_authority(Some(&hardlink_state), false).unwrap_err();
+        assert!(hardlink_error.to_string().contains("hard links"));
+
+        let mode_state = dir.path().join("mode-state.json");
+        let mode_key = sidecar_path(&mode_state, "key");
+        std::fs::write(&mode_key, [0x53; 32]).unwrap();
+        std::fs::set_permissions(&mode_key, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let mode_error = load_graph_authority(Some(&mode_state), false).unwrap_err();
+        assert!(mode_error.to_string().contains("group/other"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn graph_private_artifacts_require_the_effective_uid() {
+        let path = std::path::Path::new("state.graph.key");
+        let current = graph_effective_uid();
+        validate_private_owner_uid(path, "graph authority key", current).unwrap();
+        let foreign = if current == u32::MAX { 0 } else { current + 1 };
+        let error = validate_private_owner_uid(path, "graph authority key", foreign).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains(&format!("owned by uid {foreign}")));
+        assert!(error
+            .to_string()
+            .contains(&format!("current uid is {current}")));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn journal_symlink_is_rejected_without_touching_its_target() {
+        use std::os::unix::fs::symlink;
+
+        let dir = TestDir::new("journal-symlink");
+        let state_path = dir.path().join("state.json");
+        let journal_path = sidecar_path(&state_path, "journal.jsonl");
+        let target = dir.path().join("sensitive.txt");
+        std::fs::write(&target, b"do-not-touch").unwrap();
+        symlink(&target, &journal_path).unwrap();
+
+        let error = match GraphJournal::load(&state_path, &test_authority()) {
+            Ok(_) => panic!("symlink journal must be rejected"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("never a symlink"));
+        assert_eq!(std::fs::read(&target).unwrap(), b"do-not-touch");
+    }
+
+    #[tokio::test]
+    async fn graph_dry_run_creates_no_state_key_lock_or_journal() {
+        use omega_core::graph::{Graph, Node, NodeKind};
+        use omega_core::mission::{VerifierCheck, VerifierCheckKind, CONTRACT_SCHEMA_VERSION};
+
+        let dir = TestDir::new("dry-run");
+        let graph_path = dir.path().join("graph.json");
+        let state_path = dir.path().join("state.json");
+        let node = Node::new("work", NodeKind::Verifier).with_checks(vec![VerifierCheck {
+            schema_version: CONTRACT_SCHEMA_VERSION,
+            check_id: "graph-exists".to_string(),
+            kind: VerifierCheckKind::FileExists {
+                path: "graph.json".to_string(),
+            },
+            timeout_secs: 1,
+        }]);
+        let graph = Graph::new().with_node(node);
+        std::fs::write(&graph_path, serde_json::to_vec_pretty(&graph).unwrap()).unwrap();
+        let before: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+
+        cmd_graph_run(
+            graph_path.to_str().unwrap(),
+            Some(state_path.to_str().unwrap()),
+            false,
+            true,
+            10,
+        )
+        .await
+        .unwrap();
+
+        let after: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(before, after);
+        for suffix in ["key", "lock", "journal.jsonl", "escalation.json"] {
+            assert!(!sidecar_path(&state_path, suffix).exists());
+        }
+        assert!(!state_path.exists());
+    }
+
+    #[tokio::test]
+    async fn zero_step_graph_run_fails_before_creating_any_sidecar() {
+        use omega_core::graph::{Graph, Node, NodeKind};
+
+        let dir = TestDir::new("zero-steps");
+        let graph_path = dir.path().join("graph.json");
+        let state_path = dir.path().join("state.json");
+        let mut node = Node::new("work", NodeKind::Agent);
+        node.extra
+            .insert("command".to_string(), serde_json::json!("true"));
+        std::fs::write(
+            &graph_path,
+            serde_json::to_vec_pretty(&Graph::new().with_node(node)).unwrap(),
+        )
+        .unwrap();
+
+        let error = cmd_graph_run(
+            graph_path.to_str().unwrap(),
+            Some(state_path.to_str().unwrap()),
+            false,
+            false,
+            0,
+        )
+        .await
+        .unwrap_err();
+        assert!(error.to_string().contains("--max-steps"));
+        assert!(!state_path.exists());
+        for suffix in ["key", "lock", "journal.jsonl", "escalation.json"] {
+            assert!(!sidecar_path(&state_path, suffix).exists());
+        }
+    }
+
+    #[tokio::test]
+    async fn unsupported_graph_nodes_fail_before_any_runtime_mutation() {
+        use omega_core::graph::{Graph, Node, NodeKind, Router};
+
+        let dir = TestDir::new("unsupported-graph-nodes");
+        let fixtures = vec![
+            (
+                "reduce",
+                Graph::new().with_node(Node::new("reduce", NodeKind::Reduce)),
+                "requires a typed pure reducer driver",
+            ),
+            (
+                "agent",
+                Graph::new().with_node(Node::new("agent", NodeKind::Agent)),
+                "declares no typed `command` effect",
+            ),
+            (
+                "synthesis",
+                Graph::new().with_node(Node::new("synthesis", NodeKind::Synthesis)),
+                "declares no typed `command` effect",
+            ),
+            (
+                "router",
+                Graph::new()
+                    .with_node(Node::new("router", NodeKind::Router))
+                    .with_node(Node::new("target", NodeKind::Verifier))
+                    .with_edge("router", "target")
+                    .with_router("router", Router::new("kind").with_route("target", "target")),
+                "declares no typed `command` effect",
+            ),
+        ];
+
+        for (label, graph, expected) in fixtures {
+            let graph_path = dir.path().join(format!("{label}.graph.json"));
+            let state_path = dir.path().join(format!("{label}.state.json"));
+            std::fs::write(&graph_path, serde_json::to_vec_pretty(&graph).unwrap()).unwrap();
+            let error = cmd_graph_run(
+                graph_path.to_str().unwrap(),
+                Some(state_path.to_str().unwrap()),
+                false,
+                false,
+                10,
+            )
+            .await
+            .unwrap_err();
+            assert!(error.to_string().contains(expected), "{label}: {error:#}");
+            assert!(!state_path.exists(), "{label} created graph state");
+            for suffix in ["key", "lock", "journal.jsonl", "escalation.json"] {
+                assert!(
+                    !sidecar_path(&state_path, suffix).exists(),
+                    "{label} created {suffix} before preflight rejection"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn commandless_verifier_is_pure_and_executes_only_declared_checks() {
+        use omega_core::graph::{Graph, Node, NodeId, NodeKind};
+        use omega_core::mission::{
+            TaskAttemptState, VerifierCheck, VerifierCheckKind, CONTRACT_SCHEMA_VERSION,
+        };
+
+        let dir = TestDir::new("pure-verifier");
+        let graph_path = dir.path().join("graph.json");
+        let state_path = dir.path().join("state.json");
+        std::fs::write(dir.path().join("proof.txt"), "verified\n").unwrap();
+        let verifier = Node::new("verify", NodeKind::Verifier).with_checks(vec![VerifierCheck {
+            schema_version: CONTRACT_SCHEMA_VERSION,
+            check_id: "proof".to_string(),
+            kind: VerifierCheckKind::FileExists {
+                path: "proof.txt".to_string(),
+            },
+            timeout_secs: 1,
+        }]);
+        let graph = Graph::new().with_node(verifier);
+        std::fs::write(&graph_path, serde_json::to_vec_pretty(&graph).unwrap()).unwrap();
+
+        cmd_graph_run(
+            graph_path.to_str().unwrap(),
+            Some(state_path.to_str().unwrap()),
+            false,
+            false,
+            10,
+        )
+        .await
+        .unwrap();
+
+        let authority = load_graph_authority(Some(&state_path), false).unwrap();
+        let state = load_graph_state(state_path.to_str(), &graph, &authority).unwrap();
+        assert_eq!(
+            state.state_of(&NodeId::new("verify")),
+            Some(TaskAttemptState::Accepted)
+        );
+        let journal = GraphJournal::load(&state_path, &authority).unwrap();
+        assert!(journal.records.iter().all(|record| !matches!(
+            record,
+            GraphJournalRecord::DispatchIntent { .. }
+                | GraphJournalRecord::EffectStarted { .. }
+                | GraphJournalRecord::Dispatch { .. }
+        )));
+        journal.validate_state_provenance(&graph, &state).unwrap();
+    }
+
+    #[tokio::test]
+    async fn graph_run_executes_effect_checks_and_durable_protocol_end_to_end() {
+        use omega_core::graph::{Graph, Node, NodeKind};
+        use omega_core::mission::{VerifierCheck, VerifierCheckKind, CONTRACT_SCHEMA_VERSION};
+
+        let dir = TestDir::new("end-to-end");
+        let graph_path = dir.path().join("graph.json");
+        let state_path = dir.path().join("state.json");
+        let mut node = Node::new("work", NodeKind::Agent).with_checks(vec![VerifierCheck {
+            schema_version: CONTRACT_SCHEMA_VERSION,
+            check_id: "artifact".to_string(),
+            kind: VerifierCheckKind::FileExists {
+                path: "output.txt".to_string(),
+            },
+            timeout_secs: 2,
+        }]);
+        node.extra.insert(
+            "command".to_string(),
+            serde_json::json!("printf 'ok\\n' > output.txt"),
+        );
+        std::fs::write(
+            &graph_path,
+            serde_json::to_vec_pretty(&Graph::new().with_node(node)).unwrap(),
+        )
+        .unwrap();
+
+        let held = cmd_graph_run(
+            graph_path.to_str().unwrap(),
+            Some(state_path.to_str().unwrap()),
+            true,
+            false,
+            10,
+        )
+        .await
+        .unwrap_err();
+        assert!(held.to_string().contains("HELD node work"));
+        resolve_risk_gate(
+            graph_path.to_str().unwrap(),
+            "work",
+            "operator",
+            state_path.to_str().unwrap(),
+            true,
+        )
+        .unwrap();
+        cmd_graph_run(
+            graph_path.to_str().unwrap(),
+            Some(state_path.to_str().unwrap()),
+            true,
+            false,
+            10,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("output.txt")).unwrap(),
+            "ok\n"
+        );
+        for path in [
+            state_path.clone(),
+            sidecar_path(&state_path, "key"),
+            sidecar_path(&state_path, "lock"),
+            sidecar_path(&state_path, "journal.jsonl"),
+        ] {
+            assert!(
+                path.is_file(),
+                "missing durable artifact {}",
+                path.display()
+            );
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                assert_eq!(
+                    std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                    0o600,
+                    "{} must be owner-only",
+                    path.display()
+                );
+            }
+        }
+        let authority = load_graph_authority(Some(&state_path), false).unwrap();
+        let graph = load_graph(graph_path.to_str().unwrap()).unwrap();
+        let state = load_graph_state(state_path.to_str(), &graph, &authority).unwrap();
+        GraphJournal::load(&state_path, &authority)
+            .unwrap()
+            .validate_state_provenance(&graph, &state)
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn graph_wal_crash_boundaries_resume_intent_and_reconcile_started_effect() {
+        use omega_core::graph::{Graph, Node, NodeId, NodeKind};
+        use omega_core::graph_executor::{
+            dispatch_wal_record, mark_effect_started, record_dispatch_intent_at, DispatchWalPhase,
+            EffectStartOutcome,
+        };
+        use omega_core::graph_risk::ExecutionMode;
+        use omega_core::mission::TaskAttemptState;
+
+        // Crash window 1: DispatchIntent is fsynced but the core intent state
+        // is not. Restart must re-consume the still-durable approval, persist
+        // the same deterministic intent, and execute exactly once.
+        let intent_dir = TestDir::new("wal-intent-gap");
+        let intent_graph_path = intent_dir.path().join("graph.json");
+        let intent_state_path = intent_dir.path().join("state.json");
+        let mut intent_node = Node::new("work", NodeKind::Agent);
+        intent_node.extra.insert(
+            "command".to_string(),
+            serde_json::json!("printf 'intent-effect\\n' >> effect.txt"),
+        );
+        let intent_graph = Graph::new().with_node(intent_node);
+        std::fs::write(
+            &intent_graph_path,
+            serde_json::to_vec_pretty(&intent_graph).unwrap(),
+        )
+        .unwrap();
+        let held = cmd_graph_run(
+            intent_graph_path.to_str().unwrap(),
+            Some(intent_state_path.to_str().unwrap()),
+            true,
+            false,
+            10,
+        )
+        .await
+        .unwrap_err();
+        assert!(held.to_string().contains("HELD node work"));
+        resolve_risk_gate(
+            intent_graph_path.to_str().unwrap(),
+            "work",
+            "intent-window-operator",
+            intent_state_path.to_str().unwrap(),
+            true,
+        )
+        .unwrap();
+        {
+            let state_lock = GraphStateLock::acquire(&intent_state_path).unwrap();
+            let authority = load_graph_authority(Some(&intent_state_path), false).unwrap();
+            let (_durable_state, mut state) =
+                DurableGraphState::load(&intent_state_path, &intent_graph, &authority).unwrap();
+            let mut journal =
+                GraphJournal::load_recovering(&intent_state_path, &authority, &state, &state_lock)
+                    .unwrap();
+            let reservation = state.reservation_of(&NodeId::new("work")).unwrap().clone();
+            let expected_version = state.version;
+            let intent = record_dispatch_intent_at(
+                &intent_graph,
+                &mut state,
+                &reservation,
+                ExecutionMode::Unattended,
+                chrono::Utc::now(),
+                expected_version,
+                None,
+                &authority,
+            )
+            .unwrap();
+            journal.append_dispatch_intent(&intent).unwrap();
+            let disk_state =
+                load_graph_state(intent_state_path.to_str(), &intent_graph, &authority).unwrap();
+            assert!(dispatch_wal_record(&disk_state, &NodeId::new("work"))
+                .unwrap()
+                .is_none());
+            // Drop the mutated in-memory state without persisting it: this is
+            // the exact crash boundary under test.
+        }
+        cmd_graph_run(
+            intent_graph_path.to_str().unwrap(),
+            Some(intent_state_path.to_str().unwrap()),
+            true,
+            false,
+            10,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(intent_dir.path().join("effect.txt")).unwrap(),
+            "intent-effect\n"
+        );
+        let intent_authority = load_graph_authority(Some(&intent_state_path), false).unwrap();
+        let intent_state =
+            load_graph_state(intent_state_path.to_str(), &intent_graph, &intent_authority).unwrap();
+        assert_eq!(
+            intent_state.state_of(&NodeId::new("work")),
+            Some(TaskAttemptState::Accepted)
+        );
+        let intent_journal = GraphJournal::load(&intent_state_path, &intent_authority).unwrap();
+        assert_eq!(
+            intent_journal
+                .records
+                .iter()
+                .filter(|record| matches!(record, GraphJournalRecord::DispatchIntent { .. }))
+                .count(),
+            1
+        );
+        assert_eq!(
+            intent_journal
+                .records
+                .iter()
+                .filter(|record| matches!(record, GraphJournalRecord::EffectStarted { .. }))
+                .count(),
+            1
+        );
+
+        // Crash window 2: core EffectStarted is persisted first, then the
+        // authenticated journal marker is fsynced, then the external effect
+        // may start. A restart must classify it UNKNOWN, never replay it. An
+        // attributed reconciliation must then advance the real durable state.
+        let started_dir = TestDir::new("wal-started-gap");
+        let started_graph_path = started_dir.path().join("graph.json");
+        let started_state_path = started_dir.path().join("state.json");
+        let mut started_node = Node::new("work", NodeKind::Agent);
+        started_node.extra.insert(
+            "command".to_string(),
+            serde_json::json!("printf 'started-effect\\n' >> effect.txt"),
+        );
+        let started_graph = Graph::new().with_node(started_node);
+        std::fs::write(
+            &started_graph_path,
+            serde_json::to_vec_pretty(&started_graph).unwrap(),
+        )
+        .unwrap();
+        let held = cmd_graph_run(
+            started_graph_path.to_str().unwrap(),
+            Some(started_state_path.to_str().unwrap()),
+            true,
+            false,
+            10,
+        )
+        .await
+        .unwrap_err();
+        assert!(held.to_string().contains("HELD node work"));
+        resolve_risk_gate(
+            started_graph_path.to_str().unwrap(),
+            "work",
+            "started-window-operator",
+            started_state_path.to_str().unwrap(),
+            true,
+        )
+        .unwrap();
+        {
+            let state_lock = GraphStateLock::acquire(&started_state_path).unwrap();
+            let authority = load_graph_authority(Some(&started_state_path), false).unwrap();
+            let (mut durable_state, mut state) =
+                DurableGraphState::load(&started_state_path, &started_graph, &authority).unwrap();
+            let mut journal =
+                GraphJournal::load_recovering(&started_state_path, &authority, &state, &state_lock)
+                    .unwrap();
+            let reservation = state.reservation_of(&NodeId::new("work")).unwrap().clone();
+            let expected_version = state.version;
+            let intent = record_dispatch_intent_at(
+                &started_graph,
+                &mut state,
+                &reservation,
+                ExecutionMode::Unattended,
+                chrono::Utc::now(),
+                expected_version,
+                None,
+                &authority,
+            )
+            .unwrap();
+            journal.append_dispatch_intent(&intent).unwrap();
+            persist_graph_state(
+                &started_graph,
+                &state,
+                &authority,
+                &mut durable_state,
+                &mut journal,
+                &state_lock,
+            )
+            .unwrap();
+            let expected_version = state.version;
+            let started = mark_effect_started(
+                &started_graph,
+                &mut state,
+                &reservation,
+                &intent.intent_id,
+                expected_version,
+                None,
+                &authority,
+            )
+            .unwrap();
+            let EffectStartOutcome::Started(started) = started else {
+                panic!("fresh intent must produce one effect-start transition")
+            };
+            persist_graph_state(
+                &started_graph,
+                &state,
+                &authority,
+                &mut durable_state,
+                &mut journal,
+                &state_lock,
+            )
+            .unwrap();
+            let disk_state =
+                load_graph_state(started_state_path.to_str(), &started_graph, &authority).unwrap();
+            assert_eq!(
+                dispatch_wal_record(&disk_state, &NodeId::new("work"))
+                    .unwrap()
+                    .unwrap()
+                    .phase,
+                DispatchWalPhase::EffectStarted
+            );
+            journal.append_effect_started(&started).unwrap();
+            std::fs::write(started_dir.path().join("effect.txt"), "started-effect\n").unwrap();
+        }
+
+        let unknown = cmd_graph_run(
+            started_graph_path.to_str().unwrap(),
+            Some(started_state_path.to_str().unwrap()),
+            true,
+            false,
+            10,
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            unknown.to_string().contains("UNKNOWN EFFECT"),
+            "{unknown:#}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(started_dir.path().join("effect.txt")).unwrap(),
+            "started-effect\n",
+            "restart replayed an effect after EffectStarted became durable"
+        );
+        cmd_graph_reconcile(
+            started_graph_path.to_str().unwrap(),
+            "work",
+            Some(started_state_path.to_str().unwrap()),
+            GraphReconcileResult::Succeeded,
+            None,
+            "recovery-operator",
+        )
+        .unwrap();
+        cmd_graph_run(
+            started_graph_path.to_str().unwrap(),
+            Some(started_state_path.to_str().unwrap()),
+            true,
+            false,
+            10,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(started_dir.path().join("effect.txt")).unwrap(),
+            "started-effect\n"
+        );
+        let started_authority = load_graph_authority(Some(&started_state_path), false).unwrap();
+        let started_state = load_graph_state(
+            started_state_path.to_str(),
+            &started_graph,
+            &started_authority,
+        )
+        .unwrap();
+        assert_eq!(
+            started_state.state_of(&NodeId::new("work")),
+            Some(TaskAttemptState::Accepted)
+        );
+        assert_eq!(
+            dispatch_wal_record(&started_state, &NodeId::new("work"))
+                .unwrap()
+                .unwrap()
+                .phase,
+            DispatchWalPhase::ResultRecorded
+        );
+        GraphJournal::load(&started_state_path, &started_authority)
+            .unwrap()
+            .validate_state_provenance(&started_graph, &started_state)
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn graph_run_binds_to_exact_active_plan_and_amendment_fails_closed() {
+        use omega_core::graph::{Graph, Node, NodeKind};
+        use omega_core::mission::{
+            Mission, MissionState, PlanContract, RetryPolicy, TaskContract, TaskId, VerifierCheck,
+            VerifierCheckKind, CONTRACT_SCHEMA_VERSION,
+        };
+        use omega_core::mission_ledger::{AppendEvent, MissionLedger};
+
+        let dir = TestDir::new("graph-ledger-binding");
+        let graph_path = dir.path().join("graph.json");
+        let state_path = dir.path().join("state.json");
+        let verifier = VerifierCheck {
+            schema_version: CONTRACT_SCHEMA_VERSION,
+            check_id: "true".to_string(),
+            kind: VerifierCheckKind::Command {
+                argv: vec!["true".to_string()],
+                cwd: Some(dir.path().to_string_lossy().to_string()),
+                expected_exit_code: 0,
+            },
+            timeout_secs: 2,
+        };
+        let mut node = Node::new("work", NodeKind::Agent)
+            .with_task(TaskId::new("work"))
+            .with_checks(vec![verifier.clone()]);
+        node.extra
+            .insert("command".to_string(), serde_json::json!("true"));
+        let graph = Graph::new().with_node(node);
+        std::fs::write(&graph_path, serde_json::to_vec_pretty(&graph).unwrap()).unwrap();
+
+        let ledger = MissionLedger::open(dir.path().join("mission-engine-v3.sqlite3")).unwrap();
+        let mission = Mission::new("OmegaOS", "bound graph", dir.path().to_path_buf());
+        let created = ledger
+            .create_mission(&mission, "graph-test-created", "oracle-test")
+            .unwrap();
+        let oracle_state = omega_core::oracle_lifecycle::OracleState::from_ledger(
+            "oracle-test",
+            &mission,
+            &created,
+        )
+        .unwrap();
+        let mut classified = AppendEvent::new(
+            mission.id.clone(),
+            created.projection.version,
+            "graph-test-classified",
+            "oracle-test",
+            "mission_classified",
+        );
+        classified.next_mission_state = Some(MissionState::Classified);
+        let classified = ledger.append(classified).unwrap();
+        let task = TaskContract {
+            schema_version: CONTRACT_SCHEMA_VERSION,
+            task_id: TaskId::new("work"),
+            name: "work".to_string(),
+            prompt: "execute the bound graph node".to_string(),
+            acceptance_criteria: vec!["command and verifier pass".to_string()],
+            verifier_checks: vec![verifier],
+            required_capabilities: Vec::new(),
+            scope: Vec::new(),
+            risk: omega_core::routing::RiskLevel::Low,
+            retry_policy: RetryPolicy::default(),
+            depends_on: Vec::new(),
+        };
+        let plan = PlanContract::new(
+            mission.id.clone(),
+            1,
+            classified.projection.version,
+            vec![task],
+            Vec::new(),
+            Vec::new(),
+        )
+        .unwrap();
+        let mut planned = AppendEvent::new(
+            mission.id.clone(),
+            classified.projection.version,
+            "graph-test-plan-1",
+            "oracle-test",
+            "plan_accepted",
+        );
+        planned.next_mission_state = Some(MissionState::Planned);
+        planned.payload = serde_json::to_value(&plan).unwrap();
+        planned.plan = Some(plan.clone());
+        ledger.append(planned).unwrap();
+
+        let binding = GraphLedgerBinding {
+            state_dir: dir.path().to_path_buf(),
+            oracle_state: oracle_state.clone(),
+            ledger,
+            plan: plan.clone(),
+        };
+        cmd_graph_run_with_binding(
+            graph_path.to_str().unwrap(),
+            Some(state_path.to_str().unwrap()),
+            false,
+            false,
+            10,
+            Some(&binding),
+        )
+        .await
+        .unwrap();
+
+        let authority = load_graph_authority(Some(&state_path), false).unwrap();
+        let state = load_graph_state(state_path.to_str(), &graph, &authority).unwrap();
+        assert_eq!(
+            state.mission_binding.as_ref().unwrap().mission_id,
+            mission.id
+        );
+        let events = binding.ledger.events(&mission.id).unwrap();
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event.kind == "graph_run_bound")
+                .count(),
+            1
+        );
+        let completed = events
+            .iter()
+            .find(|event| event.kind == "graph_run_completed")
+            .unwrap();
+        assert_eq!(completed.payload["status"], "complete");
+        assert!(!completed.payload["acceptance_receipt_ids"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+        assert_ne!(
+            binding.ledger.mission(&mission.id).unwrap().unwrap().state,
+            MissionState::Delivered,
+            "a graph alone must never deliver the Oracle mission"
+        );
+
+        let current = binding.ledger.mission(&mission.id).unwrap().unwrap();
+        let amended = plan
+            .amend(1, current.version, plan.tasks.clone(), &[])
+            .unwrap();
+        let mut amendment = AppendEvent::new(
+            mission.id.clone(),
+            current.version,
+            "graph-test-plan-2",
+            "oracle-test",
+            "plan_amended",
+        );
+        amendment.payload = serde_json::to_value(&amended).unwrap();
+        amendment.plan = Some(amended.clone());
+        binding.ledger.append(amendment).unwrap();
+        let amended_binding = GraphLedgerBinding {
+            state_dir: dir.path().to_path_buf(),
+            oracle_state,
+            ledger: binding.ledger,
+            plan: amended,
+        };
+        let error = cmd_graph_run_with_binding(
+            graph_path.to_str().unwrap(),
+            Some(state_path.to_str().unwrap()),
+            false,
+            true,
+            10,
+            Some(&amended_binding),
+        )
+        .await
+        .unwrap_err();
+        assert!(error.to_string().contains("binding mismatch"));
+    }
+
+    fn terminal_graph_task(
+        task_id: &str,
+        depends_on: &[&str],
+    ) -> omega_core::mission::TaskContract {
+        omega_core::mission::TaskContract {
+            schema_version: omega_core::mission::CONTRACT_SCHEMA_VERSION,
+            task_id: omega_core::mission::TaskId::new(task_id),
+            name: task_id.to_string(),
+            prompt: format!("execute graph task {task_id}"),
+            acceptance_criteria: vec!["the graph effect succeeds".to_string()],
+            verifier_checks: vec![omega_core::mission::VerifierCheck {
+                schema_version: omega_core::mission::CONTRACT_SCHEMA_VERSION,
+                check_id: format!("verify-{task_id}"),
+                kind: omega_core::mission::VerifierCheckKind::Command {
+                    argv: vec!["true".to_string()],
+                    cwd: None,
+                    expected_exit_code: 0,
+                },
+                timeout_secs: 2,
+            }],
+            required_capabilities: Vec::new(),
+            scope: Vec::new(),
+            risk: omega_core::routing::RiskLevel::Low,
+            retry_policy: omega_core::mission::RetryPolicy {
+                max_attempts: 1,
+                backoff_secs: 0,
+            },
+            depends_on: depends_on
+                .iter()
+                .map(|dependency| omega_core::mission::TaskId::new(*dependency))
+                .collect(),
+        }
+    }
+
+    fn terminal_graph_binding(
+        dir: &TestDir,
+        label: &str,
+        tasks: Vec<omega_core::mission::TaskContract>,
+    ) -> (omega_core::mission::Mission, GraphLedgerBinding) {
+        use omega_core::mission::{Mission, MissionState, PlanContract};
+        use omega_core::mission_ledger::{AppendEvent, MissionLedger};
+
+        let ledger = MissionLedger::open(dir.path().join("mission-engine-v3.sqlite3")).unwrap();
+        let mission = Mission::new(
+            "OmegaOS",
+            format!("terminal graph {label}"),
+            dir.path().to_path_buf(),
+        );
+        let oracle = format!("oracle-terminal-{label}");
+        let created_key = format!("terminal-{label}-created");
+        let created = ledger
+            .create_mission(&mission, &created_key, &oracle)
+            .unwrap();
+        let oracle_state =
+            omega_core::oracle_lifecycle::OracleState::from_ledger(&oracle, &mission, &created)
+                .unwrap();
+        let mut classified = AppendEvent::new(
+            mission.id.clone(),
+            created.projection.version,
+            format!("terminal-{label}-classified"),
+            &oracle,
+            "mission_classified",
+        );
+        classified.next_mission_state = Some(MissionState::Classified);
+        let classified = ledger.append(classified).unwrap();
+        let plan = PlanContract::new(
+            mission.id.clone(),
+            1,
+            classified.projection.version,
+            tasks,
+            Vec::new(),
+            Vec::new(),
+        )
+        .unwrap();
+        let mut planned = AppendEvent::new(
+            mission.id.clone(),
+            classified.projection.version,
+            format!("terminal-{label}-plan"),
+            &oracle,
+            "plan_accepted",
+        );
+        planned.next_mission_state = Some(MissionState::Planned);
+        planned.payload = serde_json::to_value(&plan).unwrap();
+        planned.plan = Some(plan.clone());
+        ledger.append(planned).unwrap();
+
+        (
+            mission,
+            GraphLedgerBinding {
+                state_dir: dir.path().to_path_buf(),
+                oracle_state,
+                ledger,
+                plan,
+            },
+        )
+    }
+
+    fn assert_exact_graph_terminal_event(
+        binding: &GraphLedgerBinding,
+        mission: &omega_core::mission::Mission,
+        expected_kind: &str,
+        expected_status: &str,
+    ) {
+        let events = binding.ledger.events(&mission.id).unwrap();
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event.kind == "graph_run_bound")
+                .count(),
+            1
+        );
+        let terminals = events
+            .iter()
+            .filter(|event| {
+                matches!(
+                    event.kind.as_str(),
+                    "graph_run_completed" | "graph_run_blocked" | "graph_run_failed"
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(terminals.len(), 1, "terminal events: {terminals:#?}");
+        let terminal = terminals[0];
+        assert_eq!(terminal.kind, expected_kind);
+        assert_eq!(terminal.payload["event"], expected_kind);
+        assert_eq!(terminal.payload["status"], expected_status);
+        assert_eq!(
+            terminal.payload["mission_id"],
+            mission.id.as_str(),
+            "terminal receipt must remain bound to the exact mission"
+        );
+        assert_eq!(terminal.payload["plan_revision"], 1);
+        assert_eq!(
+            terminal.payload["acceptance_receipt_ids"],
+            serde_json::json!([])
+        );
+        assert_ne!(
+            binding.ledger.mission(&mission.id).unwrap().unwrap().state,
+            omega_core::mission::MissionState::Delivered,
+            "a terminal graph verdict must not deliver its parent mission"
+        );
+    }
+
+    #[tokio::test]
+    async fn graph_blocked_run_records_only_graph_run_blocked_end_to_end() {
+        use omega_core::graph::{Graph, Node, NodeKind};
+        use omega_core::mission::{TaskAttemptState, TaskId};
+
+        let dir = TestDir::new("graph-ledger-blocked");
+        let graph_path = dir.path().join("graph.json");
+        let state_path = dir.path().join("state.json");
+        let root_task = terminal_graph_task("root", &[]);
+        let dependent_task = terminal_graph_task("dependent", &["root"]);
+        let mut root = Node::new("root", NodeKind::Agent)
+            .with_task(TaskId::new("root"))
+            .with_retry(root_task.retry_policy.clone())
+            .with_checks(root_task.verifier_checks.clone());
+        root.extra
+            .insert("command".to_string(), serde_json::json!("false"));
+        let mut dependent = Node::new("dependent", NodeKind::Synthesis)
+            .with_task(TaskId::new("dependent"))
+            .with_retry(dependent_task.retry_policy.clone())
+            .with_checks(dependent_task.verifier_checks.clone());
+        dependent
+            .extra
+            .insert("command".to_string(), serde_json::json!("true"));
+        let graph = Graph::new()
+            .with_node(root)
+            .with_node(dependent)
+            .with_edge("root", "dependent");
+        std::fs::write(&graph_path, serde_json::to_vec_pretty(&graph).unwrap()).unwrap();
+        let (mission, binding) =
+            terminal_graph_binding(&dir, "blocked", vec![root_task, dependent_task]);
+
+        let error = cmd_graph_run_with_binding(
+            graph_path.to_str().unwrap(),
+            Some(state_path.to_str().unwrap()),
+            false,
+            false,
+            10,
+            Some(&binding),
+        )
+        .await
+        .unwrap_err();
+
+        assert!(error.to_string().contains("blocked:"), "{error:#}");
+        let authority = load_graph_authority(Some(&state_path), false).unwrap();
+        let state = load_graph_state(state_path.to_str(), &graph, &authority).unwrap();
+        assert_eq!(
+            state.state_of(&omega_core::graph::NodeId::new("root")),
+            Some(TaskAttemptState::Failed)
+        );
+        assert_exact_graph_terminal_event(&binding, &mission, "graph_run_blocked", "blocked");
+    }
+
+    #[tokio::test]
+    async fn graph_failed_run_records_only_graph_run_failed_end_to_end() {
+        use omega_core::graph::{Graph, Node, NodeKind};
+        use omega_core::mission::{TaskAttemptState, TaskId};
+
+        let dir = TestDir::new("graph-ledger-failed");
+        let graph_path = dir.path().join("graph.json");
+        let state_path = dir.path().join("state.json");
+        let solo_task = terminal_graph_task("solo", &[]);
+        let mut solo = Node::new("solo", NodeKind::Agent)
+            .with_task(TaskId::new("solo"))
+            .with_retry(solo_task.retry_policy.clone())
+            .with_checks(solo_task.verifier_checks.clone());
+        solo.extra
+            .insert("command".to_string(), serde_json::json!("false"));
+        let graph = Graph::new().with_node(solo);
+        std::fs::write(&graph_path, serde_json::to_vec_pretty(&graph).unwrap()).unwrap();
+        let (mission, binding) = terminal_graph_binding(&dir, "failed", vec![solo_task]);
+
+        let error = cmd_graph_run_with_binding(
+            graph_path.to_str().unwrap(),
+            Some(state_path.to_str().unwrap()),
+            false,
+            false,
+            10,
+            Some(&binding),
+        )
+        .await
+        .unwrap_err();
+
+        assert!(error.to_string().contains("failed: solo:"), "{error:#}");
+        let authority = load_graph_authority(Some(&state_path), false).unwrap();
+        let state = load_graph_state(state_path.to_str(), &graph, &authority).unwrap();
+        assert_eq!(
+            state.state_of(&omega_core::graph::NodeId::new("solo")),
+            Some(TaskAttemptState::Failed)
+        );
+        assert_exact_graph_terminal_event(&binding, &mission, "graph_run_failed", "failed");
+    }
+
+    #[tokio::test]
+    async fn graph_retry_backoff_is_durable_and_honored_before_redispatch() {
+        use omega_core::graph::{Graph, Node, NodeKind};
+        use omega_core::mission::RetryPolicy;
+
+        let dir = TestDir::new("retry-backoff");
+        let graph_path = dir.path().join("graph.json");
+        let state_path = dir.path().join("state.json");
+        let mut node = Node::new("flaky", NodeKind::Agent).with_retry(RetryPolicy {
+            max_attempts: 2,
+            backoff_secs: 1,
+        });
+        node.extra.insert(
+            "command".to_string(),
+            serde_json::json!(
+                "if [ -f attempted ]; then printf 'ok\\n' > succeeded; else touch attempted; exit 7; fi"
+            ),
+        );
+        std::fs::write(
+            &graph_path,
+            serde_json::to_vec_pretty(&Graph::new().with_node(node)).unwrap(),
+        )
+        .unwrap();
+
+        let held = cmd_graph_run(
+            graph_path.to_str().unwrap(),
+            Some(state_path.to_str().unwrap()),
+            true,
+            false,
+            10,
+        )
+        .await
+        .unwrap_err();
+        assert!(held.to_string().contains("HELD node flaky"));
+        resolve_risk_gate(
+            graph_path.to_str().unwrap(),
+            "flaky",
+            "operator-first-attempt",
+            state_path.to_str().unwrap(),
+            true,
+        )
+        .unwrap();
+        let started = std::time::Instant::now();
+        let retry_held = cmd_graph_run(
+            graph_path.to_str().unwrap(),
+            Some(state_path.to_str().unwrap()),
+            true,
+            false,
+            1,
+        )
+        .await
+        .unwrap_err();
+        assert!(retry_held.to_string().contains("HELD node flaky"));
+        assert!(
+            started.elapsed() >= std::time::Duration::from_millis(850),
+            "retry gate was reached before its one-second durable deadline"
+        );
+        resolve_risk_gate(
+            graph_path.to_str().unwrap(),
+            "flaky",
+            "operator-retry",
+            state_path.to_str().unwrap(),
+            true,
+        )
+        .unwrap();
+        cmd_graph_run(
+            graph_path.to_str().unwrap(),
+            Some(state_path.to_str().unwrap()),
+            true,
+            false,
+            10,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("succeeded")).unwrap(),
+            "ok\n"
+        );
+        let authority = load_graph_authority(Some(&state_path), false).unwrap();
+        let journal = GraphJournal::load(&state_path, &authority).unwrap();
+        assert!(journal
+            .records
+            .iter()
+            .any(|record| matches!(record, GraphJournalRecord::RetryScheduled { .. })));
+    }
+
+    #[tokio::test]
+    async fn max_steps_settles_last_report_and_resumes_without_replaying_effects() {
+        use omega_core::graph::{Graph, Node, NodeKind};
+
+        let dir = TestDir::new("max-steps-resume");
+        let graph_path = dir.path().join("graph.json");
+        let state_path = dir.path().join("state.json");
+        let mut first = Node::new("first", NodeKind::Agent);
+        first.extra.insert(
+            "command".to_string(),
+            serde_json::json!("printf 'first\\n' >> trace.txt"),
+        );
+        let mut second = Node::new("second", NodeKind::Agent);
+        second.extra.insert(
+            "command".to_string(),
+            serde_json::json!("printf 'second\\n' >> trace.txt"),
+        );
+        let graph = Graph::new()
+            .with_node(first)
+            .with_node(second)
+            .with_edge("first", "second");
+        std::fs::write(&graph_path, serde_json::to_vec_pretty(&graph).unwrap()).unwrap();
+
+        let held = cmd_graph_run(
+            graph_path.to_str().unwrap(),
+            Some(state_path.to_str().unwrap()),
+            true,
+            false,
+            10,
+        )
+        .await
+        .unwrap_err();
+        assert!(held.to_string().contains("HELD node first"));
+        resolve_risk_gate(
+            graph_path.to_str().unwrap(),
+            "first",
+            "operator-first",
+            state_path.to_str().unwrap(),
+            true,
+        )
+        .unwrap();
+        let second_held = cmd_graph_run(
+            graph_path.to_str().unwrap(),
+            Some(state_path.to_str().unwrap()),
+            true,
+            false,
+            1,
+        )
+        .await
+        .unwrap_err();
+        assert!(second_held.to_string().contains("HELD node second"));
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("trace.txt")).unwrap(),
+            "first\n"
+        );
+
+        resolve_risk_gate(
+            graph_path.to_str().unwrap(),
+            "second",
+            "operator-second",
+            state_path.to_str().unwrap(),
+            true,
+        )
+        .unwrap();
+        cmd_graph_run(
+            graph_path.to_str().unwrap(),
+            Some(state_path.to_str().unwrap()),
+            true,
+            false,
+            10,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("trace.txt")).unwrap(),
+            "first\nsecond\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn unattended_risk_approval_is_bound_persisted_consumed_and_resumed() {
+        use omega_core::graph::{Graph, Node, NodeId, NodeKind};
+        use omega_core::graph_risk::{RISK_KEY, RISK_REASON_KEY, RISK_WHAT_IS_LOST_KEY};
+
+        let dir = TestDir::new("risk-approval");
+        let graph_path = dir.path().join("graph.json");
+        let state_path = dir.path().join("state.json");
+        let mut node = Node::new("work", NodeKind::Agent);
+        node.extra.insert(
+            "command".to_string(),
+            serde_json::json!("printf 'approved\\n' > approved.txt"),
+        );
+        node.extra
+            .insert(RISK_KEY.to_string(), serde_json::json!("irreversible"));
+        node.extra.insert(
+            RISK_REASON_KEY.to_string(),
+            serde_json::json!("test requires explicit consent"),
+        );
+        node.extra.insert(
+            RISK_WHAT_IS_LOST_KEY.to_string(),
+            serde_json::json!("the test fixture"),
+        );
+        std::fs::write(
+            &graph_path,
+            serde_json::to_vec_pretty(&Graph::new().with_node(node)).unwrap(),
+        )
+        .unwrap();
+
+        let held = cmd_graph_run(
+            graph_path.to_str().unwrap(),
+            Some(state_path.to_str().unwrap()),
+            true,
+            false,
+            10,
+        )
+        .await
+        .unwrap_err();
+        assert!(held.to_string().contains("HELD node work"));
+        assert!(!dir.path().join("approved.txt").exists());
+
+        resolve_risk_gate(
+            graph_path.to_str().unwrap(),
+            "work",
+            "operator",
+            state_path.to_str().unwrap(),
+            true,
+        )
+        .unwrap();
+
+        cmd_graph_run(
+            graph_path.to_str().unwrap(),
+            Some(state_path.to_str().unwrap()),
+            true,
+            false,
+            10,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("approved.txt")).unwrap(),
+            "approved\n"
+        );
+
+        let authority = load_graph_authority(Some(&state_path), false).unwrap();
+        let graph = load_graph(graph_path.to_str().unwrap()).unwrap();
+        let state = load_graph_state(state_path.to_str(), &graph, &authority).unwrap();
+        assert!(state.reservation_of(&NodeId::new("work")).is_none());
+        let replay = resolve_risk_gate(
+            graph_path.to_str().unwrap(),
+            "work",
+            "operator",
+            state_path.to_str().unwrap(),
+            true,
+        )
+        .unwrap_err();
+        assert!(replay
+            .to_string()
+            .contains("no active dispatch reservation"));
+    }
 
     #[test]
     fn same_index_session_identity_change_refreshes_preview() {
@@ -12224,6 +20170,147 @@ mod phase1_tests {
         )));
     }
 
+    fn worker_worktree_fixture(
+        label: &str,
+    ) -> (TestDir, CreatedWorkerWorktree, std::path::PathBuf) {
+        let root = TestDir::new(label);
+        let repo = root.path().join("repo");
+        let worktree = root.path().join("isolated");
+        std::fs::create_dir(&repo).unwrap();
+        required_git_output(&repo, &["init", "--initial-branch=main"]).unwrap();
+        required_git_output(&repo, &["config", "user.name", "OmegaOS Test"]).unwrap();
+        required_git_output(
+            &repo,
+            &["config", "user.email", "omegaos-test@example.invalid"],
+        )
+        .unwrap();
+        std::fs::write(repo.join("README.md"), "fixture\n").unwrap();
+        required_git_output(&repo, &["add", "README.md"]).unwrap();
+        required_git_output(&repo, &["commit", "-m", "fixture"]).unwrap();
+        let head = required_git_text(&repo, &["rev-parse", "HEAD"]).unwrap();
+        let branch = format!("omega/worker-core-{}", &head[..8]);
+        required_git_output(
+            &repo,
+            &[
+                "worktree",
+                "add",
+                "-b",
+                &branch,
+                worktree.to_str().unwrap(),
+                "HEAD",
+            ],
+        )
+        .unwrap();
+        let created = CreatedWorkerWorktree::capture(&repo, &worktree, "worker-core").unwrap();
+        (root, created, repo)
+    }
+
+    fn local_branch_exists(repo: &std::path::Path, branch: &str) -> bool {
+        std::process::Command::new("git")
+            .args(["show-ref", "--verify", "--quiet"])
+            .arg(format!("refs/heads/{branch}"))
+            .current_dir(repo)
+            .status()
+            .is_ok_and(|status| status.success())
+    }
+
+    #[test]
+    fn failed_worker_dispatch_rolls_back_only_its_clean_worktree_and_branch() {
+        let (_root, created, repo) = worker_worktree_fixture("worker-worktree-rollback");
+        assert!(created.worktree.exists());
+        assert!(local_branch_exists(&repo, &created.branch));
+
+        rollback_created_worker_worktree(&created).unwrap();
+
+        assert!(!created.worktree.exists());
+        assert!(!local_branch_exists(&repo, &created.branch));
+        assert!(registered_worktrees(&repo)
+            .unwrap()
+            .iter()
+            .all(|entry| entry.branch.as_deref() != Some(created.branch.as_str())));
+    }
+
+    #[test]
+    fn worker_worktree_rollback_preserves_uncommitted_data() {
+        let (_root, created, repo) = worker_worktree_fixture("worker-worktree-dirty");
+        std::fs::write(created.worktree.join("README.md"), "worker change\n").unwrap();
+
+        let error = rollback_created_worker_worktree(&created).unwrap_err();
+
+        assert!(error.to_string().contains("contains changes"));
+        assert!(created.worktree.exists());
+        assert!(local_branch_exists(&repo, &created.branch));
+    }
+
+    #[test]
+    fn worker_worktree_rollback_preserves_a_new_worker_commit() {
+        let (_root, created, repo) = worker_worktree_fixture("worker-worktree-commit");
+        std::fs::write(
+            created.worktree.join("README.md"),
+            "committed worker change\n",
+        )
+        .unwrap();
+        required_git_output(&created.worktree, &["add", "README.md"]).unwrap();
+        required_git_output(&created.worktree, &["commit", "-m", "worker change"]).unwrap();
+
+        let error = rollback_created_worker_worktree(&created).unwrap_err();
+
+        assert!(error.to_string().contains("changed branch or HEAD"));
+        assert!(created.worktree.exists());
+        assert!(local_branch_exists(&repo, &created.branch));
+    }
+
+    #[test]
+    fn worker_worktree_capture_rejects_a_non_omega_branch() {
+        let root = TestDir::new("worker-worktree-wrong-branch");
+        let repo = root.path().join("repo");
+        let worktree = root.path().join("isolated");
+        std::fs::create_dir(&repo).unwrap();
+        required_git_output(&repo, &["init", "--initial-branch=main"]).unwrap();
+        required_git_output(&repo, &["config", "user.name", "OmegaOS Test"]).unwrap();
+        required_git_output(
+            &repo,
+            &["config", "user.email", "omegaos-test@example.invalid"],
+        )
+        .unwrap();
+        std::fs::write(repo.join("README.md"), "fixture\n").unwrap();
+        required_git_output(&repo, &["add", "README.md"]).unwrap();
+        required_git_output(&repo, &["commit", "-m", "fixture"]).unwrap();
+        required_git_output(
+            &repo,
+            &[
+                "worktree",
+                "add",
+                "-b",
+                "feature/not-omega",
+                worktree.to_str().unwrap(),
+                "HEAD",
+            ],
+        )
+        .unwrap();
+
+        let error = CreatedWorkerWorktree::capture(&repo, &worktree, "worker-core").unwrap_err();
+        assert!(error.to_string().contains("non-Omega branch"));
+        assert!(worktree.exists());
+    }
+
+    #[test]
+    fn graph_terminal_events_preserve_completed_blocked_and_failed_semantics() {
+        assert_eq!(
+            graph_terminal_event_kind("complete").unwrap(),
+            "graph_run_completed"
+        );
+        assert_eq!(
+            graph_terminal_event_kind("blocked").unwrap(),
+            "graph_run_blocked"
+        );
+        assert_eq!(
+            graph_terminal_event_kind("failed").unwrap(),
+            "graph_run_failed"
+        );
+        assert!(graph_terminal_event_kind("pending").is_err());
+    }
+
     #[test]
     fn verifier_contract_parser_accepts_direct_argv_and_rejects_shell_operators() {
         assert_eq!(
@@ -12244,6 +20331,50 @@ mod phase1_tests {
     }
 
     #[test]
+    fn managed_worker_completion_anchors_artifacts_to_runtime_root_from_subdirectory() {
+        let root = TestDir::new("worker-completion-root");
+        let workspace = root.path().join("workspace");
+        let subdirectory = workspace.join("crates/omega-core");
+        let outside = root.path().join("outside");
+        let state = root.path().join("state");
+        std::fs::create_dir_all(&subdirectory).unwrap();
+        std::fs::create_dir(&outside).unwrap();
+        let mut intent = omega_core::worker_runtime::WorkerRuntimeIntent {
+            attempt: omega_core::worker_runtime::WorkerAttemptIdentity {
+                mission_id: omega_core::mission::MissionId("m-worker-completion-root".to_string()),
+                plan_revision: 1,
+                plan_digest: "a".repeat(64),
+                task_id: "completion-root".to_string(),
+                attempt_id: "attempt-completion-root-1".to_string(),
+                owner: "placeholder-owner".to_string(),
+            },
+            launch: omega_core::worker_runtime::WorkerLaunchIdentity {
+                session: "placeholder-session".to_string(),
+                expected_command_digest: "b".repeat(64),
+                authority_workspace: workspace.clone(),
+                execution_workspace: workspace.clone(),
+                worktree: None,
+                project: "OmegaOS".to_string(),
+                provider: "codex".to_string(),
+            },
+            scope: None,
+        };
+        let session = intent
+            .generation_scoped_session("OmegaOS-worker-completion")
+            .unwrap();
+        intent.attempt.owner = session.clone();
+        intent.launch.session = session;
+        let runtime =
+            omega_core::worker_runtime::WorkerRuntimeManifest::prepare(&state, intent).unwrap();
+
+        assert_eq!(
+            worker_completion_artifact_root_from(&runtime, &subdirectory).unwrap(),
+            std::fs::canonicalize(&workspace).unwrap()
+        );
+        assert!(worker_completion_artifact_root_from(&runtime, &outside).is_err());
+    }
+
+    #[test]
     fn v3_worker_preparation_freezes_plan_and_queues_attempt_before_spawn() {
         let state_dir = std::env::temp_dir().join(format!(
             "omega-v3-worker-preparation-{}-{}",
@@ -12251,8 +20382,10 @@ mod phase1_tests {
             chrono::Utc::now().timestamp_micros()
         ));
         std::fs::create_dir_all(&state_dir).unwrap();
-        let mut config = OmegaConfig::default();
-        config.state_dir = state_dir.clone();
+        let config = OmegaConfig {
+            state_dir: state_dir.clone(),
+            ..OmegaConfig::default()
+        };
 
         let mission =
             omega_core::mission::Mission::new("OmegaOS", "implement safely", state_dir.clone());
@@ -12260,7 +20393,7 @@ mod phase1_tests {
             state_dir.join("mission-engine-v3.sqlite3"),
         )
         .unwrap();
-        ledger
+        let created = ledger
             .create_mission(&mission, "test-create", "test")
             .unwrap();
         let mut classified = omega_core::mission_ledger::AppendEvent::new(
@@ -12271,45 +20404,175 @@ mod phase1_tests {
             "mission_classified",
         );
         classified.next_mission_state = Some(omega_core::mission::MissionState::Classified);
-        ledger.append(classified).unwrap();
+        let classified = ledger.append(classified).unwrap();
+        let parent_task = omega_core::mission::TaskContract {
+            schema_version: omega_core::mission::CONTRACT_SCHEMA_VERSION,
+            task_id: omega_core::mission::TaskId::new("parent-task"),
+            name: "parent-task".to_string(),
+            prompt: "coordinate child execution".to_string(),
+            acceptance_criteria: vec!["child evidence is independently accepted".to_string()],
+            verifier_checks: vec![omega_core::mission::VerifierCheck {
+                schema_version: omega_core::mission::CONTRACT_SCHEMA_VERSION,
+                check_id: "parent-verify".to_string(),
+                kind: omega_core::mission::VerifierCheckKind::Command {
+                    argv: vec!["true".to_string()],
+                    cwd: None,
+                    expected_exit_code: 0,
+                },
+                timeout_secs: 2,
+            }],
+            required_capabilities: Vec::new(),
+            scope: vec!["parent-only".to_string()],
+            risk: omega_core::routing::RiskLevel::Low,
+            retry_policy: omega_core::mission::RetryPolicy::default(),
+            depends_on: Vec::new(),
+        };
+        let parent_plan = omega_core::mission::PlanContract::new(
+            mission.id.clone(),
+            1,
+            classified.projection.version,
+            vec![parent_task],
+            Vec::new(),
+            Vec::new(),
+        )
+        .unwrap();
+        let mut planned = omega_core::mission_ledger::AppendEvent::new(
+            mission.id.clone(),
+            classified.projection.version,
+            "test-parent-plan",
+            "test",
+            "plan_accepted",
+        );
+        planned.next_mission_state = Some(omega_core::mission::MissionState::Planned);
+        planned.payload = serde_json::to_value(&parent_plan).unwrap();
+        planned.plan = Some(parent_plan.clone());
+        ledger.append(planned).unwrap();
         let oracle_name = "oracle-OmegaOS-test";
-        omega_core::oracle_lifecycle::OracleState::new(oracle_name, &mission)
+        omega_core::oracle_lifecycle::OracleState::from_ledger(oracle_name, &mission, &created)
+            .unwrap()
             .write(&state_dir)
             .unwrap();
 
         let attempt = prepare_v3_worker_attempt(
             &config,
             Some(oracle_name),
+            "OmegaOS",
             "OmegaOS-worker-core",
             "core",
             "Done Criteria: ledger is authoritative\nVerify Command: cargo check --workspace",
             state_dir.to_str().unwrap(),
+            state_dir.to_str().unwrap(),
             &["crates/omega-core".to_string()],
             omega_core::agents::Agent::Codex,
         )
-        .unwrap()
         .unwrap();
-        let plan = ledger.active_plan(&mission.id).unwrap().unwrap();
-        assert_eq!(plan.tasks.len(), 1);
-        assert_eq!(plan.tasks[0].verifier_checks.len(), 1);
+        assert_ne!(attempt.mission_id(), &mission.id);
+        assert_eq!(
+            ledger.active_plan(&mission.id).unwrap().unwrap(),
+            parent_plan,
+            "dynamic worker creation must never amend its parent Oracle plan"
+        );
+        let child_plan = ledger.active_plan(attempt.mission_id()).unwrap().unwrap();
+        assert_eq!(child_plan.tasks.len(), 1);
+        assert_eq!(child_plan.tasks[0].task_id.as_str(), "core");
+        assert_eq!(child_plan.tasks[0].verifier_checks.len(), 1);
+        assert_eq!(attempt.parent_mission_id.as_ref(), Some(&mission.id));
         assert_eq!(
             ledger
-                .task_attempt(&attempt.attempt_id)
+                .task_attempt(attempt.attempt_id())
                 .unwrap()
                 .unwrap()
                 .state,
             omega_core::mission::TaskAttemptState::Queued
         );
         assert_eq!(
-            ledger.mission(&mission.id).unwrap().unwrap().state,
+            ledger.mission(attempt.mission_id()).unwrap().unwrap().state,
             omega_core::mission::MissionState::Planned
         );
+        std::fs::remove_dir_all(state_dir).unwrap();
+    }
 
-        transition_v3_worker_attempt(
-            &config,
-            "OmegaOS-worker-core",
-            &attempt,
-            omega_core::mission::TaskAttemptState::Running,
+    #[test]
+    fn orchestrator_oracle_done_records_candidate_without_a_legacy_gate() {
+        use omega_core::mission::{
+            Mission, MissionState, Plan, PlanStrategy, Task, TaskAttemptState,
+        };
+        use omega_core::mission_ledger::MissionLedger;
+        use omega_core::orchestration::{
+            claim_authoritative_scopes, prepare_authoritative_execution,
+            transition_authoritative_attempt, transition_authoritative_mission,
+        };
+        use omega_core::routing::Complexity;
+
+        let dir = TestDir::new("orchestrator-oracle-candidate");
+        let mission = Mission::new("OmegaOS", "complex V3 mission", dir.path().to_path_buf());
+        let task_id = format!("{}-oracle", mission.id.as_str());
+        let session = format!("oracle-OmegaOS-{}", mission.id.as_str());
+        let mut task = Task::new(&task_id, "oracle", "coordinate exact worker evidence");
+        task.agent = "codex".to_string();
+        let plan = Plan {
+            mission_id: mission.id.clone(),
+            complexity: Complexity::Complex,
+            strategy: PlanStrategy::Sequential,
+            tasks: vec![task],
+            created_at: chrono::Utc::now(),
+        };
+        let ledger = MissionLedger::open(dir.path().join("mission-engine-v3.sqlite3")).unwrap();
+        let authority =
+            prepare_authoritative_execution(&ledger, &mission, &plan, "omega-orchestrate", vec![])
+                .unwrap();
+        transition_authoritative_mission(
+            &ledger,
+            &mission.id,
+            MissionState::Running,
+            "omega-orchestrate",
+        )
+        .unwrap();
+        let mut attempt = authority.attempt(&task_id).unwrap().clone();
+        claim_authoritative_scopes(
+            &ledger,
+            dir.path(),
+            dir.path(),
+            &mut attempt,
+            &session,
+            &[],
+            std::time::Duration::from_secs(60),
+        )
+        .unwrap();
+        transition_authoritative_attempt(&ledger, &attempt, TaskAttemptState::Running, &session)
+            .unwrap();
+
+        assert!(omega_core::gate::GateResult::read(dir.path(), &session)
+            .unwrap()
+            .is_none());
+        assert!(!dir
+            .path()
+            .join(format!(
+                "oracle-{}.progress.json",
+                session.strip_prefix("oracle-").unwrap()
+            ))
+            .exists());
+        let binding = resolve_orchestrator_oracle_attempt(dir.path(), &session)
+            .unwrap()
+            .unwrap();
+        assert_eq!(binding.attempt_id, attempt.attempt_id);
+
+        let key = session.strip_prefix("oracle-").unwrap();
+        let mut signal = omega_core::done::OracleDoneSignal::new(
+            key,
+            "OmegaOS",
+            DoneStatus::DoneClean,
+            "candidate",
+        );
+        signal.summary = "candidate".to_string();
+        hold_v3_oracle_candidate(&mut signal);
+        signal.projection = record_done_projection(
+            dir.path(),
+            &session,
+            &signal,
+            "fixture",
+            "legacy_oracle_completion_candidate",
+            "codex",
         )
         .unwrap();
         assert_eq!(
@@ -12318,13 +20581,40 @@ mod phase1_tests {
                 .unwrap()
                 .unwrap()
                 .state,
-            omega_core::mission::TaskAttemptState::Running
+            TaskAttemptState::CandidateDone
         );
+        signal.write(dir.path()).unwrap();
+        let persisted = omega_core::done::OracleDoneSignal::read(dir.path(), &session)
+            .unwrap()
+            .unwrap();
+        assert_eq!(persisted.status, DoneStatus::Pending);
+        assert!(!persisted.is_closeable());
+        assert!(persisted
+            .pending_actions
+            .iter()
+            .any(|action| action == V3_ACCEPTANCE_PENDING));
+        assert!(persisted.projection.is_some());
         assert_eq!(
-            ledger.mission(&mission.id).unwrap().unwrap().state,
-            omega_core::mission::MissionState::Running
+            ledger
+                .events(&mission.id)
+                .unwrap()
+                .iter()
+                .filter(|event| event.kind == "legacy_oracle_completion_candidate")
+                .count(),
+            1
         );
-        std::fs::remove_dir_all(state_dir).unwrap();
+        let event = ledger
+            .events(&mission.id)
+            .unwrap()
+            .into_iter()
+            .find(|event| event.kind == "legacy_oracle_completion_candidate")
+            .unwrap();
+        assert_eq!(event.payload["status"], "pending");
+        assert!(event.payload["pending_actions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|action| action == V3_ACCEPTANCE_PENDING));
     }
 }
 
@@ -12416,6 +20706,25 @@ mod lifecycle_tests {
             decide_kill(true, &LiveWorkers::default(), false),
             KillPlan::Proceed { cascade: vec![] }
         );
+    }
+
+    #[test]
+    fn legacy_scope_release_requires_successful_containment_and_fresh_absence() {
+        require_legacy_containment_evidence("legacy-worker", true, true, true).unwrap();
+        require_legacy_containment_evidence("legacy-worker", false, true, true).unwrap();
+
+        let kill_error =
+            require_legacy_containment_evidence("legacy-worker", true, false, true).unwrap_err();
+        assert!(kill_error
+            .to_string()
+            .contains("authority and worktree are retained"));
+
+        let still_live =
+            require_legacy_containment_evidence("legacy-worker", true, true, false).unwrap_err();
+        assert!(still_live.to_string().contains("still observable"));
+        assert!(still_live
+            .to_string()
+            .contains("authority and worktree are retained"));
     }
 
     // --- omega kill: whether a worktree is safe to remove -------------------
@@ -12685,7 +20994,8 @@ mod lifecycle_tests {
         let v = closure_verdict(1, 1, &[], &[], false, &[]);
         let r = closure_remedies(&v, "oracle-p-1");
         assert!(
-            r.iter().any(|s| s.contains("--accept") && s.contains("--approver")),
+            r.iter()
+                .any(|s| s.contains("--accept") && s.contains("--approver")),
             "expected a signed gate acceptance, got {r:?}"
         );
     }
@@ -12704,6 +21014,8 @@ mod lifecycle_tests {
             session: session.to_string(),
             files_owned: files.iter().map(|f| f.to_string()).collect(),
             claimed_at: chrono::Utc::now() - chrono::Duration::seconds(age_secs),
+            workspace_id: None,
+            claim_id: None,
         }
     }
 
@@ -12740,7 +21052,11 @@ mod lifecycle_tests {
         assert_eq!(plan_orphan_claims(&claims, &[], now), vec![]);
 
         // …and one second past the window it is reclaimable.
-        let claims = vec![claim("proj-worker-starting", &["a.ts"], ORPHAN_CLAIM_GRACE_SECS + 1)];
+        let claims = vec![claim(
+            "proj-worker-starting",
+            &["a.ts"],
+            ORPHAN_CLAIM_GRACE_SECS + 1,
+        )];
         assert_eq!(plan_orphan_claims(&claims, &[], now).len(), 1);
     }
 

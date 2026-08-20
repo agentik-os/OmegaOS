@@ -322,12 +322,12 @@ mod tests {
     #[test]
     fn junk_detection_flags_only_unsanitized_names() {
         let sessions = vec![
-            OmegaSession::classify("istryGPT -"),       // paste artifact (space + dash)
-            OmegaSession::classify("• Dentistry"),      // bullet + space
+            OmegaSession::classify("istryGPT -"), // paste artifact (space + dash)
+            OmegaSession::classify("• Dentistry"), // bullet + space
             OmegaSession::classify("oracle-DentistryGPT-1"), // clean omega slug
             OmegaSession::classify("DentistryGPT-worker-x"), // clean
-            OmegaSession::classify("aisb-master"),      // clean
-            OmegaSession::classify("claude-1"),         // clean user shell
+            OmegaSession::classify("aisb-master"), // clean
+            OmegaSession::classify("claude-1"),   // clean user shell
         ];
         let keep = HashSet::new();
         let junk = find_junk_sessions(&sessions, &keep);

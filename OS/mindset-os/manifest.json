@@ -1,0 +1,76 @@
+{
+  "schema_version": "2.0.0",
+  "id": "mindset-os",
+  "num": 2,
+  "name": "Mindset {OS}",
+  "version": "0.1.0",
+  "status": "scaffold",
+  "group": {
+    "key": "personal",
+    "label": "01 · PERSONAL",
+    "purpose": "Operate yourself"
+  },
+  "tagline": "Identity and beliefs: the behavioural compiler under Alignment.",
+  "inherits_from": "mindset-os",
+  "commands": [
+    "mindset-os",
+    "mindset",
+    "omega-mindset:new",
+    "omega-mindset:score",
+    "omega-mindset:challenge",
+    "omega-mindset:coach"
+  ],
+  "dependencies": {
+    "requires": [
+      "context-memory-os"
+    ],
+    "consumes_from": [
+      "alignment-os",
+      "journal-os",
+      "habit-tracker-os"
+    ],
+    "emits_to": [
+      "identity-shift-os",
+      "goal-life-strategy-os",
+      "habit-tracker-os",
+      "decision-os"
+    ]
+  },
+  "targets": {
+    "claude": {
+      "supported": true
+    },
+    "chatgpt": {
+      "supported": true
+    },
+    "gemini": {
+      "supported": true
+    },
+    "codex": {
+      "supported": true
+    }
+  },
+  "entrypoints": {
+    "spec": "OS.md",
+    "system": "SYSTEM.md",
+    "skill": "SKILL.md",
+    "setup": "SETUP.md",
+    "workflows": "WORKFLOWS/",
+    "commands": "COMMANDS/",
+    "prompts": "PROMPTS/",
+    "references": "REFERENCES/",
+    "memory": "MEMORY/",
+    "tools": "TOOLS/",
+    "evals": "EVALS/",
+    "examples": "EXAMPLES/",
+    "interfaces": "INTERFACES/",
+    "adapters": "ADAPTERS/"
+  },
+  "requires_human_approval_for": [
+    "persisting a psychological interpretation as a durable fact about the person",
+    "retiring or rewriting an identity statement the user has not said they no longer hold",
+    "arming the unattended daily coaching loop (omega-mindset coach --arm)",
+    "overwriting or replacing an existing workspace or challenge directory",
+    "sending any workspace file, coaching pass or scorecard outside the local machine, including the Telegram card"
+  ]
+}

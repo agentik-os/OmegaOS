@@ -81,17 +81,14 @@ impl ProgressInfo {
                     if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
                         if name.ends_with(".progress.json") {
                             if let Ok(content) = std::fs::read_to_string(&path) {
-                                if let Ok(mut info) =
-                                    serde_json::from_str::<ProgressInfo>(&content)
+                                if let Ok(mut info) = serde_json::from_str::<ProgressInfo>(&content)
                                 {
                                     // Best-effort session backfill from the
                                     // filename stem (`oracle-<key>` — exact
                                     // for oracle sessions, the only real
                                     // session-less producers today).
                                     if info.session.is_empty() {
-                                        if let Some(stem) =
-                                            name.strip_suffix(".progress.json")
-                                        {
+                                        if let Some(stem) = name.strip_suffix(".progress.json") {
                                             info.session = stem.to_string();
                                         }
                                     }
@@ -132,7 +129,11 @@ mod tests {
     #[test]
     fn parses_the_real_producer_schema() {
         let tmp = tempfile::TempDir::new().unwrap();
-        std::fs::write(tmp.path().join("oracle-academy-2.progress.json"), REAL_MERGED).unwrap();
+        std::fs::write(
+            tmp.path().join("oracle-academy-2.progress.json"),
+            REAL_MERGED,
+        )
+        .unwrap();
 
         // Full session name (what patrol/TUI pass) resolves the file.
         let info = ProgressInfo::read(tmp.path(), "oracle-academy-2").expect("must parse");

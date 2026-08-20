@@ -153,3 +153,84 @@ Use only:
 Declare convergence only when the core idea is intelligible, material tensions are visible, the leading direction survived adversarial review, decisions are explicit, decisive unknowns have experiments or research tasks, rejected paths include reasons, the quality gates in [quality-and-evals.md](references/quality-and-evals.md) pass, and the requested handoff contract is complete.
 
 For long work, preserve the ledger and end each part with the current round, completed artifacts, next exact action, remaining challenges, founder decisions needed, and a compact state checksum. Never call a partial brainstorm complete.
+
+## When to use this
+
+Reach for Brainstorm {OS} when:
+
+- You have one intuition and no idea whether it is the good version of itself.
+- Every candidate on the table is a cosmetic variant of the first one, and the session keeps producing the same shape of answer.
+- An opportunity was named upstream and nothing has been invented against it yet.
+- A concept is about to be handed to Blueprint {OS} and nobody has genuinely attacked it.
+- Two people disagree about a direction and the disagreement has never been written down as a tension with both positions intact.
+- A brainstorm already happened, everyone agreed, and the speed of that agreement is suspicious.
+- Several concepts survived and it is unclear whether they compound, coexist, conflict, or merely distract.
+- You need to decide the embodiment (mobile, web, desktop, multi-surface, chat, API, ambient, physical, service, or no interface) before a definition can start.
+
+Near neighbours, and the line between them:
+
+| Confused with | Difference |
+| --- | --- |
+| Trend & Opportunity {OS} | Trend detects movement in the world over time and names an opportunity with a closing window. Brainstorm invents and evolves concepts, with or without a trend behind them. A concept arriving with no signal is legitimate here and is labelled as such. |
+| Research {OS} | Research answers a stated question with defensible outside sources. Brainstorm never asserts an external fact: it registers the claim as `BS-HYP` with a falsifier and routes it out. |
+| Market Research {OS} | Market Research compiles the market and customer evidence body and issues a bounded market decision. Brainstorm produces the concept that evidence body is then compiled about. |
+| Customer Discovery {OS} | Discovery is the only unit in this group that talks to a real human. Brainstorm requests that contact, never performs it, and consumes the coded insight. |
+| Validation {OS} | Brainstorm produces hypotheses with falsifiers. Validation signs a threshold before the data and issues the verdict. Brainstorm never uses the word “validated”. |
+| Strategy & Portfolio {OS} | Brainstorm converges on one selected concept. Strategy decides whether that concept gets money, people and calendar time against every other candidate. |
+| Blueprint {OS} | Blueprint defines the product: scope, domain, data, API, UX, test contracts. Brainstorm stops the moment a session starts specifying screens, schemas, endpoints or milestones. |
+| Decision {OS} | Decision handles a choice under irreducible uncertainty and values. Brainstorm widens the option set first, so the decision is not made over a population of one. |
+
+## Capabilities
+
+- Recover Founder DNA (obsessions, beliefs, taste markers, anti-patterns, unfair insights, energy preferences, signature tension) and mark each item unconfirmed, partially confirmed, or confirmed.
+- Split one problem statement into structurally different frames: another problem, actor, scale, time horizon, ownership model, scarcity, worldview, and the no-interface frame.
+- Encode a direction as an idea genome, mark which loci are load-bearing, and mutate the ones that are not.
+- Run bounded generations with a stated selection pressure, recording survivors, extinctions, parentage, and a genetic-diversity warning when the population converged too early.
+- Transfer deep mechanisms from distant domains, and test concepts inside counterfactual worlds to expose the assumptions they actually rest on.
+- Run three genuinely independent cells (Expansion, Reality, Adversarial) on the same neutral case file, freeze their positions before any of them sees another's conclusion, then cross-examine.
+- Add at most two specialist mandates, only when they attack a material uncertainty.
+- Red-team with premortem, incentive and abuse analysis and second-order effects, where every attack carries a repair, an experiment, or a kill recommendation.
+- Compare embodiment candidates in the Surface Lab and produce the prototype plan that would discriminate between them.
+- Preserve tensions rather than averaging them, and preserve the strangest coherent survivor rather than smoothing it away.
+- Park concepts with evidence-based resurrection triggers instead of killing them.
+- Test whether several live concepts compound, coexist, conflict, or distract.
+- Turn decisive unknowns into the cheapest tests that could settle them, and route fact questions out to research.
+- Converge on one selected concept with the dissent recorded beside the recommendation, then freeze and version it with its full lineage.
+- Audit a brainstorm (this one or an inherited one) on diversity, dissent, evidence discipline, traceability, decision quality and handoff readiness.
+
+## Procedure
+
+The ordered loop is the Council loop defined above in **Council loop**; this is
+its compact restatement, not a second protocol. Where the two appear to differ,
+the Council loop section governs.
+
+1. **Recover.** Pull prior context, sources, the project boundary and the locked decisions. Never reopen a lock without an explicit instruction.
+2. **Frame.** Restate the idea, desired outcome, user, constraints, non-goals, stakes and unknowns. Recover Founder DNA. Ask at most one materially branching question, then proceed on labelled assumptions.
+3. **Fission.** Create structurally different frames before generating solution volume.
+4. **Evolve.** Encode genomes, mutate at least two loci, cross compatible mechanisms, run distant collisions and counterfactual worlds, record parentage.
+5. **Surface.** When embodiment matters, compare candidates and require a distinct role per surface for any multi-surface concept.
+6. **Cross-examine.** Steelman an opposing direction before attacking it. Surface hidden assumptions, contradictions, opportunity costs and evidence gaps.
+7. **Red-team.** Premortem, incentives, abuse, second-order effects, explicit kill criteria. Criticism without a repair, an experiment or a kill recommendation is incomplete.
+8. **Recombine.** Synthesise compatible strengths into new concepts, keeping unresolved tensions intact.
+9. **Converge.** Compare survivors against weighted criteria, valuable surprise, founder signature and surface fit. Classify every decision as locked, provisional, experiment-first, deferred, incubated or rejected.
+10. **Commit.** Update frame, genome and idea lineage, surface decisions, hypothesis register, tension map, decision ledger, incubation triggers, experiment queue, open questions and handoff status.
+11. **Cycle check.** Answer: what changed because of this round? If nothing material changed, switch methods or stop.
+12. **Freeze and hand off.** Only with human approval, and only when the quality gates pass.
+
+Loop steps 3 to 6 on “challenge”, “again”, “continue”, or “deeper”.
+
+## Handoffs
+
+| To | Event | What it receives | What it does with it |
+| --- | --- | --- | --- |
+| Market Research {OS} | `brainstorm.concept.selected` | the frozen concept and its market-dependent hypotheses | compiles the evidence body and issues the market decision |
+| Validation {OS} | `brainstorm.concept.selected` | the frozen concept and its hypothesis register with falsifiers | registers the claims, signs thresholds, issues verdicts |
+| Blueprint {OS} | `brainstorm.concept.selected` | a decision-ready concept, only when validation is skipped by explicit human authorization | writes the product definition |
+| Context & Memory {OS} | `brainstorm.session.completed` | the session ledger, concept lineage and every frozen version | makes the lineage durable across sessions and OS units |
+
+Received from: Trend & Opportunity {OS} (`opportunity.named`), Customer
+Discovery {OS} (`discovery.insight.confirmed`), Librarian {OS}
+(`librarian.extract.delivered`), Validation {OS} (`validation.claim.killed`,
+which reopens or retires the concept branch that rested on the dead claim). All
+four are optional: Brainstorm is the suite's ideation entry point and starts
+from a bare intuition when nothing upstream exists.

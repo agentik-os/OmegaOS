@@ -106,15 +106,31 @@ impl Inbox {
     /// Exclusive advisory lock guarding the push/drain critical sections, held
     /// for the lifetime of the returned handle (drop = unlock). Without it
     /// drain()'s peek-then-remove races a concurrent push(): an event appended
-    /// between the read and the unlink is deleted unread. Only push and drain
-    /// take it — the read-only peek()/count() stay lock-free (a torn last line
-    /// is skipped by the parse), and drain() calls peek() while already holding
-    /// the lock, so locking peek() too would self-deadlock (flock is per-fd).
-    /// Mirrors scope.rs's `.scope.lock` pattern.
+    /// between the read and the unlink is deleted unread. Read-only peek takes
+    /// a shared lock; drain calls the unlocked parser
+    /// while already holding this exclusive lock. This makes malformed JSON a
+    /// durable corruption signal instead of confusing a concurrent append
+    /// with corruption. Mirrors scope.rs's `.scope.lock` pattern.
     fn lock(&self) -> Result<std::fs::File> {
-        let f = std::fs::File::create(self.path.with_extension("lock"))?;
+        let f = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(self.path.with_extension("lock"))?;
         f.lock_exclusive()?;
         Ok(f)
+    }
+
+    fn lock_shared(&self) -> Result<std::fs::File> {
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(self.path.with_extension("lock"))?;
+        FileExt::lock_shared(&file)?;
+        Ok(file)
     }
 
     pub fn push(&self, event: &InboxEvent) -> Result<()> {
@@ -128,24 +144,37 @@ impl Inbox {
         Ok(())
     }
 
-    pub fn peek(&self) -> Result<Vec<InboxEvent>> {
+    fn peek_unlocked(&self) -> Result<Vec<InboxEvent>> {
         if !self.path.exists() {
             return Ok(Vec::new());
         }
         let file = std::fs::File::open(&self.path)?;
         let reader = std::io::BufReader::new(file);
         let mut events = Vec::new();
-        for line in reader.lines() {
+        for (index, line) in reader.lines().enumerate() {
             let line = line?;
             let trimmed = line.trim();
             if trimmed.is_empty() {
                 continue;
             }
-            if let Ok(event) = serde_json::from_str::<InboxEvent>(trimmed) {
-                events.push(event);
-            }
+            let event = serde_json::from_str::<InboxEvent>(trimmed).map_err(|error| {
+                anyhow::anyhow!(
+                    "corrupt inbox event at {} line {}: {}",
+                    self.path.display(),
+                    index + 1,
+                    error
+                )
+            })?;
+            events.push(event);
         }
         Ok(events)
+    }
+
+    pub fn peek(&self) -> Result<Vec<InboxEvent>> {
+        // Synchronize with push/drain so strict parsing never mistakes a
+        // concurrent partial append for durable corruption.
+        let _lock = self.lock_shared()?;
+        self.peek_unlocked()
     }
 
     pub fn drain(&self) -> Result<Vec<InboxEvent>> {
@@ -154,7 +183,7 @@ impl Inbox {
         // remove_file would then delete unread). peek() is called lock-free here
         // on purpose — we already hold the lock.
         let _lock = self.lock()?;
-        let events = self.peek()?;
+        let events = self.peek_unlocked()?;
         if self.path.exists() {
             std::fs::remove_file(&self.path)?;
         }
@@ -162,12 +191,7 @@ impl Inbox {
     }
 
     pub fn count(&self) -> Result<usize> {
-        if !self.path.exists() {
-            return Ok(0);
-        }
-        let file = std::fs::File::open(&self.path)?;
-        let reader = std::io::BufReader::new(file);
-        Ok(reader.lines().map_while(Result::ok).filter(|l| !l.trim().is_empty()).count())
+        Ok(self.peek()?.len())
     }
 }
 
@@ -224,7 +248,10 @@ mod tests {
                 let inbox = Inbox::for_oracle(&dir, "race");
                 for i in 0..PER {
                     inbox
-                        .push(&InboxEvent::worker_done(&format!("w-{t}-{i}"), "done_clean"))
+                        .push(&InboxEvent::worker_done(
+                            &format!("w-{t}-{i}"),
+                            "done_clean",
+                        ))
                         .unwrap();
                 }
             }));
@@ -240,6 +267,29 @@ mod tests {
         }
         collected += inbox.drain().unwrap().len();
 
-        assert_eq!(collected, THREADS * PER, "lock must lose no event across push/drain");
+        assert_eq!(
+            collected,
+            THREADS * PER,
+            "lock must lose no event across push/drain"
+        );
+    }
+
+    #[test]
+    fn corrupt_line_is_an_error_not_a_false_empty_or_ack() {
+        let tmp = TempDir::new().unwrap();
+        let inbox = Inbox::for_oracle(tmp.path(), "strict");
+        inbox
+            .push(&InboxEvent::worker_done("worker-1", "done_clean"))
+            .unwrap();
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(tmp.path().join("oracle-strict.inbox.jsonl"))
+            .unwrap();
+        writeln!(file, "{{not-json").unwrap();
+
+        assert!(inbox.peek().is_err());
+        assert!(inbox.count().is_err());
+        assert!(inbox.drain().is_err());
+        assert!(tmp.path().join("oracle-strict.inbox.jsonl").exists());
     }
 }

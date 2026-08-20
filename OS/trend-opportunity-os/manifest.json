@@ -1,0 +1,93 @@
+{
+  "schema_version": "2.0.0",
+  "id": "trend-opportunity-os",
+  "num": 14,
+  "name": "Trend & Opportunity {OS}",
+  "version": "0.1.0",
+  "status": "authored",
+  "group": {
+    "key": "discover",
+    "label": "02 · DISCOVER & DECIDE",
+    "purpose": "Find what is worth building"
+  },
+  "tagline": "Spot movement early and turn it into a named opportunity.",
+  "inherits_from": null,
+  "commands": [
+    "/trend",
+    "/watch",
+    "/signals",
+    "/movement",
+    "/opportunity",
+    "/window",
+    "/review",
+    "/retire",
+    "/trend-audit"
+  ],
+  "dependencies": {
+    "requires": [
+      "agentik-runtime",
+      "context-memory-os"
+    ],
+    "consumes": [
+      "librarian.source.indexed",
+      "research.evidence.compiled",
+      "discovery.insight.confirmed"
+    ],
+    "emits": [
+      "trend.signal.captured",
+      "trend.movement.confirmed",
+      "opportunity.named",
+      "opportunity.window.closed"
+    ],
+    "consumes_from": [
+      "librarian-os",
+      "research-os",
+      "customer-discovery-os"
+    ],
+    "emits_to": [
+      "context-memory-os",
+      "market-research-os",
+      "strategy-portfolio-os",
+      "brainstorm-os"
+    ]
+  },
+  "targets": {
+    "claude": {
+      "supported": true
+    },
+    "chatgpt": {
+      "supported": true
+    },
+    "gemini": {
+      "supported": true
+    },
+    "codex": {
+      "supported": true
+    }
+  },
+  "entrypoints": {
+    "spec": "OS.md",
+    "system": "SYSTEM.md",
+    "skill": "SKILL.md",
+    "setup": "SETUP.md",
+    "workflows": "WORKFLOWS/",
+    "commands": "COMMANDS/",
+    "prompts": "PROMPTS/",
+    "references": "REFERENCES/",
+    "memory": "MEMORY/",
+    "tools": "TOOLS/",
+    "evals": "EVALS/",
+    "examples": "EXAMPLES/",
+    "interfaces": "INTERFACES/",
+    "adapters": "ADAPTERS/"
+  },
+  "requires_human_approval_for": [
+    "subscribing to, or spending on, any paid data source",
+    "collecting from a platform whose terms forbid automated collection",
+    "running a standing automated watcher that spends money, quota or rate limit on a schedule, and any increase to its cadence",
+    "contacting any source, person or organisation, for confirmation of a signal",
+    "publishing an opportunity brief outside the organisation",
+    "retiring an opportunity that another OS is already betting on",
+    "storing personal data about identifiable individuals whose public activity is treated as a signal"
+  ]
+}

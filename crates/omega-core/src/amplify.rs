@@ -207,8 +207,7 @@ pub fn amplify_mission(raw: &str, project: &str, work_dir: &str) -> String {
     }
 
     let ctx = gather_project_context(work_dir);
-    let brief = run_brain(raw, project, &ctx)
-        .unwrap_or_else(|| fallback_brief(raw, project, &ctx));
+    let brief = run_brain(raw, project, &ctx).unwrap_or_else(|| fallback_brief(raw, project, &ctx));
 
     cache_put(key, brief.clone());
     brief

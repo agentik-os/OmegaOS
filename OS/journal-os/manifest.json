@@ -1,0 +1,77 @@
+{
+  "schema_version": "2.0.0",
+  "id": "journal-os",
+  "num": 10,
+  "name": "Journal {OS}",
+  "version": "0.1.0",
+  "status": "scaffold",
+  "group": {
+    "key": "personal",
+    "label": "01 · PERSONAL",
+    "purpose": "Operate yourself"
+  },
+  "tagline": "Reflection that compounds: capture, revisit, extract the pattern.",
+  "inherits_from": "journal-os",
+  "commands": [
+    "journal",
+    "entry",
+    "revisit",
+    "pattern",
+    "journal-export"
+  ],
+  "dependencies": {
+    "requires": [
+      "context-memory-os"
+    ],
+    "consumes_from": [
+      "habit-tracker-os",
+      "decision-os",
+      "health-energy-os",
+      "intuitive-os",
+      "social-intelligence-os"
+    ],
+    "emits_to": [
+      "mindset-os",
+      "alignment-os",
+      "goal-life-strategy-os",
+      "intuitive-os"
+    ]
+  },
+  "targets": {
+    "claude": {
+      "supported": true
+    },
+    "chatgpt": {
+      "supported": true
+    },
+    "gemini": {
+      "supported": true
+    },
+    "codex": {
+      "supported": true
+    }
+  },
+  "entrypoints": {
+    "spec": "OS.md",
+    "system": "SYSTEM.md",
+    "skill": "SKILL.md",
+    "setup": "SETUP.md",
+    "workflows": "WORKFLOWS/",
+    "commands": "COMMANDS/",
+    "prompts": "PROMPTS/",
+    "references": "REFERENCES/",
+    "memory": "MEMORY/",
+    "tools": "TOOLS/",
+    "evals": "EVALS/",
+    "examples": "EXAMPLES/",
+    "interfaces": "INTERFACES/",
+    "adapters": "ADAPTERS/"
+  },
+  "requires_human_approval_for": [
+    "sending a candidate pattern as a proposal to another OS",
+    "persisting an entry or a derived fact to Context & Memory {OS} as durable",
+    "exporting, syncing or transmitting entries off the local machine",
+    "deleting or redacting an existing entry",
+    "attaching a named third party to an entry that another OS will read"
+  ]
+}

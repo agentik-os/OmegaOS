@@ -1,0 +1,111 @@
+{
+  "schema_version": "2.0.0",
+  "id": "brainstorm-os",
+  "num": 15,
+  "name": "Brainstorm {OS}",
+  "version": "0.1.0",
+  "status": "authored",
+  "group": {
+    "key": "discover",
+    "label": "02 · DISCOVER & DECIDE",
+    "purpose": "Find what is worth building"
+  },
+  "tagline": "Generate and evolve ideas before research or definition.",
+  "inherits_from": "brainstorm-os",
+  "commands": [
+    "/brainstorm",
+    "/brainstorm --deep",
+    "/continue",
+    "/ideate --wild",
+    "/frame-fission",
+    "/signature",
+    "/reframe",
+    "/expand",
+    "/surface",
+    "/surface --compare",
+    "/genome",
+    "/evolve --generations",
+    "/mutate",
+    "/collision",
+    "/worlds",
+    "/anomaly",
+    "/incubate",
+    "/portfolio",
+    "/challenge",
+    "/redteam",
+    "/council",
+    "/audit",
+    "/research",
+    "/compare",
+    "/experiment",
+    "/converge",
+    "/freeze",
+    "/handoff"
+  ],
+  "dependencies": {
+    "requires": [
+      "agentik-runtime",
+      "context-memory-os"
+    ],
+    "consumes": [
+      "opportunity.named",
+      "discovery.insight.confirmed",
+      "librarian.extract.delivered",
+      "validation.claim.killed"
+    ],
+    "emits": [
+      "brainstorm.concept.selected",
+      "brainstorm.session.completed"
+    ],
+    "consumes_from": [
+      "trend-opportunity-os",
+      "customer-discovery-os",
+      "librarian-os",
+      "validation-os"
+    ],
+    "emits_to": [
+      "market-research-os",
+      "validation-os",
+      "blueprint-os",
+      "context-memory-os"
+    ]
+  },
+  "targets": {
+    "claude": {
+      "supported": true
+    },
+    "chatgpt": {
+      "supported": true
+    },
+    "gemini": {
+      "supported": true
+    },
+    "codex": {
+      "supported": true
+    }
+  },
+  "entrypoints": {
+    "spec": "OS.md",
+    "system": "SYSTEM.md",
+    "skill": "SKILL.md",
+    "setup": "SETUP.md",
+    "workflows": "WORKFLOWS/",
+    "commands": "COMMANDS/",
+    "prompts": "PROMPTS/",
+    "references": "REFERENCES/",
+    "memory": "MEMORY/",
+    "tools": "TOOLS/",
+    "evals": "EVALS/",
+    "examples": "EXAMPLES/",
+    "interfaces": "INTERFACES/",
+    "adapters": "ADAPTERS/"
+  },
+  "requires_human_approval_for": [
+    "freezing a concept as the selected one",
+    "emitting the handoff to Blueprint {OS}, and in particular skipping Market Research {OS} or Validation {OS} on the way there",
+    "discarding a concept lineage rather than marking it rejected or parked",
+    "spending money on external research, data or tooling",
+    "sharing a concept, a genome or a lineage outside the organisation",
+    "overwriting a prior frozen version instead of creating a new one"
+  ]
+}

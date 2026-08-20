@@ -20,6 +20,8 @@ set -euo pipefail
 AUDIT="${1:?Usage: audit-notify.sh <audit-name> <event> [details]}"
 EVENT="${2:?Usage: audit-notify.sh <audit-name> <event> [details]}"
 DETAILS="${3:-}"
+CANONICAL_AUDIT="$AUDIT"
+[[ "$CANONICAL_AUDIT" == *audit ]] || CANONICAL_AUDIT="${CANONICAL_AUDIT}audit"
 
 # Telegram target — read from env, never hardcoded.
 # If unset, notifications are skipped entirely (no DM to anyone).
@@ -49,7 +51,7 @@ case "$EVENT" in
         MSG="🔁 /${AUDIT} ${DETAILS:-fix-and-reaudit cycle}"
         ;;
     verdict)
-        MSG="🎯 /${AUDIT} done — ${DETAILS:-see .${AUDIT}/verdict.md}"
+        MSG="🎯 /${CANONICAL_AUDIT} done — ${DETAILS:-see audits/.${CANONICAL_AUDIT}/verdict.md}"
         ;;
     abort)
         MSG="🛑 /${AUDIT} aborted — ${DETAILS:-unknown reason}"
@@ -68,7 +70,7 @@ esac
 }
 
 # Log to audit's own telemetry
-AUDIT_DIR=".${AUDIT}"
+AUDIT_DIR="audits/.${CANONICAL_AUDIT}"
 if [[ -d "$AUDIT_DIR" ]]; then
     echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) ${EVENT} ${DETAILS}" >> "${AUDIT_DIR}/notifications.log"
 fi

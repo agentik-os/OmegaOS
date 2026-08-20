@@ -1,0 +1,116 @@
+{
+  "schema_version": "2.0.0",
+  "id": "documentation-os",
+  "num": 44,
+  "name": "Documentation {OS}",
+  "version": "0.1.0",
+  "status": "scaffold",
+  "group": {
+    "key": "operate",
+    "label": "05 · OPERATE",
+    "purpose": "Turn chaos into repeatable execution"
+  },
+  "tagline": "Write it once, find it later, keep it true.",
+  "inherits_from": null,
+  "commands": [
+    {
+      "name": "/doc-map",
+      "mode": "MAP",
+      "summary": "Inventory the set: what exists, where, who owns it, when it was last verified."
+    },
+    {
+      "name": "/doc-write",
+      "mode": "WRITE",
+      "summary": "Write one document to the house shape, with its four required fields."
+    },
+    {
+      "name": "/doc-find",
+      "mode": "FIND",
+      "summary": "Answer a question and cite the document and verified date it came from."
+    },
+    {
+      "name": "/doc-verify",
+      "mode": "VERIFY",
+      "summary": "Check a document against reality: confirm, correct, or report drift to its owner."
+    },
+    {
+      "name": "/doc-merge",
+      "mode": "MERGE",
+      "summary": "Collapse duplicates into one surviving document with redirects."
+    },
+    {
+      "name": "/doc-retire",
+      "mode": "RETIRE",
+      "summary": "Archive a document reversibly and point its entry points at the replacement."
+    },
+    {
+      "name": "/doc-index",
+      "mode": "MAP",
+      "summary": "Repair findability: titles, entry points, naming and search terms."
+    },
+    {
+      "name": "/doc-stale",
+      "mode": "VERIFY",
+      "summary": "List what has passed its review date, by owner, ranked by risk."
+    }
+  ],
+  "dependencies": {
+    "requires": [
+      "context-memory-os"
+    ],
+    "emits": [
+      "doc.published",
+      "doc.verified",
+      "doc.drift.reported",
+      "doc.merged",
+      "doc.retired",
+      "doc.orphaned"
+    ],
+    "consumes_from": [
+      "process-sop-os",
+      "project-os",
+      "meeting-os",
+      "operations-os",
+      "client-os",
+      "kpi-analytics-os"
+    ]
+  },
+  "targets": {
+    "claude": {
+      "supported": true
+    },
+    "chatgpt": {
+      "supported": true
+    },
+    "gemini": {
+      "supported": true
+    },
+    "codex": {
+      "supported": true
+    }
+  },
+  "entrypoints": {
+    "spec": "OS.md",
+    "system": "SYSTEM.md",
+    "skill": "SKILL.md",
+    "setup": "SETUP.md",
+    "workflows": "WORKFLOWS/",
+    "commands": "COMMANDS/",
+    "prompts": "PROMPTS/",
+    "references": "REFERENCES/",
+    "memory": "MEMORY/",
+    "tools": "TOOLS/",
+    "evals": "EVALS/",
+    "examples": "EXAMPLES/",
+    "interfaces": "INTERFACES/",
+    "adapters": "ADAPTERS/"
+  },
+  "requires_human_approval_for": [
+    "retiring or archiving a document",
+    "merging two documents with different owners",
+    "editing a document owned by someone else",
+    "publishing anything to an audience outside the team",
+    "changing a document that encodes a policy",
+    "rewriting content where reality and the document disagree"
+  ]
+}

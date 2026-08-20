@@ -1,0 +1,138 @@
+{
+  "schema_version": "2.0.0",
+  "id": "blueprint-os",
+  "num": 21,
+  "name": "Blueprint {OS}",
+  "version": "0.1.0",
+  "status": "scaffold",
+  "group": {
+    "key": "build",
+    "label": "03 · BUILD",
+    "purpose": "Turn evidence into products"
+  },
+  "tagline": "The product-definition compiler: a complete, traceable definition pack.",
+  "inherits_from": "blueprint-os",
+  "commands": [
+    {
+      "name": "/blueprint <idea>",
+      "surface": "session",
+      "does": "Start a NEW compile from an idea plus project context"
+    },
+    {
+      "name": "/blueprint-os",
+      "surface": "session",
+      "does": "Open the compiler and detect the right mode"
+    },
+    {
+      "name": "recover",
+      "surface": "session",
+      "does": "Rebuild canonical truth from prior sources"
+    },
+    {
+      "name": "extend <module>",
+      "surface": "session",
+      "does": "Add scope, preserve IDs, report the impact set"
+    },
+    {
+      "name": "revise <id>",
+      "surface": "session",
+      "does": "Supersede a record and propagate to its dependents"
+    },
+    {
+      "name": "audit",
+      "surface": "session",
+      "does": "Report gaps, orphans, conflicts and the G01 to G20 verdicts"
+    },
+    {
+      "name": "delta <a> <b>",
+      "surface": "session",
+      "does": "Semantic diff between two frozen versions with blast radius"
+    },
+    {
+      "name": "continue",
+      "surface": "session",
+      "does": "Resume exactly at the stored continuation pointer"
+    },
+    {
+      "name": "omega-blueprint init",
+      "surface": "cli",
+      "does": "Initialise the canonical state file"
+    },
+    {
+      "name": "omega-blueprint validate",
+      "surface": "cli",
+      "does": "Validate structure and semantic invariants, exit 1 on critical or high"
+    },
+    {
+      "name": "omega-blueprint status",
+      "surface": "cli",
+      "does": "Concise status card: revision, coverage, gates, unknowns"
+    },
+    {
+      "name": "omega-blueprint checkpoint",
+      "surface": "cli",
+      "does": "Advance the revision and store the continuation pointer"
+    },
+    {
+      "name": "omega-blueprint demo",
+      "surface": "cli",
+      "does": "Print a valid minimal state to read"
+    }
+  ],
+  "dependencies": {
+    "consumes": [
+      "validation.evidence.accepted",
+      "market.research.completed",
+      "memory.context.compiled",
+      "prototype.assumption.refuted",
+      "design.decision.requested",
+      "stepper.decision.requested",
+      "builder.decision.requested",
+      "quality.requirement.uncertifiable",
+      "security.requirement.proposed"
+    ],
+    "emits": [
+      "blueprint.pack.compiled",
+      "blueprint.gate.failed",
+      "blueprint.handoff.frozen",
+      "blueprint.delta.published"
+    ]
+  },
+  "targets": {
+    "claude": {
+      "supported": true
+    },
+    "chatgpt": {
+      "supported": true
+    },
+    "gemini": {
+      "supported": true
+    },
+    "codex": {
+      "supported": true
+    }
+  },
+  "entrypoints": {
+    "spec": "OS.md",
+    "system": "SYSTEM.md",
+    "skill": "SKILL.md",
+    "setup": "SETUP.md",
+    "workflows": "WORKFLOWS/",
+    "commands": "COMMANDS/",
+    "prompts": "PROMPTS/",
+    "references": "REFERENCES/",
+    "memory": "MEMORY/",
+    "tools": "TOOLS/",
+    "evals": "EVALS/",
+    "examples": "EXAMPLES/",
+    "interfaces": "INTERFACES/",
+    "adapters": "ADAPTERS/"
+  },
+  "requires_human_approval_for": [
+    "freezing a handoff version, since downstream planning becomes bound to it",
+    "superseding an approved DECISION record",
+    "recording a legal, financial, data-ownership or irreversible architecture choice as decided",
+    "declaring BLUEPRINT COMPLETE, STEPPER READY while a critical gate is amber",
+    "accepting a downstream change request that alters product scope"
+  ]
+}

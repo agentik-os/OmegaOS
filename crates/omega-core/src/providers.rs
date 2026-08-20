@@ -7,7 +7,7 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ProvidersConfig {
@@ -25,6 +25,8 @@ pub struct ProvidersConfig {
     pub pi: PiConfig,
     #[serde(default)]
     pub hermes: HermesConfig,
+    #[serde(default)]
+    pub kimi: KimiConfig,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -34,7 +36,7 @@ pub struct PiConfig {
     #[serde(default)]
     pub model: String,
     /// Pi routes through OpenRouter; this key is injected as OPENROUTER_API_KEY
-    /// into the Pi pane (see agents.rs `provider_env_prefix`).
+    /// into the Pi pane through the typed rmux process environment.
     #[serde(default)]
     pub api_key: String,
     // NOTE: a `pi.extension` field was removed (2026-06) — it was an orphan with
@@ -86,6 +88,10 @@ pub struct CodexConfig {
     pub api_key: String,
     #[serde(default)]
     pub base_url: String,
+    /// Extra writable roots granted to Codex in addition to the project and
+    /// OmegaOS's state/lock directories. Values must be absolute paths.
+    #[serde(default)]
+    pub additional_writable_dirs: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -102,58 +108,108 @@ pub struct GlmConfig {
     pub model: String,
     #[serde(default)]
     pub api_key: String,
+    /// Explicit high-risk opt-in for the Claude-backed GLM adapter. The safe
+    /// default is Claude Code's `auto` permission mode.
+    #[serde(default)]
+    pub dangerously_skip_permissions: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct KimiConfig {
+    /// Kimi model id or configured alias. OAuth users may leave this empty and
+    /// let Kimi Code use its own `default_model`.
+    pub model: String,
+    /// Direct API credential. Kimi Code only accepts this from its explicit
+    /// `KIMI_MODEL_*` override channel, not from a plain `KIMI_API_KEY` export.
+    pub api_key: String,
+    pub base_url: String,
+    pub provider_type: String,
+}
+
+impl Default for KimiConfig {
+    fn default() -> Self {
+        Self {
+            model: String::new(),
+            api_key: String::new(),
+            base_url: String::new(),
+            provider_type: "kimi".to_string(),
+        }
+    }
 }
 
 impl ProvidersConfig {
-    fn path() -> PathBuf {
+    pub fn path() -> PathBuf {
         crate::config::omega_dir().join("providers.toml")
     }
 
+    /// Compatibility loader for read-only UI/diagnostic surfaces. Runtime
+    /// authority must use [`Self::try_load`]. Mutations remain fail-closed in
+    /// [`Self::save`], even if a legacy caller obtained this fallback value.
     pub fn load() -> Self {
-        let path = Self::path();
-        if !path.exists() {
-            return Self::default();
-        }
-        // providers.toml holds per-provider api_key secrets. save() writes it
-        // 0o600, but perms can drift (backup restore, manual copy, errant chmod).
-        // Before trusting the secrets, verify the file is owner-only; if it leaked
-        // group/world access, warn (observability) and best-effort re-tighten via
-        // the shared chmod_600 impl. Best-effort (not fatal): a recoverable perms
-        // drift shouldn't brick a running system — mirrors CredentialStore::new().
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            if let Ok(meta) = std::fs::metadata(&path) {
-                let mode = meta.permissions().mode();
-                if mode & 0o077 != 0 {
-                    tracing::warn!(
-                        "providers.toml ({}) has lax permissions ({:o}); contains \
-                         api_key secrets — re-tightening to 0600",
-                        path.display(),
-                        mode & 0o777
-                    );
-                    let _ = crate::credentials::chmod_600(&path);
-                }
+        match Self::try_load() {
+            Ok(config) => config,
+            Err(error) => {
+                eprintln!(
+                    "omega: provider config unavailable; diagnostic defaults only, agent launch is blocked: {error:#}"
+                );
+                tracing::error!(error = %error, "provider config unavailable; diagnostic defaults only");
+                Self::default()
             }
         }
-        std::fs::read_to_string(&path)
-            .ok()
-            .and_then(|s| toml::from_str(&s).ok())
-            .unwrap_or_default()
+    }
+
+    /// Strict provider configuration loader for every launch/mutation path.
+    pub fn try_load() -> Result<Self> {
+        let path = Self::path();
+        Self::load_from(&path)
+    }
+
+    fn load_from(path: &Path) -> Result<Self> {
+        let Some(raw) = crate::config::read_private_optional_string(path)? else {
+            return Ok(Self::default());
+        };
+        let config: Self = toml::from_str(&raw)
+            .with_context(|| format!("parsing provider config {}", path.display()))?;
+        config
+            .validate()
+            .with_context(|| format!("validating provider config {}", path.display()))?;
+        Ok(config)
     }
 
     pub fn save(&self) -> Result<()> {
         let path = Self::path();
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
+        self.save_to(&path)
+    }
+
+    fn save_to(&self, path: &Path) -> Result<()> {
+        self.validate()
+            .with_context(|| format!("validating provider config for {}", path.display()))?;
+        if crate::config::read_private_optional(path)?.is_some() {
+            let _ = Self::load_from(path).context(
+                "refusing to overwrite an unreadable or invalid existing provider config",
+            )?;
         }
         let content = toml::to_string_pretty(self).context("serializing providers config")?;
-        std::fs::write(&path, content).context("writing providers config")?;
-        // providers.toml holds per-provider api_key secrets — lock it to the
-        // owner (was written with the default umask, i.e. world/group-readable
-        // on a multi-user host). Shares credentials::chmod_600 (one impl).
-        crate::credentials::chmod_600(&path)
-            .with_context(|| format!("chmod 600 {}", path.display()))?;
+        crate::config::atomic_write_private(path, content.as_bytes())
+            .context("writing providers config")
+    }
+
+    pub(crate) fn validate(&self) -> Result<()> {
+        match self.kimi.provider_type.as_str() {
+            "kimi" | "anthropic" | "openai" => {}
+            other => anyhow::bail!(
+                "invalid kimi.provider_type {other:?}; expected kimi, anthropic, or openai"
+            ),
+        }
+        for path in &self.codex.additional_writable_dirs {
+            if !Path::new(path).is_absolute() {
+                anyhow::bail!("codex.additional_writable_dirs entry must be absolute: {path:?}");
+            }
+            if path.chars().any(char::is_control) {
+                anyhow::bail!("codex.additional_writable_dirs entry contains control characters");
+            }
+        }
         Ok(())
     }
 
@@ -167,6 +223,7 @@ impl ProvidersConfig {
             "openrouter" => &self.openrouter.api_key,
             "pi" => &self.pi.api_key,
             "hermes" => &self.hermes.api_key,
+            "kimi" => &self.kimi.api_key,
             _ => "",
         }
     }
@@ -202,6 +259,29 @@ impl ProvidersConfig {
                 self.openrouter.base_url.clone(),
             ));
         }
+        // Current Kimi Code deliberately ignores plain KIMI_API_KEY exports.
+        // Its documented ephemeral-provider channel requires NAME + API_KEY;
+        // only emit the complete pair so an incomplete override never bricks an
+        // otherwise healthy OAuth session.
+        if !self.kimi.api_key.is_empty() {
+            let model = if self.kimi.model.is_empty() {
+                Self::default_model("kimi")
+            } else {
+                &self.kimi.model
+            };
+            out.push(("KIMI_MODEL_NAME".to_string(), model.to_string()));
+            out.push(("KIMI_MODEL_API_KEY".to_string(), self.kimi.api_key.clone()));
+            out.push((
+                "KIMI_MODEL_PROVIDER_TYPE".to_string(),
+                self.kimi.provider_type.clone(),
+            ));
+            if !self.kimi.base_url.is_empty() {
+                out.push((
+                    "KIMI_MODEL_BASE_URL".to_string(),
+                    self.kimi.base_url.clone(),
+                ));
+            }
+        }
         out
     }
 
@@ -217,6 +297,7 @@ impl ProvidersConfig {
             "openrouter",
             "pi",
             "hermes",
+            "kimi",
             "shell",
         ]
     }
@@ -236,6 +317,7 @@ impl ProvidersConfig {
             // Operator directive 2026-07-24: Claude Opus 5 is THE default brain
             // everywhere a tier has not been deliberately pinned (R-MODEL).
             "openrouter" | "pi" | "hermes" => "anthropic/claude-opus-5",
+            "kimi" => "kimi-for-coding",
             "shell" => "",
             _ => "",
         }
@@ -279,6 +361,13 @@ impl ProvidersConfig {
                 "z-ai/glm-5.1",
                 "deepseek/deepseek-chat",
             ],
+            "kimi" => vec![
+                "kimi-for-coding",
+                "kimi-for-coding-highspeed",
+                "k3",
+                "k3-256k",
+                "kimi-k2.6",
+            ],
             "shell" => vec![],
             _ => vec![],
         }
@@ -289,6 +378,7 @@ impl ProvidersConfig {
         match provider {
             "claude" | "gemini" => "oauth",
             "codex" | "glm" | "openrouter" | "pi" | "hermes" => "api_key",
+            "kimi" => "oauth_or_api_key",
             "shell" => "local",
             _ => "unknown",
         }
@@ -335,6 +425,14 @@ impl ProvidersConfig {
                 ProviderCapability::Reasoning,
                 ProviderCapability::CodeEditing,
                 ProviderCapability::ToolCalling,
+            ][..],
+            "kimi" => &[
+                ProviderCapability::Reasoning,
+                ProviderCapability::CodeEditing,
+                ProviderCapability::ToolCalling,
+                ProviderCapability::Delegation,
+                ProviderCapability::Vision,
+                ProviderCapability::LongContext,
             ][..],
             "shell" => &[
                 ProviderCapability::LocalExecution,
@@ -509,20 +607,62 @@ impl ActiveModel {
     }
 
     pub fn load() -> Self {
+        match Self::try_load() {
+            Ok(model) => model,
+            Err(error) => {
+                eprintln!(
+                    "omega: active-model state unavailable; diagnostic default only: {error:#}"
+                );
+                tracing::error!(error = %error, "active-model state unavailable");
+                Self::default()
+            }
+        }
+    }
+
+    pub fn try_load() -> Result<Self> {
         let path = Self::path();
-        std::fs::read_to_string(&path)
-            .ok()
-            .and_then(|s| serde_json::from_str::<Self>(&s).ok())
-            .unwrap_or_default()
+        Self::load_from(&path)
+    }
+
+    fn load_from(path: &Path) -> Result<Self> {
+        let Some(raw) = crate::config::read_private_optional_string(path)? else {
+            return Ok(Self::default());
+        };
+        let model: Self = serde_json::from_str(&raw)
+            .with_context(|| format!("parsing active-model state {}", path.display()))?;
+        model
+            .validate()
+            .with_context(|| format!("validating active-model state {}", path.display()))?;
+        Ok(model)
     }
 
     pub fn save(&self) -> Result<()> {
         let path = Self::path();
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
+        self.save_to(&path)
+    }
+
+    fn save_to(&self, path: &Path) -> Result<()> {
+        self.validate()
+            .with_context(|| format!("validating active-model state for {}", path.display()))?;
+        if crate::config::read_private_optional(path)?.is_some() {
+            let _ = Self::load_from(path)
+                .context("refusing to overwrite unreadable or invalid active-model state")?;
         }
         let json = serde_json::to_string_pretty(self)?;
-        std::fs::write(&path, json).context("writing active-model state")?;
+        crate::config::atomic_write_private(path, json.as_bytes())
+            .context("writing active-model state")
+    }
+
+    fn validate(&self) -> Result<()> {
+        if !ProvidersConfig::is_known(&self.active_provider) {
+            anyhow::bail!("unknown active provider: {}", self.active_provider);
+        }
+        if self.active_provider != "shell" && self.active_model.trim().is_empty() {
+            anyhow::bail!(
+                "active model is empty for provider {}",
+                self.active_provider
+            );
+        }
         Ok(())
     }
 
@@ -559,12 +699,214 @@ mod provider_capability_tests {
             "openrouter",
             "pi",
             "hermes",
+            "kimi",
             "shell",
         ] {
             assert!(ProvidersConfig::is_known(provider), "{provider}");
             assert!(
                 ProvidersConfig::capabilities_for(provider).is_some(),
                 "{provider}"
+            );
+        }
+    }
+
+    #[test]
+    fn kimi_is_first_class_and_uses_the_supported_override_channel() {
+        assert!(ProvidersConfig::is_known("kimi"));
+        assert_eq!(ProvidersConfig::default_model("kimi"), "kimi-for-coding");
+        assert!(ProvidersConfig::models_for("kimi").contains(&"k3"));
+        assert_eq!(ProvidersConfig::auth_type("kimi"), "oauth_or_api_key");
+
+        let config = ProvidersConfig {
+            kimi: KimiConfig {
+                api_key: "secret".to_string(),
+                base_url: "https://api.moonshot.ai/v1".to_string(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let env: std::collections::BTreeMap<_, _> = config.env_vars().into_iter().collect();
+        assert_eq!(
+            env.get("KIMI_MODEL_NAME").map(String::as_str),
+            Some("kimi-for-coding")
+        );
+        assert_eq!(
+            env.get("KIMI_MODEL_API_KEY").map(String::as_str),
+            Some("secret")
+        );
+        assert_eq!(
+            env.get("KIMI_MODEL_PROVIDER_TYPE").map(String::as_str),
+            Some("kimi")
+        );
+        assert!(!env.contains_key("KIMI_API_KEY"));
+        assert!(!env.contains_key("MOONSHOT_API_KEY"));
+    }
+
+    #[test]
+    fn malformed_provider_config_fails_and_cannot_be_overwritten() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("providers.toml");
+        let corrupt = b"[codex\napi_key = 'secret'\n";
+        std::fs::write(&path, corrupt).unwrap();
+        assert!(ProvidersConfig::load_from(&path).is_err());
+
+        let result = ProvidersConfig::default().save_to(&path);
+        assert!(
+            result.is_err(),
+            "mutation must not replace corrupt provider config"
+        );
+        assert_eq!(std::fs::read(path).unwrap(), corrupt);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn provider_config_rejects_symlinks_dangling_symlinks_and_hardlinks() {
+        use std::os::unix::fs::{symlink, PermissionsExt};
+
+        let tmp = tempfile::tempdir().unwrap();
+        let victim = tmp.path().join("victim.toml");
+        let authority = tmp.path().join("providers.toml");
+        std::fs::write(&victim, "[codex]\nmodel = \"gpt-5.5-codex\"\n").unwrap();
+        let original_mode = std::fs::metadata(&victim).unwrap().permissions().mode() & 0o777;
+
+        symlink(&victim, &authority).unwrap();
+        assert!(ProvidersConfig::load_from(&authority).is_err());
+        assert_eq!(
+            std::fs::metadata(&victim).unwrap().permissions().mode() & 0o777,
+            original_mode
+        );
+
+        std::fs::remove_file(&authority).unwrap();
+        symlink(tmp.path().join("missing.toml"), &authority).unwrap();
+        assert!(ProvidersConfig::load_from(&authority).is_err());
+
+        std::fs::remove_file(&authority).unwrap();
+        std::fs::hard_link(&victim, &authority).unwrap();
+        let error = ProvidersConfig::load_from(&authority).unwrap_err();
+        assert!(error.to_string().contains("hard links"), "{error:#}");
+        assert_eq!(
+            std::fs::metadata(&victim).unwrap().permissions().mode() & 0o777,
+            original_mode,
+            "a rejected authority hardlink must not chmod the shared inode"
+        );
+    }
+
+    #[test]
+    fn provider_save_is_atomic_private_and_validates_paths() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("providers.toml");
+        let mut config = ProvidersConfig {
+            codex: CodexConfig {
+                api_key: "secret".to_string(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        config.save_to(&path).unwrap();
+        let loaded = ProvidersConfig::load_from(&path).unwrap();
+        assert_eq!(loaded.codex.api_key, "secret");
+        assert_eq!(
+            std::fs::read_dir(tmp.path())
+                .unwrap()
+                .filter_map(|entry| entry.ok())
+                .filter(|entry| entry.file_name().to_string_lossy().contains("omega-tmp"))
+                .count(),
+            0
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+
+        config.codex.additional_writable_dirs = vec!["relative/path".to_string()];
+        assert!(config.save_to(&path).is_err());
+    }
+
+    #[test]
+    fn invalid_kimi_provider_type_is_rejected() {
+        let config = ProvidersConfig {
+            kimi: KimiConfig {
+                provider_type: "kimi; touch /tmp/nope".to_string(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn malformed_active_model_is_not_defaulted_or_overwritten() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("active-model.json");
+        let corrupt = b"{not-json";
+        std::fs::write(&path, corrupt).unwrap();
+        assert!(ActiveModel::load_from(&path).is_err());
+        assert!(ActiveModel::default().save_to(&path).is_err());
+        assert_eq!(std::fs::read(path).unwrap(), corrupt);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn active_model_rejects_symlinks_dangling_symlinks_and_hardlinks() {
+        use std::os::unix::fs::{symlink, PermissionsExt};
+
+        let tmp = tempfile::tempdir().unwrap();
+        let victim = tmp.path().join("victim.json");
+        let authority = tmp.path().join("active-model.json");
+        std::fs::write(
+            &victim,
+            r#"{"active_provider":"codex","active_model":"gpt-5.5-codex"}"#,
+        )
+        .unwrap();
+        let original_mode = std::fs::metadata(&victim).unwrap().permissions().mode() & 0o777;
+
+        symlink(&victim, &authority).unwrap();
+        assert!(ActiveModel::load_from(&authority).is_err());
+        assert_eq!(
+            std::fs::metadata(&victim).unwrap().permissions().mode() & 0o777,
+            original_mode
+        );
+
+        std::fs::remove_file(&authority).unwrap();
+        symlink(tmp.path().join("missing.json"), &authority).unwrap();
+        assert!(ActiveModel::load_from(&authority).is_err());
+
+        std::fs::remove_file(&authority).unwrap();
+        std::fs::hard_link(&victim, &authority).unwrap();
+        let error = ActiveModel::load_from(&authority).unwrap_err();
+        assert!(error.to_string().contains("hard links"), "{error:#}");
+        assert_eq!(
+            std::fs::metadata(&victim).unwrap().permissions().mode() & 0o777,
+            original_mode,
+            "a rejected authority hardlink must not chmod the shared inode"
+        );
+    }
+
+    #[test]
+    fn active_model_rejects_unknown_provider_and_writes_privately() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("active-model.json");
+        let unknown = ActiveModel {
+            active_provider: "codxe".to_string(),
+            active_model: "gpt".to_string(),
+        };
+        assert!(unknown.save_to(&path).is_err());
+
+        ActiveModel::default().save_to(&path).unwrap();
+        assert_eq!(
+            ActiveModel::load_from(&path).unwrap().active_provider,
+            "codex"
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(path).unwrap().permissions().mode() & 0o777,
+                0o600
             );
         }
     }

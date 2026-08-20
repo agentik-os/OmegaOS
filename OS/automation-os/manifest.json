@@ -1,0 +1,124 @@
+{
+  "schema_version": "2.0.0",
+  "id": "automation-os",
+  "num": 68,
+  "name": "Automation {OS}",
+  "version": "0.1.0",
+  "status": "scaffold",
+  "group": {
+    "key": "systems",
+    "label": "08 · AI & SYSTEMS",
+    "purpose": "Intelligence infrastructure for everything"
+  },
+  "tagline": "Governed automation of a process that was simplified first.",
+  "inherits_from": "operations-automation-os",
+  "commands": [
+    {
+      "name": "/automation-audit <process>",
+      "mode": "score",
+      "summary": "Find and score automation candidates in an approved simplified process."
+    },
+    {
+      "name": "/automate <candidate>",
+      "mode": "design",
+      "summary": "Design the blueprint: steps, exceptions routed, irreversible steps gated."
+    },
+    {
+      "name": "/automate controls <blueprint>",
+      "mode": "control",
+      "summary": "Design idempotency, retries, deduplication, rate limits and alerting."
+    },
+    {
+      "name": "/runbook <automation>",
+      "mode": "deploy",
+      "summary": "Write the operating runbook, including the manual recovery path."
+    },
+    {
+      "name": "/agent-automation <workflow>",
+      "mode": "agent",
+      "summary": "Split a judgment step out to Agent {OS} and keep the deterministic remainder."
+    },
+    {
+      "name": "/automation-review [automation]",
+      "mode": "audit",
+      "summary": "Reconcile the claimed effect against the real business outcome."
+    },
+    {
+      "name": "/automation-incident <automation>",
+      "mode": "incident",
+      "summary": "Contain, check idempotency, recover, and name the missing control."
+    },
+    {
+      "name": "/automate retire <automation>",
+      "mode": "retire",
+      "summary": "Retire an automation and restore the manual path it replaced."
+    }
+  ],
+  "dependencies": {
+    "requires": [
+      "context-memory-os",
+      "operations-os"
+    ],
+    "consumes": [
+      "operations.map.approved",
+      "ailogic.arbitration.decided",
+      "integration.contract.published",
+      "change.approved",
+      "quality.operations_handoff.ready",
+      "delivery.workflow.stable",
+      "memory.context.compiled"
+    ],
+    "emits": [
+      "automation.candidate.scored",
+      "automation.change.requested",
+      "automation.blueprint.approved",
+      "automation.run.started",
+      "automation.run.failed",
+      "automation.reconciled",
+      "automation.review.requested",
+      "automation.incident.opened",
+      "automation.retired",
+      "memory.record.staged"
+    ]
+  },
+  "targets": {
+    "claude": {
+      "supported": true
+    },
+    "chatgpt": {
+      "supported": true
+    },
+    "gemini": {
+      "supported": true
+    },
+    "codex": {
+      "supported": true
+    }
+  },
+  "entrypoints": {
+    "spec": "OS.md",
+    "system": "SYSTEM.md",
+    "skill": "SKILL.md",
+    "setup": "SETUP.md",
+    "workflows": "WORKFLOWS/",
+    "commands": "COMMANDS/",
+    "prompts": "PROMPTS/",
+    "references": "REFERENCES/",
+    "memory": "MEMORY/",
+    "tools": "TOOLS/",
+    "evals": "EVALS/",
+    "examples": "EXAMPLES/",
+    "interfaces": "INTERFACES/",
+    "adapters": "ADAPTERS/"
+  },
+  "requires_human_approval_for": [
+    "deploying any automation into production",
+    "granting credentials or tool permissions to an automation",
+    "automating a decision touching money, legal exposure, health or a customer",
+    "creating, modifying or deleting records in a system of record",
+    "sending an external communication",
+    "replaying a failed action",
+    "removing a manual control a human currently performs",
+    "retiring an automation others still depend on"
+  ]
+}

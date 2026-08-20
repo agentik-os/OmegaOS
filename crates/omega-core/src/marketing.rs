@@ -118,7 +118,9 @@ fn count_calendar_posts(json_path: &Path) -> usize {
         // Flat: a single object carrying "posts".
         serde_json::Value::Object(map) if map.contains_key("posts") => posts_in(&val),
         // { "days": [ ... ] }
-        serde_json::Value::Object(map) if map.get("days").map(|d| d.is_array()).unwrap_or(false) => {
+        serde_json::Value::Object(map)
+            if map.get("days").map(|d| d.is_array()).unwrap_or(false) =>
+        {
             map["days"]
                 .as_array()
                 .map(|days| days.iter().map(posts_in).sum())
@@ -137,7 +139,11 @@ fn count_calendar_posts(json_path: &Path) -> usize {
 ///   • a `crontab -l` line mentions this project's daily-engine (matched on the
 ///     slug + "daily-engine"). The crontab is read ONCE per call.
 fn engine_on(marketing: &Path, slug: &str, crontab: &str) -> bool {
-    if marketing.join("04-publishing").join("daily-engine").is_dir() {
+    if marketing
+        .join("04-publishing")
+        .join("daily-engine")
+        .is_dir()
+    {
         return true;
     }
     let needle = slug.to_lowercase();
@@ -180,10 +186,22 @@ fn build(name: String, path: PathBuf, crontab: &str) -> MarketingProject {
         accounts: None,
         accounts_tried: false,
         has_context: layer_filled(&marketing, "00-context", &["product-marketing.md"]),
-        has_strategy: layer_filled(&marketing, "01-strategy", &["gtm-strategy.md", "content-strategy.md"]),
-        has_copy: layer_filled(&marketing, "02-copy", &["copywriting.md", "social-content.md"]),
+        has_strategy: layer_filled(
+            &marketing,
+            "01-strategy",
+            &["gtm-strategy.md", "content-strategy.md"],
+        ),
+        has_copy: layer_filled(
+            &marketing,
+            "02-copy",
+            &["copywriting.md", "social-content.md"],
+        ),
         has_visual: layer_filled(&marketing, "03-visual-identity", &["DA.md"]),
-        has_branding: layer_filled(&marketing, "06-branding", &["SOCIAL-BRAND-BOOK.md", "tokens.json"]),
+        has_branding: layer_filled(
+            &marketing,
+            "06-branding",
+            &["SOCIAL-BRAND-BOOK.md", "tokens.json"],
+        ),
     }
 }
 
@@ -359,7 +377,10 @@ pub struct CapabilitiesRegistry {
 impl CapabilitiesRegistry {
     /// Capabilities for a group id, in file order.
     pub fn in_group<'a>(&'a self, group_id: &str) -> Vec<&'a Capability> {
-        self.capabilities.iter().filter(|c| c.group == group_id).collect()
+        self.capabilities
+            .iter()
+            .filter(|c| c.group == group_id)
+            .collect()
     }
     /// Groups sorted by their `order` field (then name).
     pub fn groups_ordered(&self) -> Vec<&CapabilityGroup> {
@@ -446,7 +467,9 @@ pub fn capabilities_toml_path() -> Option<PathBuf> {
     let omega_dir = std::env::var("OMEGA_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|_| home.join(".omega"));
-    let installed = omega_dir.join("marketing-machine").join("capabilities.toml");
+    let installed = omega_dir
+        .join("marketing-machine")
+        .join("capabilities.toml");
     if installed.is_file() {
         return Some(installed);
     }
@@ -461,8 +484,8 @@ pub fn load_capabilities() -> anyhow::Result<Option<CapabilitiesRegistry>> {
     };
     let raw = std::fs::read_to_string(&path)
         .map_err(|e| anyhow::anyhow!("reading {}: {e}", path.display()))?;
-    let reg: CapabilitiesRegistry = toml::from_str(&raw)
-        .map_err(|e| anyhow::anyhow!("parsing {}: {e}", path.display()))?;
+    let reg: CapabilitiesRegistry =
+        toml::from_str(&raw).map_err(|e| anyhow::anyhow!("parsing {}: {e}", path.display()))?;
     Ok(Some(reg))
 }
 
@@ -488,19 +511,68 @@ pub fn project_group_status(p: &MarketingProject) -> Vec<GroupStatus> {
         detail: detail.to_string(),
     };
     vec![
-        g("research-strategy", "Research & Strategy", p.has_context || p.has_strategy,
-          if p.has_context { "00-context filled" } else { "00-context/product-marketing.md missing" }),
-        g("copy", "Copy", p.has_copy,
-          if p.has_copy { "02-copy filled" } else { "02-copy (copywriting/social-content) missing" }),
-        g("branding", "Branding", p.has_branding,
-          if p.has_branding { "06-branding (tokens/brand-book) present" } else { "06-branding missing" }),
-        g("visual-image", "Visual — Image", p.has_visual,
-          if p.has_visual { "03-visual-identity/DA.md present" } else { "03-visual-identity/DA.md missing" }),
-        g("calendar", "Calendar", p.has_content,
-          if p.calendar_posts > 0 { "calendar-90d.json with posts" }
-          else if p.has_content { "calendar present (0 posts)" } else { "no calendar" }),
-        g("publishing", "Publishing", p.engine_on,
-          if p.engine_on { "daily-engine wired" } else { "no daily-engine" }),
+        g(
+            "research-strategy",
+            "Research & Strategy",
+            p.has_context || p.has_strategy,
+            if p.has_context {
+                "00-context filled"
+            } else {
+                "00-context/product-marketing.md missing"
+            },
+        ),
+        g(
+            "copy",
+            "Copy",
+            p.has_copy,
+            if p.has_copy {
+                "02-copy filled"
+            } else {
+                "02-copy (copywriting/social-content) missing"
+            },
+        ),
+        g(
+            "branding",
+            "Branding",
+            p.has_branding,
+            if p.has_branding {
+                "06-branding (tokens/brand-book) present"
+            } else {
+                "06-branding missing"
+            },
+        ),
+        g(
+            "visual-image",
+            "Visual — Image",
+            p.has_visual,
+            if p.has_visual {
+                "03-visual-identity/DA.md present"
+            } else {
+                "03-visual-identity/DA.md missing"
+            },
+        ),
+        g(
+            "calendar",
+            "Calendar",
+            p.has_content,
+            if p.calendar_posts > 0 {
+                "calendar-90d.json with posts"
+            } else if p.has_content {
+                "calendar present (0 posts)"
+            } else {
+                "no calendar"
+            },
+        ),
+        g(
+            "publishing",
+            "Publishing",
+            p.engine_on,
+            if p.engine_on {
+                "daily-engine wired"
+            } else {
+                "no daily-engine"
+            },
+        ),
     ]
 }
 
@@ -565,7 +637,10 @@ pub fn next_best_action(p: &MarketingProject) -> (String, String, String) {
         return mk(
             "activate-engine",
             "Connected with content, but the daily engine is off — activate it to publish.",
-            &format!("omega marketing run {} --dry-run   (then --publish / cron)", p.slug),
+            &format!(
+                "omega marketing run {} --dry-run   (then --publish / cron)",
+                p.slug
+            ),
         );
     }
     mk(

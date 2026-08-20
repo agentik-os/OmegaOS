@@ -122,8 +122,10 @@ omega dispatch <Project> "fix the signup flow"   # your first mission
 omega audit list # the 23-audit quality arsenal
 ```
 
-Daily drivers: `omega` (TUI) · the Telegram bot · `omega master` (AISB chat) ·
-`omega attach -t <session>` (jump into any live agent).
+Daily drivers: `omega` (TUI), the Telegram bot, `omega aisb-chat` (interactive
+local chat), and `omega attach -t <session>` (jump into any live agent).
+`omega aisb-view` opens the separate read-only conversation mirror; the legacy
+`omega master` spelling remains an alias for that viewer.
 
 ---
 

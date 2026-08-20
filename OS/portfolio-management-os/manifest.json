@@ -1,0 +1,96 @@
+{
+  "schema_version": "2.0.0",
+  "id": "portfolio-management-os",
+  "num": 63,
+  "name": "Portfolio Management {OS}",
+  "version": "0.1.0",
+  "status": "scaffold",
+  "group": {
+    "key": "capital",
+    "label": "07 · CAPITAL",
+    "purpose": "Turn assets into capital allocation"
+  },
+  "tagline": "Run the portfolio after the deal: reporting, support, reallocation.",
+  "inherits_from": null,
+  "commands": [
+    "/portfolio open",
+    "/portfolio collect",
+    "/portfolio mark",
+    "/portfolio support",
+    "/portfolio capacity",
+    "/portfolio triage",
+    "/portfolio impair",
+    "/portfolio followon",
+    "/portfolio report",
+    "/portfolio exit-ready",
+    "/portfolio close"
+  ],
+  "dependencies": {
+    "requires": [
+      "context-memory-os",
+      "capital-os",
+      "investment-thesis-os",
+      "deal-structuring-os"
+    ],
+    "consumes": [
+      "capital.allocation.approved",
+      "capital.reserve.committed",
+      "structure.terms.agreed",
+      "thesis.kill_criteria.set",
+      "thesis.checkpoint.due",
+      "thesis.invalidated",
+      "board.pack.published",
+      "board.escalation.raised",
+      "change.approved"
+    ],
+    "emits": [
+      "portfolio.position.opened",
+      "portfolio.report.published",
+      "portfolio.mark.updated",
+      "portfolio.followon.recommended",
+      "portfolio.position.impaired",
+      "portfolio.exit.ready",
+      "portfolio.reallocation.proposed"
+    ]
+  },
+  "targets": {
+    "claude": {
+      "supported": true
+    },
+    "chatgpt": {
+      "supported": true
+    },
+    "gemini": {
+      "supported": true
+    },
+    "codex": {
+      "supported": true
+    }
+  },
+  "entrypoints": {
+    "spec": "OS.md",
+    "system": "SYSTEM.md",
+    "skill": "SKILL.md",
+    "setup": "SETUP.md",
+    "workflows": "WORKFLOWS/",
+    "commands": "COMMANDS/",
+    "prompts": "PROMPTS/",
+    "references": "REFERENCES/",
+    "memory": "MEMORY/",
+    "tools": "TOOLS/",
+    "evals": "EVALS/",
+    "examples": "EXAMPLES/",
+    "interfaces": "INTERFACES/",
+    "adapters": "ADAPTERS/"
+  },
+  "requires_human_approval_for": [
+    "setting or changing a valuation mark",
+    "recording or clearing an impairment",
+    "sending any report or mark to a stakeholder",
+    "committing support capacity with an external cost",
+    "making an introduction on the owner's name",
+    "escalating a concern to the company board",
+    "marking a position exit ready",
+    "exercising or waiving an information right"
+  ]
+}

@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "build-state.schema.json",
+  "title": "BuildState",
+  "type": "object",
+  "required": [
+    "build_id",
+    "os_name",
+    "version",
+    "status",
+    "milestones"
+  ],
+  "properties": {
+    "build_id": {
+      "type": "string"
+    },
+    "os_name": {
+      "type": "string"
+    },
+    "version": {
+      "type": "string"
+    },
+    "status": {
+      "enum": [
+        "initialized",
+        "running",
+        "blocked",
+        "repairing",
+        "ready_for_release",
+        "released",
+        "failed"
+      ]
+    },
+    "current_milestone": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "milestones": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "failed_gates": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "open_findings": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "updated_at": {
+      "type": "string"
+    }
+  },
+  "additionalProperties": true
+}

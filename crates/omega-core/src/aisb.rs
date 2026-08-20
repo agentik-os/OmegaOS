@@ -2,10 +2,10 @@ use crate::agents::Agent;
 use crate::session::SessionManager;
 use anyhow::Result;
 
-/// Canonical name of the Master AISB session — the always-on brain.
+/// Backward-compatible session name of the read-only AISB conversation viewer.
 pub const MASTER_SESSION_NAME: &str = "aisb-master";
 
-/// Ensures the Master AISB session exists. Idempotent — creates only if missing.
+/// Ensures the AISB conversation viewer exists. Idempotent: creates only if missing.
 ///
 /// The session is a PURE READ-ONLY VIEWER: it `tail -F`s the conversation log
 /// the brain stream writes, so the user can WATCH the live Telegram exchange
@@ -13,12 +13,7 @@ pub const MASTER_SESSION_NAME: &str = "aisb-master";
 /// Telegram bot's own SDK subprocess — see `claude_stream.rs`).
 ///
 /// Returns true if a new session was created, false if it already existed.
-pub async fn ensure_master(
-    mgr: &SessionManager,
-    agent: Agent,
-    working_dir: &str,
-) -> Result<bool> {
-    let _ = agent; // master is a viewer now, not an agent session
+pub async fn ensure_viewer(mgr: &SessionManager, working_dir: &str) -> Result<bool> {
     let sessions = mgr.list_sessions().await?;
     if sessions.iter().any(|s| s.name == MASTER_SESSION_NAME) {
         return Ok(false);
@@ -30,7 +25,11 @@ pub async fn ensure_master(
     // tails the conversation log the bridge writes, so the user can WATCH
     // the Telegram chat stream in the TUI. It is no longer an interactive
     // Claude (that caused the "talks in the pane but not Telegram" split).
-    let home = dirs::home_dir().unwrap_or_else(|| std::env::var("HOME").map(std::path::PathBuf::from).unwrap_or_else(|_| std::path::PathBuf::from(".")));
+    let home = dirs::home_dir().unwrap_or_else(|| {
+        std::env::var("HOME")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|_| std::path::PathBuf::from("."))
+    });
     let log = home.join(".omega/state/aisb-conversation.log");
     // Surface filesystem errors instead of swallowing them: if the log can't be
     // created the viewer pane would `tail -F` a path that never appears, with no
@@ -42,7 +41,7 @@ pub async fn ensure_master(
     if !log.exists() {
         std::fs::write(
             &log,
-            "  Ω  AISB Master — live Telegram conversation viewer\n\
+            "  Ω  AISB conversation viewer (read-only)\n\
              ─────────────────────────────────────────────────\n\
              Talk to AISB from Telegram. Exchanges stream here.\n",
         )?;
@@ -62,9 +61,24 @@ pub async fn ensure_master(
     Ok(true)
 }
 
-/// Returns true if a given session name is the Master AISB.
-pub fn is_master(name: &str) -> bool {
+/// Backward-compatible API name retained for downstream callers. New code
+/// should use `ensure_viewer`, which describes the process truthfully.
+pub async fn ensure_master(
+    mgr: &SessionManager,
+    _legacy_agent: Agent,
+    working_dir: &str,
+) -> Result<bool> {
+    ensure_viewer(mgr, working_dir).await
+}
+
+/// Returns true if a session is the backward-compatible AISB viewer session.
+pub fn is_viewer(name: &str) -> bool {
     name == MASTER_SESSION_NAME
+}
+
+/// Backward-compatible role predicate.
+pub fn is_master(name: &str) -> bool {
+    is_viewer(name)
 }
 
 /// Single-quote a path for safe interpolation into a shell command

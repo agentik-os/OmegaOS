@@ -1,0 +1,88 @@
+{
+  "schema_version": "2.0.0",
+  "id": "due-diligence-os",
+  "num": 60,
+  "name": "Due Diligence {OS}",
+  "version": "0.1.0",
+  "status": "scaffold",
+  "group": {
+    "key": "capital",
+    "label": "07 · CAPITAL",
+    "purpose": "Turn assets into capital allocation"
+  },
+  "tagline": "Verify the story before you are committed to it.",
+  "inherits_from": null,
+  "commands": [
+    "/diligence plan",
+    "/diligence request",
+    "/diligence chase",
+    "/diligence workstream",
+    "/diligence evidence",
+    "/diligence finding",
+    "/diligence redflag",
+    "/diligence gaps",
+    "/diligence conditions",
+    "/diligence close"
+  ],
+  "dependencies": {
+    "requires": [
+      "context-memory-os",
+      "investment-thesis-os",
+      "deal-flow-os"
+    ],
+    "consumes": [
+      "dealflow.opportunity.qualified",
+      "thesis.drafted",
+      "thesis.kill_criteria.set",
+      "acquisition.loi.prepared",
+      "acquisition.exclusivity.entered",
+      "capital.policy.set",
+      "change.approved"
+    ],
+    "emits": [
+      "diligence.plan.set",
+      "diligence.finding.registered",
+      "diligence.redflag.raised",
+      "diligence.completed"
+    ]
+  },
+  "targets": {
+    "claude": {
+      "supported": true
+    },
+    "chatgpt": {
+      "supported": true
+    },
+    "gemini": {
+      "supported": true
+    },
+    "codex": {
+      "supported": true
+    }
+  },
+  "entrypoints": {
+    "spec": "OS.md",
+    "system": "SYSTEM.md",
+    "skill": "SKILL.md",
+    "setup": "SETUP.md",
+    "workflows": "WORKFLOWS/",
+    "commands": "COMMANDS/",
+    "prompts": "PROMPTS/",
+    "references": "REFERENCES/",
+    "memory": "MEMORY/",
+    "tools": "TOOLS/",
+    "evals": "EVALS/",
+    "examples": "EXAMPLES/",
+    "interfaces": "INTERFACES/",
+    "adapters": "ADAPTERS/"
+  },
+  "requires_human_approval_for": [
+    "sending a request list to a counterparty",
+    "transmitting findings or the report to anyone",
+    "engaging or instructing a professional adviser",
+    "declaring diligence complete",
+    "marking a condition to completion satisfied",
+    "clearing or downgrading a red flag",
+    "resuming a calendar a red flag paused"
+  ]
+}

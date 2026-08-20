@@ -1,0 +1,77 @@
+{
+  "schema_version": "2.0.0",
+  "id": "goal-life-strategy-os",
+  "num": 5,
+  "name": "Goal & Life Strategy {OS}",
+  "version": "0.1.0",
+  "status": "scaffold",
+  "group": {
+    "key": "personal",
+    "label": "01 · PERSONAL",
+    "purpose": "Operate yourself"
+  },
+  "tagline": "Life-level goals and the strategy that makes them reachable.",
+  "inherits_from": null,
+  "commands": [
+    "life-strategy",
+    "goal-set",
+    "horizon-map",
+    "tradeoff",
+    "allocation-review",
+    "goal-retire"
+  ],
+  "dependencies": {
+    "requires": [
+      "context-memory-os"
+    ],
+    "consumes_from": [
+      "alignment-os",
+      "mindset-os",
+      "health-energy-os",
+      "decision-os"
+    ],
+    "emits_to": [
+      "execution-os",
+      "habit-tracker-os",
+      "decision-os",
+      "review-governance-os"
+    ]
+  },
+  "targets": {
+    "claude": {
+      "supported": true
+    },
+    "chatgpt": {
+      "supported": true
+    },
+    "gemini": {
+      "supported": true
+    },
+    "codex": {
+      "supported": true
+    }
+  },
+  "entrypoints": {
+    "spec": "OS.md",
+    "system": "SYSTEM.md",
+    "skill": "SKILL.md",
+    "setup": "SETUP.md",
+    "workflows": "WORKFLOWS/",
+    "commands": "COMMANDS/",
+    "prompts": "PROMPTS/",
+    "references": "REFERENCES/",
+    "memory": "MEMORY/",
+    "tools": "TOOLS/",
+    "evals": "EVALS/",
+    "examples": "EXAMPLES/",
+    "interfaces": "INTERFACES/",
+    "adapters": "ADAPTERS/"
+  },
+  "requires_human_approval_for": [
+    "retiring, deleting or rewriting a goal in the canonical goal set",
+    "committing money to a goal, or changing a standing financial commitment",
+    "recording a life domain as deliberately deprioritised for longer than one quarter",
+    "handing a goal to Execution {OS} as an active project that consumes real capacity",
+    "sending or exporting goals, allocations, tradeoffs or life strategy content outside the local machine"
+  ]
+}

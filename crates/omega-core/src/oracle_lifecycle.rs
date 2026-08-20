@@ -5,13 +5,144 @@
 //! They NEVER edit code directly — all code changes go through workers.
 
 use crate::done::DoneStatus;
-use crate::mission::{Mission, MissionId, WorkerResult};
-use anyhow::Result;
+use crate::mission::{Mission, MissionId, MissionState, TaskAttemptState, WorkerResult};
+use crate::mission_ledger::{AppendOutcome, MissionLedger, MissionProjection};
+use anyhow::{bail, Result};
 use chrono::{DateTime, Utc};
-use fs2::FileExt;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+
+/// Schema of the JSON compatibility projections consumed by the TUI, patrol,
+/// Telegram and older automation. These files are deliberately not an input to
+/// the V3 state machine: their provenance only points back to the append-only
+/// mission ledger that produced them.
+pub const COMPATIBILITY_PROJECTION_SCHEMA_VERSION: u32 = 1;
+
+/// Provenance carried by every compatibility projection produced by a new V3
+/// mission.
+///
+/// `source_version` and `source_event_sequence` are intentionally both stored.
+/// They are equal for the single-stream ledger today, but naming both prevents
+/// a future multi-stream projection from silently changing the meaning of the
+/// field. `source_projection_hash` is the hash committed by the ledger, never a
+/// digest recomputed from this mutable JSON view.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CompatibilityProjection {
+    pub projection_schema_version: u32,
+    pub source: String,
+    pub source_schema_version: u32,
+    pub source_mission_id: MissionId,
+    pub source_version: u64,
+    pub source_event_sequence: u64,
+    pub source_projection_hash: String,
+}
+
+impl CompatibilityProjection {
+    pub fn from_append(outcome: &AppendOutcome) -> Self {
+        Self {
+            projection_schema_version: COMPATIBILITY_PROJECTION_SCHEMA_VERSION,
+            source: "mission-engine-v3.sqlite3".to_string(),
+            source_schema_version: outcome.event.schema_version,
+            source_mission_id: outcome.projection.mission_id.clone(),
+            source_version: outcome.projection.version,
+            source_event_sequence: outcome.event.sequence,
+            source_projection_hash: outcome.projection.projection_hash.clone(),
+        }
+    }
+
+    /// Prove that this mutable JSON view descends from a real ledger event.
+    ///
+    /// A compatibility projection may be older than the current mission
+    /// version, so exact equality with the live projection would reject every
+    /// oracle as soon as its first worker is queued. Instead, the referenced
+    /// immutable event must exist and the live stream must not have moved
+    /// backwards. When the stamp is current, its projection hash must match
+    /// exactly as an additional corruption check.
+    pub fn validate(
+        &self,
+        expected_mission_id: &MissionId,
+        ledger: &MissionLedger,
+    ) -> Result<MissionProjection> {
+        if self.projection_schema_version != COMPATIBILITY_PROJECTION_SCHEMA_VERSION {
+            bail!(
+                "unsupported compatibility projection schema {}",
+                self.projection_schema_version
+            );
+        }
+        if self.source != "mission-engine-v3.sqlite3" {
+            bail!(
+                "unsupported compatibility projection source `{}`",
+                self.source
+            );
+        }
+        if &self.source_mission_id != expected_mission_id {
+            bail!(
+                "compatibility projection mission mismatch: state={}, source={}",
+                expected_mission_id.as_str(),
+                self.source_mission_id.as_str()
+            );
+        }
+        if self.source_version == 0
+            || self.source_event_sequence == 0
+            || self.source_version != self.source_event_sequence
+            || self.source_projection_hash.trim().is_empty()
+        {
+            bail!("invalid compatibility projection provenance");
+        }
+        let projection = ledger.mission(expected_mission_id)?.ok_or_else(|| {
+            anyhow::anyhow!(
+                "mission {} is absent from the authoritative ledger",
+                expected_mission_id.as_str()
+            )
+        })?;
+        if projection.version < self.source_version {
+            bail!(
+                "compatibility projection is from impossible future version {} (ledger {})",
+                self.source_version,
+                projection.version
+            );
+        }
+        let event = ledger
+            .events(expected_mission_id)?
+            .into_iter()
+            .find(|event| event.sequence == self.source_event_sequence)
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "compatibility projection source event {} is absent",
+                    self.source_event_sequence
+                )
+            })?;
+        if event.schema_version != self.source_schema_version {
+            bail!(
+                "compatibility projection source schema mismatch: stamp={}, event={}",
+                self.source_schema_version,
+                event.schema_version
+            );
+        }
+        let historical = ledger
+            .projection_at(expected_mission_id, self.source_event_sequence)?
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "compatibility projection source version {} cannot be replayed",
+                    self.source_event_sequence
+                )
+            })?;
+        if historical.version != self.source_version
+            || historical.projection_hash != self.source_projection_hash
+        {
+            bail!("compatibility projection hash differs from authoritative ledger");
+        }
+        Ok(projection)
+    }
+}
+
+/// Canonical on-host ledger location. Keeping this in core removes the path
+/// literals that previously drifted across dispatch, worker, team and done
+/// commands.
+pub fn mission_ledger_path(state_dir: &Path) -> PathBuf {
+    state_dir.join("mission-engine-v3.sqlite3")
+}
 
 // ---------------------------------------------------------------------------
 // Oracle State Machine
@@ -84,6 +215,16 @@ pub struct OracleState {
     /// before this field existed.
     #[serde(default)]
     pub session_id: Option<String>,
+    /// Provenance of this mutable legacy view. `None` means a pre-V3 state file
+    /// and is accepted only by legacy read-only consumers. Every new mutation
+    /// path must call [`OracleState::require_ledger_authority`] and therefore
+    /// fails closed when this stamp is absent or corrupt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compatibility_projection: Option<CompatibilityProjection>,
+    /// Optimistic concurrency revision for this compatibility projection.
+    /// It is independent from the authoritative mission version.
+    #[serde(default, rename = "_omega_storage_revision")]
+    pub storage_revision: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -139,6 +280,8 @@ impl OracleState {
             phase_history: Vec::new(),
             closeable_since: None,
             session_id: None,
+            compatibility_projection: None,
+            storage_revision: 0,
         }
     }
 
@@ -168,7 +311,70 @@ impl OracleState {
             phase_history: Vec::new(),
             closeable_since: None,
             session_id: None,
+            compatibility_projection: None,
+            storage_revision: 0,
         }
+    }
+
+    /// Build the legacy OracleState only after a V3 ledger append committed.
+    /// This is the sole constructor for new dispatches; [`OracleState::new`]
+    /// remains only for parsing/tests and historical compatibility.
+    pub fn from_ledger(
+        oracle_name: &str,
+        mission: &Mission,
+        source: &AppendOutcome,
+    ) -> Result<Self> {
+        if source.projection.mission_id != mission.id
+            || source.event.mission_id != mission.id
+            || source.event.sequence != source.projection.version
+        {
+            bail!("cannot project OracleState from a different ledger mission");
+        }
+        let mut state = Self::new(oracle_name, mission);
+        state.compatibility_projection = Some(CompatibilityProjection::from_append(source));
+        Ok(state)
+    }
+
+    /// Validate the compatibility stamp against the ledger. Mutating callers
+    /// use this rather than trusting `mission_id`, phase or workers from JSON.
+    pub fn require_ledger_authority(&self, ledger: &MissionLedger) -> Result<MissionProjection> {
+        let stamp = self.compatibility_projection.as_ref().ok_or_else(|| {
+            anyhow::anyhow!(
+                "oracle {} is a legacy projection without V3 authority",
+                self.oracle_name
+            )
+        })?;
+        let projection = stamp.validate(&self.mission_id, ledger)?;
+        let mission = ledger.mission_record(&self.mission_id)?.ok_or_else(|| {
+            anyhow::anyhow!(
+                "mission {} has no immutable mission record",
+                self.mission_id.as_str()
+            )
+        })?;
+        if self.project != mission.project || self.mission_text != mission.text {
+            bail!(
+                "OracleState {} immutable mission fields differ from ledger",
+                self.oracle_name
+            );
+        }
+        if !same_canonical_workspace(&self.working_dir, &mission.working_dir) {
+            bail!(
+                "OracleState {} working directory differs from immutable mission: state={}, ledger={}",
+                self.oracle_name,
+                self.working_dir.display(),
+                mission.working_dir.display()
+            );
+        }
+        if !oracle_phase_compatible(self.phase, projection.state) {
+            bail!(
+                "OracleState {} phase {:?} is incompatible with ledger state {:?}",
+                self.oracle_name,
+                self.phase,
+                projection.state
+            );
+        }
+        self.validate_worker_bindings(ledger, &projection)?;
+        Ok(projection)
     }
 
     pub fn transition(&mut self, to: OraclePhase, reason: &str) {
@@ -281,81 +487,440 @@ impl OracleState {
     /// (stuck-oracle-alert derives its done/progress probe paths from the
     /// state basename) then mis-keyed — finished oracles were never
     /// recognized as done and false stall alerts fired forever.
-    fn state_key(oracle_name: &str) -> &str {
-        oracle_name.strip_prefix("oracle-").unwrap_or(oracle_name)
+    fn state_key(oracle_name: &str) -> Result<&str> {
+        crate::scope::validate_session_identity(oracle_name)?;
+        let key = oracle_name.strip_prefix("oracle-").unwrap_or(oracle_name);
+        crate::scope::validate_session_identity(key)?;
+        Ok(key)
     }
 
-    /// Persist oracle state to disk for patrol/AISB visibility.
-    pub fn write(&self, state_dir: &Path) -> Result<()> {
-        std::fs::create_dir_all(state_dir)?;
-        let key = Self::state_key(&self.oracle_name);
-        let path = state_dir.join(format!("oracle-{}.state.json", key));
-        let tmp = state_dir.join(format!(".oracle-{}.state.json.tmp", key));
-        let content = serde_json::to_string_pretty(self)?;
-        std::fs::write(&tmp, &content)?;
-        std::fs::rename(&tmp, &path)?;
-        // Migration: drop the legacy double-prefixed twin so `read_all`
-        // never yields two states for one oracle.
-        let legacy = state_dir.join(format!("oracle-{}.state.json", self.oracle_name));
-        if legacy != path {
-            let _ = std::fs::remove_file(&legacy);
+    fn paths(state_dir: &Path, oracle_name: &str) -> Result<(PathBuf, PathBuf, String)> {
+        let key = Self::state_key(oracle_name)?.to_string();
+        Ok((
+            state_dir.join(format!("oracle-{key}.state.json")),
+            state_dir.join(format!("oracle-oracle-{key}.state.json")),
+            key,
+        ))
+    }
+
+    fn validate_document_identity(&self, expected_key: &str) -> Result<()> {
+        let actual_key = Self::state_key(&self.oracle_name)?;
+        if actual_key != expected_key {
+            bail!(
+                "oracle state filename/session mismatch: filename={}, document={}",
+                expected_key,
+                self.oracle_name
+            );
         }
         Ok(())
     }
 
-    pub fn read(state_dir: &Path, oracle_name: &str) -> Result<Option<Self>> {
-        let key = Self::state_key(oracle_name);
-        let path = state_dir.join(format!("oracle-{}.state.json", key));
-        if !path.exists() {
-            // Lazy migration: a state written by a pre-normalization binary
-            // lives at the double-prefixed name. Rename it into place so
-            // every later read, read_all, and the shell consumers see the
-            // canonical file; if the rename fails (perms/race), read the
-            // legacy file in place rather than dropping live state.
-            let legacy = state_dir.join(format!("oracle-oracle-{}.state.json", key));
-            if !legacy.exists() {
-                return Ok(None);
+    /// Validate every authority-relevant worker reference against the current
+    /// ledger plan and exact task-attempt tuple. A compatibility stamp proves
+    /// ancestry only; it never authorizes a forged worker mutation by itself.
+    fn validate_authoritative_workers(&self, ledger: &MissionLedger) -> Result<()> {
+        let Some(_) = &self.compatibility_projection else {
+            if self
+                .workers
+                .iter()
+                .any(|worker| worker.attempt_id.is_some() || worker.plan_revision.is_some())
+            {
+                bail!(
+                    "legacy oracle {} cannot persist V3 worker authority",
+                    self.oracle_name
+                );
             }
-            if std::fs::rename(&legacy, &path).is_err() {
-                let content = std::fs::read_to_string(&legacy)?;
-                return Ok(Some(serde_json::from_str(&content)?));
-            }
-        }
-        let content = std::fs::read_to_string(&path)?;
-        Ok(Some(serde_json::from_str(&content)?))
+            return Ok(());
+        };
+
+        self.require_ledger_authority(ledger)?;
+        Ok(())
     }
 
-    pub fn read_all(state_dir: &Path) -> Vec<Self> {
-        let mut results = Vec::new();
-        if let Ok(entries) = std::fs::read_dir(state_dir) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                    if name.starts_with("oracle-") && name.ends_with(".state.json") {
-                        if let Ok(content) = std::fs::read_to_string(&path) {
-                            if let Ok(state) = serde_json::from_str::<OracleState>(&content) {
-                                results.push(state);
-                            }
-                        }
-                    }
-                }
+    fn validate_worker_bindings(
+        &self,
+        ledger: &MissionLedger,
+        projection: &MissionProjection,
+    ) -> Result<()> {
+        let active_plan = ledger.active_plan(&self.mission_id)?;
+        let mut sessions = HashSet::new();
+        let mut attempts = HashSet::new();
+        for worker in &self.workers {
+            crate::scope::validate_session_identity(&worker.session_name)?;
+            if !sessions.insert(worker.session_name.as_str()) {
+                bail!(
+                    "oracle {} has duplicate worker session {}",
+                    self.oracle_name,
+                    worker.session_name
+                );
+            }
+            let attempt_id = worker.attempt_id.as_deref().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "worker {} has no authoritative attempt id",
+                    worker.session_name
+                )
+            })?;
+            let plan_revision = worker.plan_revision.ok_or_else(|| {
+                anyhow::anyhow!(
+                    "worker {} has no authoritative plan revision",
+                    worker.session_name
+                )
+            })?;
+            if worker.task_id.trim().is_empty() || !attempts.insert(attempt_id) {
+                bail!("oracle worker identity is empty or duplicated");
+            }
+            let attempt = ledger.task_attempt(attempt_id)?.ok_or_else(|| {
+                anyhow::anyhow!("worker attempt {attempt_id} is absent from the ledger")
+            })?;
+            if attempt.mission_id != self.mission_id
+                || attempt.task_id != worker.task_id
+                || attempt.plan_revision != plan_revision
+            {
+                bail!(
+                    "worker {} identity differs from authoritative attempt {}",
+                    worker.session_name,
+                    attempt_id
+                );
+            }
+            let plan = active_plan.as_ref().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "mission {} has workers but no active plan",
+                    self.mission_id.as_str()
+                )
+            })?;
+            let task = plan
+                .tasks
+                .iter()
+                .find(|task| task.task_id.as_str() == worker.task_id);
+            if projection.active_plan_revision != Some(plan_revision)
+                || plan.revision != plan_revision
+                || task.is_none()
+            {
+                bail!(
+                    "worker {} is not an exact task in active plan revision {}",
+                    worker.session_name,
+                    plan_revision
+                );
+            }
+            let task = task.expect("task presence checked above");
+            if worker.task_name != task.name {
+                bail!(
+                    "worker {} task name differs from active plan",
+                    worker.session_name
+                );
+            }
+            let mut projected_scope: Vec<String> = worker
+                .files_owned
+                .iter()
+                .map(|scope| crate::scope::normalize_scope_selector(scope))
+                .collect();
+            let mut contracted_scope: Vec<String> = task
+                .scope
+                .iter()
+                .map(|scope| crate::scope::normalize_scope_selector(scope))
+                .collect();
+            projected_scope.sort();
+            projected_scope.dedup();
+            contracted_scope.sort();
+            contracted_scope.dedup();
+            if projected_scope != contracted_scope {
+                bail!(
+                    "worker {} scope differs from active task contract",
+                    worker.session_name
+                );
+            }
+            if !worker_status_compatible(worker.status, attempt.state) {
+                bail!(
+                    "worker {} status {:?} is incompatible with ledger attempt {:?}",
+                    worker.session_name,
+                    worker.status,
+                    attempt.state
+                );
             }
         }
-        results
+        Ok(())
+    }
+
+    fn read_locked(state_dir: &Path, oracle_name: &str) -> Result<Option<Self>> {
+        let (path, legacy, key) = Self::paths(state_dir, oracle_name)?;
+        if let Some(state) = crate::scope::read_private_json::<Self>(&path)? {
+            state.validate_document_identity(&key)?;
+            return Ok(Some(state));
+        }
+
+        let Some(mut state) = crate::scope::read_private_json::<Self>(&legacy)? else {
+            return Ok(None);
+        };
+        state.validate_document_identity(&key)?;
+        state.storage_revision = state.storage_revision.max(1);
+        crate::config::atomic_write_private(&path, &serde_json::to_vec_pretty(&state)?)?;
+        crate::scope::remove_private_file(&legacy)?;
+        Ok(Some(state))
+    }
+
+    fn write_locked(&self, state_dir: &Path) -> Result<Self> {
+        let (path, legacy, key) = Self::paths(state_dir, &self.oracle_name)?;
+        self.validate_document_identity(&key)?;
+
+        // Refuse an unsafe or ambiguous legacy twin before publishing.
+        let legacy_state = crate::scope::read_private_json::<Self>(&legacy)?;
+        if let Some(legacy_state) = &legacy_state {
+            legacy_state.validate_document_identity(&key)?;
+        }
+        let current = crate::scope::read_private_json::<Self>(&path)?;
+        if let Some(current) = &current {
+            current.validate_document_identity(&key)?;
+            if current.mission_id == self.mission_id
+                && current.storage_revision != self.storage_revision
+            {
+                bail!(
+                    "stale OracleState write for {}: expected storage revision {}, found {}",
+                    self.oracle_name,
+                    self.storage_revision,
+                    current.storage_revision
+                );
+            }
+            if current.mission_id != self.mission_id && !current.is_closeable() {
+                bail!(
+                    "oracle {} still owns mission {}; refusing replacement with {}",
+                    self.oracle_name,
+                    current.mission_id.as_str(),
+                    self.mission_id.as_str()
+                );
+            }
+        } else if self.storage_revision != 0 {
+            bail!(
+                "OracleState {} disappeared after revision {}",
+                self.oracle_name,
+                self.storage_revision
+            );
+        }
+
+        let mut published = self.clone();
+        published.storage_revision = current
+            .as_ref()
+            .map_or(1, |state| state.storage_revision.saturating_add(1));
+        crate::config::atomic_write_private(&path, &serde_json::to_vec_pretty(&published)?)?;
+        if legacy_state.is_some() {
+            crate::scope::remove_private_file(&legacy)?;
+        }
+        let round_trip = crate::scope::read_private_json::<Self>(&path)?
+            .ok_or_else(|| anyhow::anyhow!("OracleState vanished after publish"))?;
+        if round_trip.storage_revision != published.storage_revision
+            || round_trip.oracle_name != published.oracle_name
+            || round_trip.mission_id != published.mission_id
+        {
+            bail!("OracleState changed while being published");
+        }
+        Ok(published)
+    }
+
+    /// Persist one compatibility projection with serialized, owner-only,
+    /// no-follow and CAS-protected publication.
+    pub fn write(&self, state_dir: &Path) -> Result<()> {
+        let (_, _, key) = Self::paths(state_dir, &self.oracle_name)?;
+        let _lock =
+            crate::scope::lock_private_state_file(state_dir, &format!(".oracle-{key}.state.lock"))?;
+        if self.compatibility_projection.is_some()
+            || self
+                .workers
+                .iter()
+                .any(|worker| worker.attempt_id.is_some() || worker.plan_revision.is_some())
+        {
+            let ledger = MissionLedger::open(mission_ledger_path(state_dir))?;
+            self.validate_authoritative_workers(&ledger)?;
+        }
+        self.write_locked(state_dir).map(|_| ())
+    }
+
+    /// Locked read-modify-write for authority callers. The source projection,
+    /// mission identity and every worker tuple are revalidated under the same
+    /// file lock immediately before publication.
+    pub fn mutate_authoritative<T, F>(state_dir: &Path, oracle_name: &str, mutate: F) -> Result<T>
+    where
+        F: FnOnce(&mut Self) -> Result<T>,
+    {
+        let (_, _, key) = Self::paths(state_dir, oracle_name)?;
+        let _lock =
+            crate::scope::lock_private_state_file(state_dir, &format!(".oracle-{key}.state.lock"))?;
+        let mut state = Self::read_locked(state_dir, oracle_name)?
+            .ok_or_else(|| anyhow::anyhow!("oracle {oracle_name} has no state projection"))?;
+        let ledger = MissionLedger::open(mission_ledger_path(state_dir))?;
+        state.validate_authoritative_workers(&ledger)?;
+        let identity = (state.oracle_name.clone(), state.mission_id.clone());
+        let output = mutate(&mut state)?;
+        if (state.oracle_name.clone(), state.mission_id.clone()) != identity {
+            bail!("OracleState mutation may not change oracle or mission identity");
+        }
+        state.validate_authoritative_workers(&ledger)?;
+        state.write_locked(state_dir)?;
+        Ok(output)
+    }
+
+    /// Strict single-state read. Legacy double-prefixed files are migrated
+    /// atomically while holding the same per-oracle lock.
+    pub fn read(state_dir: &Path, oracle_name: &str) -> Result<Option<Self>> {
+        let (_, _, key) = Self::paths(state_dir, oracle_name)?;
+        let _lock =
+            crate::scope::lock_private_state_file(state_dir, &format!(".oracle-{key}.state.lock"))?;
+        Self::read_locked(state_dir, oracle_name)
+    }
+
+    /// Strict authority sweep. One malformed, unsafe or duplicate projection
+    /// blocks the whole read rather than becoming invisible.
+    pub fn read_all_strict(state_dir: &Path) -> Result<Vec<Self>> {
+        crate::scope::ensure_private_state_dir(state_dir)?;
+        let entries = std::fs::read_dir(state_dir)?;
+        let mut by_oracle: HashMap<String, Self> = HashMap::new();
+        for entry in entries {
+            let entry = entry?;
+            let name = entry
+                .file_name()
+                .into_string()
+                .map_err(|_| anyhow::anyhow!("oracle state directory has a non-UTF-8 filename"))?;
+            if !name.starts_with("oracle-") || !name.ends_with(".state.json") {
+                continue;
+            }
+            let state: Self = crate::scope::read_private_json(&entry.path())?.ok_or_else(|| {
+                anyhow::anyhow!(
+                    "oracle state {} vanished during strict read",
+                    entry.path().display()
+                )
+            })?;
+            let key = Self::state_key(&state.oracle_name)?.to_string();
+            let canonical = format!("oracle-{key}.state.json");
+            let legacy = format!("oracle-oracle-{key}.state.json");
+            if name != canonical && name != legacy {
+                bail!(
+                    "oracle state filename {} does not match document {}",
+                    name,
+                    state.oracle_name
+                );
+            }
+            if state.compatibility_projection.is_some() {
+                let ledger = MissionLedger::open(mission_ledger_path(state_dir))?;
+                state.require_ledger_authority(&ledger)?;
+            }
+            if by_oracle.insert(state.oracle_name.clone(), state).is_some() {
+                bail!("duplicate canonical/legacy OracleState for {key}");
+            }
+        }
+        let mut states: Vec<Self> = by_oracle.into_values().collect();
+        states.sort_by(|left, right| left.oracle_name.cmp(&right.oracle_name));
+        Ok(states)
+    }
+
+    /// Explicitly tolerant diagnostics for TUI/status/liveness views.
+    pub fn read_all(state_dir: &Path) -> Vec<Self> {
+        match Self::read_all_strict(state_dir) {
+            Ok(states) => states,
+            Err(error) => {
+                tracing::warn!(error = %error, "OracleState diagnostic sweep omitted unsafe entries");
+                read_oracle_states_tolerant(state_dir)
+            }
+        }
     }
 
     pub fn remove(state_dir: &Path, oracle_name: &str) -> Result<()> {
-        let key = Self::state_key(oracle_name);
-        let path = state_dir.join(format!("oracle-{}.state.json", key));
-        if path.exists() {
-            std::fs::remove_file(&path)?;
+        let (path, legacy, key) = Self::paths(state_dir, oracle_name)?;
+        let _lock =
+            crate::scope::lock_private_state_file(state_dir, &format!(".oracle-{key}.state.lock"))?;
+        crate::scope::remove_private_file(&path)?;
+        crate::scope::remove_private_file(&legacy)
+    }
+}
+
+fn read_oracle_states_tolerant(state_dir: &Path) -> Vec<OracleState> {
+    let mut by_oracle = HashMap::new();
+    let Ok(entries) = std::fs::read_dir(state_dir) else {
+        return Vec::new();
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        if !name.starts_with("oracle-") || !name.ends_with(".state.json") {
+            continue;
         }
-        // Remove a lingering legacy double-prefixed file too.
-        let legacy = state_dir.join(format!("oracle-oracle-{}.state.json", key));
-        if legacy.exists() {
-            std::fs::remove_file(&legacy)?;
+        let Ok(Some(state)) = crate::scope::read_private_json::<OracleState>(&path) else {
+            continue;
+        };
+        let Ok(key) = OracleState::state_key(&state.oracle_name) else {
+            continue;
+        };
+        let canonical = format!("oracle-{key}.state.json");
+        let legacy = format!("oracle-oracle-{key}.state.json");
+        let ledger_valid = if state.compatibility_projection.is_some() {
+            match MissionLedger::open(mission_ledger_path(state_dir)) {
+                Ok(ledger) => state.require_ledger_authority(&ledger).is_ok(),
+                Err(_) => false,
+            }
+        } else {
+            true
+        };
+        if ledger_valid && (name == canonical || name == legacy) {
+            by_oracle.entry(state.oracle_name.clone()).or_insert(state);
         }
-        Ok(())
+    }
+    let mut states: Vec<_> = by_oracle.into_values().collect();
+    states.sort_by(|left, right| left.oracle_name.cmp(&right.oracle_name));
+    states
+}
+
+fn same_canonical_workspace(left: &Path, right: &Path) -> bool {
+    if left == right {
+        return true;
+    }
+    match (std::fs::canonicalize(left), std::fs::canonicalize(right)) {
+        (Ok(left), Ok(right)) => left == right,
+        _ => false,
+    }
+}
+
+/// A compatibility phase may lag the ledger, but it may never claim a later
+/// lifecycle stage than the authoritative mission has reached.
+fn oracle_phase_compatible(phase: OraclePhase, mission: MissionState) -> bool {
+    let phase_stage = match phase {
+        OraclePhase::Analyze => 0,
+        OraclePhase::Dispatch => 1,
+        OraclePhase::Monitor => 2,
+        OraclePhase::Verify => 3,
+        OraclePhase::Report => 4,
+        OraclePhase::Done => 5,
+    };
+    let mission_stage = match mission {
+        MissionState::Created | MissionState::Classified => 0,
+        MissionState::Planned => 1,
+        MissionState::Running | MissionState::CorrectionRequired => 2,
+        MissionState::Verifying => 3,
+        MissionState::Accepted
+        | MissionState::Blocked
+        | MissionState::Failed
+        | MissionState::Reporting
+        | MissionState::Cancelled => 4,
+        MissionState::Delivered => 5,
+    };
+    phase_stage <= mission_stage
+}
+
+/// Non-terminal compatibility statuses may lag safely. Any status that makes
+/// `all_workers_terminal` true must be backed by the corresponding ledger
+/// terminal/blocked state; in particular only Accepted may project DoneClean.
+fn worker_status_compatible(status: WorkerEntryStatus, attempt: TaskAttemptState) -> bool {
+    match status {
+        WorkerEntryStatus::Running | WorkerEntryStatus::Pending => true,
+        WorkerEntryStatus::DoneClean => attempt == TaskAttemptState::Accepted,
+        WorkerEntryStatus::Failed => {
+            matches!(
+                attempt,
+                TaskAttemptState::Failed | TaskAttemptState::Cancelled
+            )
+        }
+        WorkerEntryStatus::Blocked | WorkerEntryStatus::Stalled => matches!(
+            attempt,
+            TaskAttemptState::Blocked | TaskAttemptState::Failed | TaskAttemptState::Cancelled
+        ),
     }
 }
 
@@ -384,11 +949,17 @@ pub struct LiveWorkers {
 
 impl LiveWorkers {
     pub fn all(&self) -> Vec<String> {
-        self.terminal.iter().chain(self.running.iter()).cloned().collect()
+        self.terminal
+            .iter()
+            .chain(self.running.iter())
+            .cloned()
+            .collect()
     }
 }
 
-/// Resolve the live worker sessions governed by `oracle_name`.
+/// Resolve a tolerant diagnostic view of live workers governed by
+/// `oracle_name`. Mutation/close paths must use
+/// [`live_workers_of_oracle_strict`].
 ///
 /// Authoritative source: the oracle's own `OracleState.workers` registry.
 /// Fallback (state file GC'd or never written — the exact shape of the
@@ -458,6 +1029,156 @@ pub fn live_workers_of_oracle(
         }
     }
     out
+}
+
+fn read_worker_done_strict(
+    state_dir: &Path,
+    session: &str,
+) -> Result<Option<crate::done::DoneSignal>> {
+    crate::done::DoneSignal::read(state_dir, session)
+}
+
+fn validate_worker_done_provenance(
+    ledger: &MissionLedger,
+    state: &OracleState,
+    worker: &WorkerEntry,
+    signal: &crate::done::DoneSignal,
+) -> Result<()> {
+    let Some(provenance) = &signal.projection else {
+        // Legacy signals remain visible, but never decide strict terminality.
+        return Ok(());
+    };
+    if provenance.source != "mission-engine-v3.sqlite3" {
+        bail!(
+            "worker {} done signal has an unknown projection source",
+            worker.session_name
+        );
+    }
+    let event = ledger
+        .events(&state.mission_id)?
+        .into_iter()
+        .find(|event| event.event_id == provenance.event_id)
+        .ok_or_else(|| anyhow::anyhow!("worker done projection event is absent"))?;
+    if event.sequence != provenance.event_sequence
+        || event.attempt_id.as_deref() != worker.attempt_id.as_deref()
+        || event.task_id.as_deref() != Some(worker.task_id.as_str())
+    {
+        bail!(
+            "worker {} done projection is bound to another task attempt",
+            worker.session_name
+        );
+    }
+    let projection = ledger
+        .projection_at(&state.mission_id, event.sequence)?
+        .ok_or_else(|| anyhow::anyhow!("worker done projection cannot be replayed"))?;
+    if projection.version != provenance.mission_version
+        || projection.projection_hash != provenance.projection_hash
+    {
+        bail!(
+            "worker {} done projection hash/version differs from ledger",
+            worker.session_name
+        );
+    }
+    Ok(())
+}
+
+/// Authority-safe worker resolution for close/kill/release decisions.
+///
+/// Every V3 OracleState and done signal is read through a private no-follow
+/// descriptor and reconciled to the immutable mission, active plan and exact
+/// task attempt. A done.json alone never makes a worker terminal; only ledger
+/// Accepted/Blocked/Failed/Cancelled state can authorize cascading it.
+pub fn live_workers_of_oracle_strict(
+    state_dir: &Path,
+    oracle_name: &str,
+    live_sessions: &[crate::session::OmegaSession],
+) -> Result<LiveWorkers> {
+    use crate::session::SessionRole;
+
+    let all_states = OracleState::read_all_strict(state_dir)?;
+    let own_state = all_states
+        .iter()
+        .find(|state| state.oracle_name == oracle_name)
+        .ok_or_else(|| anyhow::anyhow!("oracle {oracle_name} has no strict state projection"))?;
+    if own_state.compatibility_projection.is_none() {
+        bail!("oracle {oracle_name} is a legacy projection without close authority");
+    }
+    let ledger = MissionLedger::open(mission_ledger_path(state_dir))?;
+    own_state.require_ledger_authority(&ledger)?;
+
+    let live: HashSet<&str> = live_sessions
+        .iter()
+        .map(|session| session.name.as_str())
+        .collect();
+    let mut seen = HashSet::new();
+    let mut out = LiveWorkers::default();
+    for worker in &own_state.workers {
+        if !live.contains(worker.session_name.as_str()) {
+            continue;
+        }
+        seen.insert(worker.session_name.clone());
+        if let Some(signal) = read_worker_done_strict(state_dir, &worker.session_name)? {
+            validate_worker_done_provenance(&ledger, own_state, worker, &signal)?;
+        }
+        let attempt_id = worker
+            .attempt_id
+            .as_deref()
+            .ok_or_else(|| anyhow::anyhow!("worker {} has no attempt id", worker.session_name))?;
+        let attempt = ledger
+            .task_attempt(attempt_id)?
+            .ok_or_else(|| anyhow::anyhow!("worker attempt {attempt_id} is absent"))?;
+        if matches!(
+            attempt.state,
+            TaskAttemptState::Accepted
+                | TaskAttemptState::Blocked
+                | TaskAttemptState::Failed
+                | TaskAttemptState::Cancelled
+        ) {
+            out.terminal.push(worker.session_name.clone());
+        } else {
+            out.running.push(worker.session_name.clone());
+        }
+    }
+
+    let mut owned_elsewhere: HashSet<&str> = HashSet::new();
+    for state in all_states
+        .iter()
+        .filter(|state| state.oracle_name != oracle_name)
+    {
+        // A legacy projection has no ledger ancestry and therefore no right to
+        // hide a live project worker from the target oracle's close accounting.
+        // Strict V3 projections were already checked by read_all_strict; repeat
+        // the explicit authority predicate here so this safety property remains
+        // local if the sweep's diagnostic behavior ever changes.
+        if state.compatibility_projection.is_none() {
+            continue;
+        }
+        state.require_ledger_authority(&ledger)?;
+        owned_elsewhere.extend(
+            state
+                .workers
+                .iter()
+                .map(|worker| worker.session_name.as_str()),
+        );
+    }
+    for session in live_sessions {
+        if session.role != SessionRole::Worker
+            || session.project.as_deref() != Some(own_state.project.as_str())
+            || seen.contains(&session.name)
+            || owned_elsewhere.contains(session.name.as_str())
+        {
+            continue;
+        }
+        // Parse any signal strictly so corruption blocks the close, but an
+        // unregistered worker can never be terminal authority.
+        let _ = read_worker_done_strict(state_dir, &session.name)?;
+        out.running.push(session.name.clone());
+    }
+    out.terminal.sort();
+    out.terminal.dedup();
+    out.running.sort();
+    out.running.dedup();
+    Ok(out)
 }
 
 // ---------------------------------------------------------------------------
@@ -595,12 +1316,18 @@ impl OraclePromptGenerator {
     /// installed copy, falls back to the repo copy. Returns None if neither
     /// exists (the caller then uses the inline fallback).
     fn load_template(project: &str, working_dir: &Path, oracle_name: &str) -> Option<String> {
-        let home = dirs::home_dir().unwrap_or_else(|| std::env::var("HOME").map(std::path::PathBuf::from).unwrap_or_else(|_| std::path::PathBuf::from(".")));
+        let home = dirs::home_dir().unwrap_or_else(|| {
+            std::env::var("HOME")
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(|_| std::path::PathBuf::from("."))
+        });
         let candidates = [
             home.join(".omega/agents/oracle.md"),
             std::path::PathBuf::from("agents/oracle.md"),
         ];
-        let template = candidates.iter().find_map(|p| std::fs::read_to_string(p).ok())?;
+        let template = candidates
+            .iter()
+            .find_map(|p| std::fs::read_to_string(p).ok())?;
         Some(
             template
                 .replace("{{PROJECT}}", project)
@@ -667,6 +1394,22 @@ impl OraclePromptGenerator {
 // Signal File — oracle writes result, watcher detects completion
 // ---------------------------------------------------------------------------
 
+fn validate_project_identity(project: &str) -> Result<()> {
+    crate::scope::validate_session_identity(project)
+        .map_err(|error| anyhow::anyhow!("invalid project identity `{project}`: {error}"))
+}
+
+fn validate_bounded_identity(value: &str, field: &str) -> Result<()> {
+    if value.is_empty()
+        || value.len() > 512
+        || value.trim() != value
+        || value.chars().any(char::is_control)
+    {
+        bail!("invalid {field}");
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OracleSignalFile {
     pub oracle: String,
@@ -680,6 +1423,16 @@ pub struct OracleSignalFile {
     pub duration_secs: u64,
     pub ship: Option<ShipResult>,
     pub created_at: DateTime<Utc>,
+    /// Monotonic generation of the compatibility document. Legacy signals
+    /// deserialize as generation zero and are upgraded on their next write.
+    #[serde(default, rename = "_omega_revision")]
+    storage_revision: u64,
+    /// Exact on-disk generation/digest observed by [`OracleSignalFile::read`].
+    /// These never serialize; they are the CAS receipt for a later write.
+    #[serde(skip)]
+    source_revision: Option<u64>,
+    #[serde(skip)]
+    source_digest: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -752,22 +1505,181 @@ impl OracleSignalFile {
             duration_secs: state.duration_secs(),
             ship: None,
             created_at: Utc::now(),
+            storage_revision: 0,
+            source_revision: None,
+            source_digest: None,
         }
     }
 
+    fn paths(state_dir: &Path, oracle: &str) -> Result<(PathBuf, PathBuf, String)> {
+        let key = OracleState::state_key(oracle)?.to_string();
+        Ok((
+            state_dir.join(format!("oracle-{key}.result.json")),
+            state_dir.join(format!("oracle-oracle-{key}.result.json")),
+            key,
+        ))
+    }
+
+    fn validate_for_key(&self, expected_key: &str) -> Result<()> {
+        let actual_key = OracleState::state_key(&self.oracle)?;
+        if actual_key != expected_key {
+            bail!(
+                "oracle signal filename/session mismatch: filename={}, document={}",
+                expected_key,
+                self.oracle
+            );
+        }
+        validate_project_identity(&self.project)?;
+        if self.status == SignalStatus::Done && self.build == SignalBuild::Fail {
+            bail!("oracle signal cannot be DONE while its build is FAIL");
+        }
+        let mut sessions = HashSet::new();
+        let mut tasks = HashSet::new();
+        for worker in &self.worker_results {
+            crate::scope::validate_session_identity(&worker.session_name)?;
+            validate_bounded_identity(&worker.task_id, "worker task id")?;
+            if !sessions.insert(worker.session_name.as_str()) {
+                bail!(
+                    "oracle signal contains duplicate worker session {}",
+                    worker.session_name
+                );
+            }
+            if !tasks.insert(worker.task_id.as_str()) {
+                bail!(
+                    "oracle signal contains duplicate worker task {}",
+                    worker.task_id
+                );
+            }
+        }
+        Ok(())
+    }
+
+    fn authority_digest(&self) -> Result<String> {
+        let mut canonical = self.clone();
+        canonical.source_revision = None;
+        canonical.source_digest = None;
+        Ok(blake3::hash(&serde_json::to_vec(&canonical)?)
+            .to_hex()
+            .to_string())
+    }
+
+    /// Read through canonical and pre-normalization paths while the caller
+    /// holds `.oracle-signal.lock`. A sole legacy double-prefix file is renamed
+    /// atomically before it is returned; two files are ambiguous authority.
+    fn read_optional_strict_locked(state_dir: &Path, oracle: &str) -> Result<Option<Self>> {
+        crate::scope::ensure_private_state_dir(state_dir)?;
+        let (canonical, legacy, key) = Self::paths(state_dir, oracle)?;
+        let canonical_signal = crate::scope::read_private_json::<Self>(&canonical)?;
+        let legacy_signal = crate::scope::read_private_json::<Self>(&legacy)?;
+        let mut signal = match (canonical_signal, legacy_signal) {
+            (Some(_), Some(_)) => bail!(
+                "oracle signal {} has both canonical and legacy documents",
+                key
+            ),
+            (Some(signal), None) => signal,
+            (None, Some(signal)) => {
+                signal.validate_for_key(&key)?;
+                std::fs::rename(&legacy, &canonical)?;
+                std::fs::File::open(state_dir)?.sync_all()?;
+                crate::scope::read_private_json::<Self>(&canonical)?.ok_or_else(|| {
+                    anyhow::anyhow!("oracle signal vanished during legacy migration")
+                })?
+            }
+            (None, None) => return Ok(None),
+        };
+        signal.validate_for_key(&key)?;
+        if crate::scope::read_private_json::<Self>(&canonical)?.is_none() {
+            // The only way a signal can be returned is from the canonical path
+            // (either originally or after the atomic legacy rename).
+            bail!("oracle signal canonical path disappeared during strict read");
+        }
+        if crate::scope::read_private_json::<Self>(&legacy)?.is_some() {
+            bail!("oracle signal legacy path reappeared during strict read");
+        }
+        if signal.storage_revision == u64::MAX {
+            // Reading remains possible for diagnostics, but no future CAS write
+            // can advance this generation. Surface it before mutation instead
+            // of wrapping below.
+            tracing::warn!(oracle = %signal.oracle, "oracle signal revision is exhausted");
+        }
+        signal.source_revision = Some(signal.storage_revision);
+        signal.source_digest = Some(signal.authority_digest()?);
+        Ok(Some(signal))
+    }
+
+    fn read_optional_strict(state_dir: &Path, oracle: &str) -> Result<Option<Self>> {
+        let _lock = crate::scope::lock_private_state_file(state_dir, ".oracle-signal.lock")?;
+        Self::read_optional_strict_locked(state_dir, oracle)
+    }
+
+    fn canonical_path(state_dir: &Path, oracle: &str) -> Result<PathBuf> {
+        let (canonical, _, _) = Self::paths(state_dir, oracle)?;
+        Ok(canonical)
+    }
+
+    fn current_under_lock(state_dir: &Path, oracle: &str) -> Result<Option<Self>> {
+        let signal = Self::read_optional_strict_locked(state_dir, oracle)?;
+        if signal.is_none() {
+            return Ok(None);
+        }
+        Ok(signal)
+    }
+
     pub fn write(&self, state_dir: &Path) -> Result<PathBuf> {
-        std::fs::create_dir_all(state_dir)?;
-        let path = state_dir.join(format!("oracle-{}.result.json", self.oracle));
-        let tmp = state_dir.join(format!(".oracle-{}.result.json.tmp", self.oracle));
-        let content = serde_json::to_string_pretty(self)?;
-        std::fs::write(&tmp, &content)?;
-        std::fs::rename(&tmp, &path)?;
+        let (_, _, key) = Self::paths(state_dir, &self.oracle)?;
+        self.validate_for_key(&key)?;
+        let _lock = crate::scope::lock_private_state_file(state_dir, ".oracle-signal.lock")?;
+        let current = Self::current_under_lock(state_dir, &self.oracle)?;
+        match (&self.source_digest, self.source_revision, current.as_ref()) {
+            (Some(expected_digest), Some(expected_revision), Some(observed))
+                if observed.storage_revision == expected_revision
+                    && observed.source_digest.as_deref() == Some(expected_digest.as_str()) => {}
+            (None, None, None) => {}
+            (Some(_), Some(_), None) => {
+                bail!("oracle signal disappeared before compare-and-swap")
+            }
+            (None, None, Some(_)) => {
+                bail!(
+                    "oracle signal {} already exists; read it before replacing it",
+                    self.oracle
+                )
+            }
+            _ => bail!(
+                "stale oracle signal write refused for {}: generation or digest changed",
+                self.oracle
+            ),
+        }
+        let next_revision = current
+            .as_ref()
+            .map(|signal| signal.storage_revision)
+            .unwrap_or(0)
+            .checked_add(1)
+            .ok_or_else(|| anyhow::anyhow!("oracle signal revision overflow"))?;
+        let mut published = self.clone();
+        published.storage_revision = next_revision;
+        published.source_revision = None;
+        published.source_digest = None;
+        published.validate_for_key(&key)?;
+        let content = serde_json::to_vec_pretty(&published)?;
+        let path = Self::canonical_path(state_dir, &self.oracle)?;
+        // If a destination already exists, the strict read above proved it is
+        // a private single-link regular file before atomic replacement.
+        crate::config::atomic_write_private(&path, &content)?;
+        let observed = Self::current_under_lock(state_dir, &self.oracle)?
+            .ok_or_else(|| anyhow::anyhow!("oracle signal vanished after publish"))?;
+        if observed.storage_revision != next_revision
+            || observed.source_digest.as_deref() != Some(published.authority_digest()?.as_str())
+        {
+            bail!("oracle signal changed while being published");
+        }
         Ok(path)
     }
 
     /// Write a markdown signal file (human-readable, for backward compat with VPS watcher).
     pub fn write_markdown(&self, state_dir: &Path) -> Result<PathBuf> {
-        std::fs::create_dir_all(state_dir)?;
+        let (_, _, key) = Self::paths(state_dir, &self.oracle)?;
+        self.validate_for_key(&key)?;
+        let _lock = crate::scope::lock_private_state_file(state_dir, ".oracle-signal.lock")?;
         let path = state_dir.join(format!("oracle-result-{}.md", self.project));
 
         let status_str = match self.status {
@@ -807,17 +1719,32 @@ impl OracleSignalFile {
             }
         }
 
-        std::fs::write(&path, &md)?;
+        // Verify an existing compatibility file before replacing its directory
+        // entry. A symlink/hardlink/foreign-owner file is authority corruption,
+        // not an invitation to overwrite it.
+        let _ = crate::config::read_private_optional(&path)?;
+        crate::config::atomic_write_private(&path, md.as_bytes())?;
+        let observed = crate::config::read_private_optional(&path)?
+            .ok_or_else(|| anyhow::anyhow!("oracle markdown signal vanished after publish"))?;
+        if observed != md.as_bytes() {
+            bail!("oracle markdown signal changed while being published");
+        }
         Ok(path)
     }
 
+    /// Strict authority read. Corrupt, aliased, foreign or mismatched files
+    /// return an error and must block close/reuse decisions.
     pub fn read(state_dir: &Path, oracle: &str) -> Result<Option<Self>> {
-        let path = state_dir.join(format!("oracle-{}.result.json", oracle));
-        if !path.exists() {
-            return Ok(None);
-        }
-        let content = std::fs::read_to_string(&path)?;
-        Ok(Some(serde_json::from_str(&content)?))
+        Self::read_optional_strict(state_dir, oracle)
+    }
+
+    /// Explicitly tolerant projection for status-only surfaces. It never
+    /// authorizes a mutation or lifecycle transition.
+    pub fn read_diagnostic(state_dir: &Path, oracle: &str) -> Option<Self> {
+        Self::read(state_dir, oracle).unwrap_or_else(|error| {
+            tracing::warn!(oracle, error = %error, "diagnostic signal omitted unsafe document");
+            None
+        })
     }
 }
 
@@ -827,7 +1754,7 @@ impl OracleSignalFile {
 
 pub struct SignalWatcher {
     state_dir: PathBuf,
-    known: HashMap<String, DateTime<Utc>>,
+    known: HashMap<String, (u64, DateTime<Utc>)>,
 }
 
 impl SignalWatcher {
@@ -841,40 +1768,50 @@ impl SignalWatcher {
     /// Scan for new or updated signal files since last check.
     /// Returns list of (oracle_name, signal_file) pairs that are new.
     pub fn poll(&mut self) -> Result<Vec<(String, OracleSignalFile)>> {
+        crate::scope::ensure_private_state_dir(&self.state_dir)?;
         let mut new_signals = Vec::new();
-
-        if let Ok(entries) = std::fs::read_dir(&self.state_dir) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                    if name.starts_with("oracle-") && name.ends_with(".result.json") {
-                        let oracle = name
-                            .strip_prefix("oracle-")
-                            .and_then(|s| s.strip_suffix(".result.json"))
-                            .unwrap_or("")
-                            .to_string();
-
-                        if let Ok(content) = std::fs::read_to_string(&path) {
-                            if let Ok(signal) =
-                                serde_json::from_str::<OracleSignalFile>(&content)
-                            {
-                                let is_new = self
-                                    .known
-                                    .get(&oracle)
-                                    .map(|prev| signal.created_at > *prev)
-                                    .unwrap_or(true);
-
-                                if is_new {
-                                    self.known.insert(oracle.clone(), signal.created_at);
-                                    new_signals.push((oracle, signal));
-                                }
-                            }
-                        }
-                    }
+        for entry in std::fs::read_dir(&self.state_dir)? {
+            let entry = entry?;
+            let Some(name) = entry.file_name().to_str().map(str::to_string) else {
+                continue;
+            };
+            let Some(oracle) = name
+                .strip_prefix("oracle-")
+                .and_then(|name| name.strip_suffix(".result.json"))
+            else {
+                continue;
+            };
+            crate::scope::validate_session_identity(oracle)?;
+            let signal = OracleSignalFile::read(&self.state_dir, oracle)?.ok_or_else(|| {
+                anyhow::anyhow!("oracle signal {name} disappeared during strict watcher poll")
+            })?;
+            let oracle_identity = signal.oracle.clone();
+            let observation = (signal.storage_revision, signal.created_at);
+            let is_new = match self.known.get(&oracle_identity) {
+                None => true,
+                Some((previous_revision, previous_created))
+                    if signal.storage_revision < *previous_revision =>
+                {
+                    bail!("oracle signal {oracle_identity} revision moved backwards")
                 }
+                Some((previous_revision, previous_created))
+                    if signal.storage_revision == *previous_revision =>
+                {
+                    if signal.created_at != *previous_created {
+                        bail!(
+                            "oracle signal {oracle_identity} changed without advancing its revision"
+                        );
+                    }
+                    false
+                }
+                Some(_) => true,
+            };
+            if is_new {
+                self.known.insert(oracle_identity.clone(), observation);
+                new_signals.push((oracle_identity, signal));
             }
         }
-
+        new_signals.sort_by(|left, right| left.0.cmp(&right.0));
         Ok(new_signals)
     }
 }
@@ -977,9 +1914,7 @@ impl WorkerStallDetector {
         }
 
         // Standard shell prompt patterns (with or without trailing space)
-        if last_trimmed.ends_with('$')
-            || last_trimmed.ends_with('%')
-            || last_trimmed.ends_with('#')
+        if last_trimmed.ends_with('$') || last_trimmed.ends_with('%') || last_trimmed.ends_with('#')
         {
             return true;
         }
@@ -1042,9 +1977,15 @@ fn is_standalone_prompt(line: &str, glyph: char) -> bool {
 // Oracle Registry — tracks all active oracles across projects
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct OracleRegistry {
     pub oracles: Vec<OracleRegistryEntry>,
+    #[serde(default, rename = "_omega_revision")]
+    storage_revision: u64,
+    #[serde(skip)]
+    source_revision: Option<u64>,
+    #[serde(skip)]
+    source_digest: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1067,25 +2008,151 @@ pub enum OracleRegistryStatus {
 }
 
 impl OracleRegistry {
-    pub fn load(state_dir: &Path) -> Self {
-        let path = state_dir.join("oracle-registry.json");
-        if path.exists() {
-            if let Ok(content) = std::fs::read_to_string(&path) {
-                if let Ok(reg) = serde_json::from_str::<Self>(&content) {
-                    return reg;
-                }
+    fn path(state_dir: &Path) -> PathBuf {
+        state_dir.join("oracle-registry.json")
+    }
+
+    fn authority_digest(&self) -> Result<String> {
+        let mut canonical = self.clone();
+        canonical.source_revision = None;
+        canonical.source_digest = None;
+        Ok(blake3::hash(&serde_json::to_vec(&canonical)?)
+            .to_hex()
+            .to_string())
+    }
+
+    fn validate_entry(entry: &OracleRegistryEntry) -> Result<()> {
+        crate::scope::validate_session_identity(&entry.oracle_name)?;
+        crate::scope::validate_session_identity(&entry.session_name)?;
+        validate_project_identity(&entry.project)?;
+        if entry.oracle_name != entry.session_name {
+            bail!(
+                "oracle registry entry binds {} to a different session {}",
+                entry.oracle_name,
+                entry.session_name
+            );
+        }
+        let project_oracle = format!("oracle-{}", entry.project);
+        if entry.oracle_name != project_oracle
+            && !entry
+                .oracle_name
+                .strip_prefix(&(project_oracle + "-"))
+                .is_some_and(|suffix| !suffix.is_empty())
+        {
+            bail!(
+                "oracle {} is not namespaced to project {}",
+                entry.oracle_name,
+                entry.project
+            );
+        }
+        let normalized = crate::scope::validate_scope_selectors(entry.files_owned.clone())?;
+        if normalized != entry.files_owned {
+            bail!(
+                "oracle registry entry {} contains non-canonical file selectors",
+                entry.oracle_name
+            );
+        }
+        Ok(())
+    }
+
+    fn validate(&self) -> Result<()> {
+        let mut oracle_names = HashSet::new();
+        let mut session_names = HashSet::new();
+        for entry in &self.oracles {
+            Self::validate_entry(entry)?;
+            if !oracle_names.insert(entry.oracle_name.as_str()) {
+                bail!(
+                    "oracle registry contains duplicate oracle {}",
+                    entry.oracle_name
+                );
+            }
+            if !session_names.insert(entry.session_name.as_str()) {
+                bail!(
+                    "oracle registry contains duplicate session {}",
+                    entry.session_name
+                );
             }
         }
-        Self {
-            oracles: Vec::new(),
-        }
+        Ok(())
+    }
+
+    fn load_optional_strict(state_dir: &Path) -> Result<Option<Self>> {
+        crate::scope::ensure_private_state_dir(state_dir)?;
+        let Some(mut registry) = crate::scope::read_private_json::<Self>(&Self::path(state_dir))?
+        else {
+            return Ok(None);
+        };
+        registry.validate()?;
+        registry.source_revision = Some(registry.storage_revision);
+        registry.source_digest = Some(registry.authority_digest()?);
+        Ok(Some(registry))
+    }
+
+    /// Strict authority loader. Missing state is an empty registry; malformed,
+    /// aliased, foreign, duplicate or cross-project state is an error.
+    pub fn load_strict(state_dir: &Path) -> Result<Self> {
+        Ok(Self::load_optional_strict(state_dir)?.unwrap_or_default())
+    }
+
+    /// Explicitly tolerant status projection. Mutation and dispatch decisions
+    /// must use [`OracleRegistry::load_strict`] or a locked mutation helper.
+    pub fn load_diagnostic(state_dir: &Path) -> Self {
+        Self::load_strict(state_dir).unwrap_or_else(|error| {
+            tracing::warn!(error = %error, "diagnostic registry omitted unsafe document");
+            Self::default()
+        })
+    }
+
+    /// Backward-compatible status-only alias. New authority callsites must use
+    /// [`OracleRegistry::load_strict`].
+    pub fn load(state_dir: &Path) -> Self {
+        Self::load_diagnostic(state_dir)
     }
 
     pub fn save(&self, state_dir: &Path) -> Result<()> {
-        std::fs::create_dir_all(state_dir)?;
-        let path = state_dir.join("oracle-registry.json");
-        let content = serde_json::to_string_pretty(self)?;
-        std::fs::write(&path, content)?;
+        let _lock = crate::scope::lock_private_state_file(state_dir, ".oracle-registry.lock")?;
+        self.save_locked(state_dir)
+    }
+
+    fn save_locked(&self, state_dir: &Path) -> Result<()> {
+        self.validate()?;
+        let current = Self::load_optional_strict(state_dir)?;
+        match (&self.source_digest, self.source_revision, current.as_ref()) {
+            (Some(expected_digest), Some(expected_revision), Some(observed))
+                if observed.storage_revision == expected_revision
+                    && observed.source_digest.as_deref() == Some(expected_digest.as_str()) => {}
+            (None, None, None) => {}
+            (Some(_), Some(_), None) => {
+                bail!("oracle registry disappeared before compare-and-swap")
+            }
+            (None, None, Some(_)) => {
+                bail!("oracle registry already exists; reload before replacing it")
+            }
+            _ => bail!("stale oracle registry write refused: generation or digest changed"),
+        }
+        let next_revision = current
+            .as_ref()
+            .map(|registry| registry.storage_revision)
+            .unwrap_or(0)
+            .checked_add(1)
+            .ok_or_else(|| anyhow::anyhow!("oracle registry revision overflow"))?;
+        let mut published = self.clone();
+        published.storage_revision = next_revision;
+        published.source_revision = None;
+        published.source_digest = None;
+        published.validate()?;
+        crate::config::atomic_write_private(
+            &Self::path(state_dir),
+            &serde_json::to_vec_pretty(&published)?,
+        )?;
+        let observed = Self::load_optional_strict(state_dir)?
+            .ok_or_else(|| anyhow::anyhow!("oracle registry vanished after publish"))?;
+        let expected_digest = published.authority_digest()?;
+        if observed.storage_revision != next_revision
+            || observed.source_digest.as_deref() != Some(expected_digest.as_str())
+        {
+            bail!("oracle registry changed while being published");
+        }
         Ok(())
     }
 
@@ -1103,40 +2170,71 @@ impl OracleRegistry {
         project: &str,
         preferred: Option<&str>,
     ) -> Result<String> {
-        std::fs::create_dir_all(state_dir)?;
-        let lockfile = std::fs::File::create(state_dir.join(".oracle-registry.lock"))?;
-        lockfile.lock_exclusive()?;
+        validate_project_identity(project)?;
+        if let Some(preferred) = preferred {
+            crate::scope::validate_session_identity(preferred)?;
+        }
+        let _lock = crate::scope::lock_private_state_file(state_dir, ".oracle-registry.lock")?;
 
         // Reload under the lock so a concurrent reservation is merged, not lost.
-        let mut reg = Self::load(state_dir);
+        let mut reg = Self::load_strict(state_dir)?;
         let name = match preferred {
             Some(p)
-                if reg
-                    .oracles
-                    .iter()
-                    .any(|e| e.oracle_name == p && e.status == OracleRegistryStatus::Idle) =>
+                if reg.oracles.iter().any(|e| {
+                    e.oracle_name == p
+                        && e.session_name == p
+                        && e.project == project
+                        && e.status == OracleRegistryStatus::Idle
+                }) =>
             {
                 p.to_string()
             }
             _ => reg.next_oracle_name(project),
         };
-        reg.register(OracleRegistryEntry {
+        reg.register_checked(OracleRegistryEntry {
             oracle_name: name.clone(),
             project: project.to_string(),
             session_name: name.clone(),
             status: OracleRegistryStatus::Active,
             spawned_at: Utc::now(),
             files_owned: Vec::new(),
-        });
-        reg.save(state_dir)?;
+        })?;
+        reg.save_locked(state_dir)?;
         Ok(name)
-        // lockfile drops here -> advisory lock released
+        // lock drops here -> advisory lock released
     }
 
-    pub fn register(&mut self, entry: OracleRegistryEntry) {
-        // Replace existing entry for same oracle name
+    fn register_checked(&mut self, entry: OracleRegistryEntry) -> Result<()> {
+        Self::validate_entry(&entry)?;
+        if let Some(existing) = self
+            .oracles
+            .iter()
+            .find(|existing| existing.oracle_name == entry.oracle_name)
+        {
+            if existing.project != entry.project || existing.session_name != entry.session_name {
+                bail!(
+                    "oracle {} is already bound to project {} / session {}",
+                    entry.oracle_name,
+                    existing.project,
+                    existing.session_name
+                );
+            }
+        }
+        if self.oracles.iter().any(|existing| {
+            existing.session_name == entry.session_name && existing.oracle_name != entry.oracle_name
+        }) {
+            bail!(
+                "session {} is already bound to another oracle",
+                entry.session_name
+            );
+        }
         self.oracles.retain(|e| e.oracle_name != entry.oracle_name);
         self.oracles.push(entry);
+        self.validate()
+    }
+
+    pub fn register(&mut self, entry: OracleRegistryEntry) -> Result<()> {
+        self.register_checked(entry)
     }
 
     /// Apply mutations to the registry atomically, under the same exclusive
@@ -1152,13 +2250,11 @@ impl OracleRegistry {
     where
         F: FnOnce(&mut OracleRegistry),
     {
-        std::fs::create_dir_all(state_dir)?;
-        let lockfile = std::fs::File::create(state_dir.join(".oracle-registry.lock"))?;
-        lockfile.lock_exclusive()?;
-        let mut reg = Self::load(state_dir);
+        let _lock = crate::scope::lock_private_state_file(state_dir, ".oracle-registry.lock")?;
+        let mut reg = Self::load_strict(state_dir)?;
         mutate(&mut reg);
-        reg.save(state_dir)
-        // lockfile drops here -> advisory lock released
+        reg.save_locked(state_dir)
+        // lock drops here -> advisory lock released
     }
 
     /// Re-register a resurrected oracle as Active with a FRESH `spawned_at`,
@@ -1167,25 +2263,21 @@ impl OracleRegistry {
     /// cleanup), so the resurrected oracle was invisible to the registry and —
     /// critically — patrol had no `spawned_at` to date the session's done
     /// signal against: its freshness guard then treats every signal as stale.
-    pub fn register_resurrected(
-        state_dir: &Path,
-        oracle_name: &str,
-        project: &str,
-    ) -> Result<()> {
-        std::fs::create_dir_all(state_dir)?;
-        let lockfile = std::fs::File::create(state_dir.join(".oracle-registry.lock"))?;
-        lockfile.lock_exclusive()?;
-        let mut reg = Self::load(state_dir);
-        reg.register(OracleRegistryEntry {
+    pub fn register_resurrected(state_dir: &Path, oracle_name: &str, project: &str) -> Result<()> {
+        crate::scope::validate_session_identity(oracle_name)?;
+        validate_project_identity(project)?;
+        let _lock = crate::scope::lock_private_state_file(state_dir, ".oracle-registry.lock")?;
+        let mut reg = Self::load_strict(state_dir)?;
+        reg.register_checked(OracleRegistryEntry {
             oracle_name: oracle_name.to_string(),
             project: project.to_string(),
             session_name: oracle_name.to_string(),
             status: OracleRegistryStatus::Active,
             spawned_at: Utc::now(),
             files_owned: Vec::new(),
-        });
-        reg.save(state_dir)
-        // lockfile drops here -> advisory lock released
+        })?;
+        reg.save_locked(state_dir)
+        // lock drops here -> advisory lock released
     }
 
     pub fn find_available(&self, project: &str) -> Option<&OracleRegistryEntry> {
@@ -1215,7 +2307,11 @@ impl OracleRegistry {
     }
 
     pub fn mark_status(&mut self, oracle_name: &str, status: OracleRegistryStatus) {
-        if let Some(entry) = self.oracles.iter_mut().find(|e| e.oracle_name == oracle_name) {
+        if let Some(entry) = self
+            .oracles
+            .iter_mut()
+            .find(|e| e.oracle_name == oracle_name)
+        {
             entry.status = status;
         }
     }
@@ -1245,33 +2341,430 @@ impl OracleRegistry {
 
     /// Next available oracle name for a project (oracle-Proj, oracle-Proj-2, ...).
     pub fn next_oracle_name(&self, project: &str) -> String {
-        let existing: Vec<_> = self
+        let base = format!("oracle-{project}");
+        if !self
             .oracles
             .iter()
-            .filter(|e| e.project == project)
-            .collect();
-
-        if existing.is_empty() {
-            return format!("oracle-{}", project);
+            .any(|entry| entry.oracle_name == base || entry.session_name == base)
+        {
+            return base;
         }
-
-        let max_idx = existing
-            .iter()
-            .filter_map(|e| {
-                e.oracle_name
-                    .strip_prefix(&format!("oracle-{}-", project))
-                    .and_then(|s| s.parse::<u32>().ok())
-            })
-            .max()
-            .unwrap_or(1);
-
-        format!("oracle-{}-{}", project, max_idx + 1)
+        // With N entries, at least one of N+1 consecutive suffixes is free.
+        // Bound the search instead of relying on an effectively-infinite loop.
+        for index in 2..=self.oracles.len().saturating_add(2) {
+            let candidate = format!("{base}-{index}");
+            if !self
+                .oracles
+                .iter()
+                .any(|entry| entry.oracle_name == candidate || entry.session_name == candidate)
+            {
+                return candidate;
+            }
+        }
+        unreachable!("N registry entries cannot occupy N+1 candidate names")
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn oracle_state_rejects_session_traversal_and_corrupt_authority_sweeps() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mission = Mission::new("Acme", "safe", PathBuf::from("/tmp"));
+        let state = OracleState::new("../oracle-Acme", &mission);
+        assert!(state.write(tmp.path()).is_err());
+        assert!(OracleState::read(tmp.path(), "../oracle-Acme").is_err());
+
+        std::fs::write(tmp.path().join("oracle-broken.state.json"), b"{").unwrap();
+        assert!(OracleState::read_all_strict(tmp.path()).is_err());
+        assert!(OracleState::read_all(tmp.path()).is_empty());
+    }
+
+    #[test]
+    fn oracle_state_cas_refuses_stale_full_document_writer() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mission = Mission::new("Acme", "safe", PathBuf::from("/tmp"));
+        OracleState::new("oracle-Acme", &mission)
+            .write(tmp.path())
+            .unwrap();
+        let mut first = OracleState::read(tmp.path(), "oracle-Acme")
+            .unwrap()
+            .unwrap();
+        let mut stale = first.clone();
+        first.session_id = Some("first".to_string());
+        first.write(tmp.path()).unwrap();
+        stale.session_id = Some("stale".to_string());
+        assert!(stale.write(tmp.path()).is_err());
+        assert_eq!(
+            OracleState::read(tmp.path(), "oracle-Acme")
+                .unwrap()
+                .unwrap()
+                .session_id
+                .as_deref(),
+            Some("first")
+        );
+    }
+
+    #[test]
+    fn minimal_projection_cannot_persist_v3_worker_authority() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut state = OracleState::new_minimal("oracle-Acme", "Acme", PathBuf::from("/tmp/Acme"));
+        state.register_worker(WorkerEntry {
+            session_name: "Acme-worker-1".to_string(),
+            task_id: "task-1".to_string(),
+            task_name: "task".to_string(),
+            attempt_id: Some("attempt-1".to_string()),
+            plan_revision: Some(1),
+            files_owned: vec!["src/lib.rs".to_string()],
+            dispatched_at: Utc::now(),
+            status: WorkerEntryStatus::Running,
+        });
+        assert!(state.write(tmp.path()).is_err());
+        let ledger = MissionLedger::open_in_memory().unwrap();
+        assert!(state.require_ledger_authority(&ledger).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn oracle_state_rejects_symlink_hardlink_and_unsafe_lock_paths() {
+        use std::os::unix::fs::symlink;
+        let root = tempfile::TempDir::new().unwrap();
+
+        let symlink_dir = root.path().join("symlink");
+        std::fs::create_dir(&symlink_dir).unwrap();
+        let target = symlink_dir.join("target");
+        std::fs::write(&target, b"sentinel").unwrap();
+        symlink(&target, symlink_dir.join("oracle-Acme.state.json")).unwrap();
+        assert!(OracleState::read(&symlink_dir, "oracle-Acme").is_err());
+        assert_eq!(std::fs::read(&target).unwrap(), b"sentinel");
+
+        let hardlink_dir = root.path().join("hardlink");
+        std::fs::create_dir(&hardlink_dir).unwrap();
+        let hard_target = hardlink_dir.join("target");
+        std::fs::write(&hard_target, b"{}").unwrap();
+        std::fs::hard_link(&hard_target, hardlink_dir.join("oracle-Acme.state.json")).unwrap();
+        assert!(OracleState::read(&hardlink_dir, "oracle-Acme").is_err());
+
+        let lock_dir = root.path().join("lock");
+        std::fs::create_dir(&lock_dir).unwrap();
+        let lock_target = lock_dir.join("target");
+        std::fs::write(&lock_target, b"sentinel").unwrap();
+        symlink(&lock_target, lock_dir.join(".oracle-Acme.state.lock")).unwrap();
+        let mission = Mission::new("Acme", "safe", PathBuf::from("/tmp"));
+        assert!(OracleState::new("oracle-Acme", &mission)
+            .write(&lock_dir)
+            .is_err());
+        assert_eq!(std::fs::read(&lock_target).unwrap(), b"sentinel");
+    }
+
+    #[test]
+    fn oracle_projection_is_derived_from_and_validated_against_ledger() {
+        let ledger = MissionLedger::open_in_memory().unwrap();
+        let mission = Mission::new("OmegaOS", "projection", PathBuf::from("/tmp/OmegaOS"));
+        let created = ledger
+            .create_mission(
+                &mission,
+                &format!("test:{}:created", mission.id.as_str()),
+                "test",
+            )
+            .unwrap();
+        let state = OracleState::from_ledger("oracle-OmegaOS", &mission, &created).unwrap();
+        assert_eq!(
+            state.require_ledger_authority(&ledger).unwrap(),
+            created.projection
+        );
+    }
+
+    #[test]
+    fn forged_projection_metadata_cannot_override_ledger() {
+        let ledger = MissionLedger::open_in_memory().unwrap();
+        let mission = Mission::new("OmegaOS", "projection", PathBuf::from("/tmp/OmegaOS"));
+        let created = ledger
+            .create_mission(
+                &mission,
+                &format!("test:{}:created", mission.id.as_str()),
+                "test",
+            )
+            .unwrap();
+        let mut state = OracleState::from_ledger("oracle-OmegaOS", &mission, &created).unwrap();
+        state
+            .compatibility_projection
+            .as_mut()
+            .unwrap()
+            .source_projection_hash = "forged".to_string();
+        assert!(state.require_ledger_authority(&ledger).is_err());
+        assert_eq!(
+            ledger.mission(&mission.id).unwrap().unwrap(),
+            created.projection,
+            "mutating the JSON projection must not mutate ledger authority"
+        );
+    }
+
+    #[test]
+    fn forged_hash_on_a_stale_projection_is_rejected() {
+        let ledger = MissionLedger::open_in_memory().unwrap();
+        let mission = Mission::new("OmegaOS", "projection", PathBuf::from("/tmp/OmegaOS"));
+        let created = ledger
+            .create_mission(
+                &mission,
+                &format!("test:{}:created", mission.id.as_str()),
+                "test",
+            )
+            .unwrap();
+        let mut state = OracleState::from_ledger("oracle-OmegaOS", &mission, &created).unwrap();
+        let mut cancelled = crate::mission_ledger::AppendEvent::new(
+            mission.id.clone(),
+            created.projection.version,
+            format!("test:{}:cancelled", mission.id.as_str()),
+            "test",
+            "mission_cancelled",
+        );
+        cancelled.next_mission_state = Some(crate::mission::MissionState::Cancelled);
+        ledger.append(cancelled).unwrap();
+        state
+            .compatibility_projection
+            .as_mut()
+            .unwrap()
+            .source_projection_hash = "forged-stale-hash".to_string();
+        assert!(
+            state.require_ledger_authority(&ledger).is_err(),
+            "a stale projection must still prove the exact historical hash it cites"
+        );
+    }
+
+    #[test]
+    fn stamped_state_cannot_forge_immutable_mission_or_future_phase() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let ledger = MissionLedger::open(mission_ledger_path(tmp.path())).unwrap();
+        let mission = Mission::new(
+            "OmegaOS",
+            "immutable mission",
+            PathBuf::from("/tmp/OmegaOS-immutable"),
+        );
+        let created = ledger
+            .create_mission(
+                &mission,
+                &format!("test:{}:created", mission.id.as_str()),
+                "test",
+            )
+            .unwrap();
+        let state = OracleState::from_ledger("oracle-OmegaOS", &mission, &created).unwrap();
+
+        let mut forged_project = state.clone();
+        forged_project.project = "Other".to_string();
+        assert!(forged_project.require_ledger_authority(&ledger).is_err());
+
+        let mut forged_text = state.clone();
+        forged_text.mission_text = "different mission".to_string();
+        assert!(forged_text.require_ledger_authority(&ledger).is_err());
+
+        let mut forged_worktree = state.clone();
+        forged_worktree.working_dir = PathBuf::from("/tmp/Other-worktree");
+        assert!(forged_worktree.require_ledger_authority(&ledger).is_err());
+
+        let mut forged_phase = state;
+        forged_phase.phase = OraclePhase::Done;
+        assert!(forged_phase.require_ledger_authority(&ledger).is_err());
+    }
+
+    #[test]
+    fn done_clean_worker_requires_exact_accepted_attempt() {
+        use crate::mission::{
+            PlanContract, RetryPolicy, TaskContract, TaskId, VerifierCheck, VerifierCheckKind,
+            CONTRACT_SCHEMA_VERSION,
+        };
+        use crate::mission_ledger::{AppendEvent, LeaseAssertion, TaskAttemptMutation};
+        use crate::orchestration::{claim_authoritative_scopes, AuthoritativeTaskAttempt};
+        use std::time::Duration;
+
+        let temp = tempfile::TempDir::new().unwrap();
+        let work = temp.path().join("repo");
+        let state_dir = temp.path().join("state");
+        std::fs::create_dir_all(&work).unwrap();
+        std::fs::create_dir_all(&state_dir).unwrap();
+        let ledger = MissionLedger::open_in_memory().unwrap();
+        let mission = Mission::new("OmegaOS", "worker status", work.clone());
+        ledger
+            .create_mission(
+                &mission,
+                &format!("test:{}:created", mission.id.as_str()),
+                "test",
+            )
+            .unwrap();
+        let mut classified = AppendEvent::new(
+            mission.id.clone(),
+            1,
+            format!("test:{}:classified", mission.id.as_str()),
+            "test",
+            "mission_classified",
+        );
+        classified.next_mission_state = Some(MissionState::Classified);
+        ledger.append(classified).unwrap();
+
+        let task = TaskContract {
+            schema_version: CONTRACT_SCHEMA_VERSION,
+            task_id: TaskId::new("task-1"),
+            name: "implement".to_string(),
+            prompt: "implement safely".to_string(),
+            acceptance_criteria: vec!["verified".to_string()],
+            verifier_checks: vec![VerifierCheck {
+                schema_version: CONTRACT_SCHEMA_VERSION,
+                check_id: "file".to_string(),
+                kind: VerifierCheckKind::FileExists {
+                    path: "src/lib.rs".to_string(),
+                },
+                timeout_secs: 30,
+            }],
+            required_capabilities: Vec::new(),
+            scope: vec!["src/lib.rs".to_string()],
+            risk: crate::routing::RiskLevel::Low,
+            retry_policy: RetryPolicy::default(),
+            depends_on: Vec::new(),
+        };
+        let plan = PlanContract::new(mission.id.clone(), 1, 2, vec![task], Vec::new(), Vec::new())
+            .unwrap();
+        let mut planned = AppendEvent::new(
+            mission.id.clone(),
+            2,
+            format!("test:{}:planned", mission.id.as_str()),
+            "test",
+            "mission_planned",
+        );
+        planned.next_mission_state = Some(MissionState::Planned);
+        planned.plan = Some(plan);
+        ledger.append(planned).unwrap();
+
+        let attempt_id = "attempt-1".to_string();
+        let mut queued = AppendEvent::new(
+            mission.id.clone(),
+            3,
+            "test:attempt:queued",
+            "test",
+            "task_attempt_queued",
+        );
+        queued.task_attempt = Some(TaskAttemptMutation {
+            task_id: "task-1".to_string(),
+            attempt_id: attempt_id.clone(),
+            plan_revision: 1,
+            expected_version: 0,
+            next_state: TaskAttemptState::Queued,
+        });
+        ledger.append(queued).unwrap();
+
+        let projection = ledger.mission(&mission.id).unwrap().unwrap();
+        let mut mission_running = AppendEvent::new(
+            mission.id.clone(),
+            projection.version,
+            "test:mission:running",
+            "test",
+            "mission_running",
+        );
+        mission_running.next_mission_state = Some(MissionState::Running);
+        ledger.append(mission_running).unwrap();
+
+        let mut authoritative_attempt = AuthoritativeTaskAttempt {
+            mission_id: mission.id.clone(),
+            task_id: "task-1".to_string(),
+            attempt_id: attempt_id.clone(),
+            plan_revision: 1,
+            owner: None,
+            leases: Vec::new(),
+            scope_receipt: None,
+        };
+        claim_authoritative_scopes(
+            &ledger,
+            &state_dir,
+            &work,
+            &mut authoritative_attempt,
+            "OmegaOS-worker-1",
+            &["src/lib.rs".to_string()],
+            Duration::from_secs(60),
+        )
+        .unwrap();
+        let projection = ledger.mission(&mission.id).unwrap().unwrap();
+        let task_projection = ledger.task_attempt(&attempt_id).unwrap().unwrap();
+        let mut running = AppendEvent::new(
+            mission.id.clone(),
+            projection.version,
+            "test:attempt:running",
+            "OmegaOS-worker-1",
+            "task_attempt_running",
+        );
+        running.task_attempt = Some(TaskAttemptMutation {
+            task_id: "task-1".to_string(),
+            attempt_id: attempt_id.clone(),
+            plan_revision: 1,
+            expected_version: task_projection.version,
+            next_state: TaskAttemptState::Running,
+        });
+        running.lease_assertions = authoritative_attempt
+            .leases
+            .iter()
+            .map(LeaseAssertion::from)
+            .collect();
+        let running = ledger.append(running).unwrap();
+
+        let mut state = OracleState::from_ledger("oracle-OmegaOS", &mission, &running).unwrap();
+        state.phase = OraclePhase::Monitor;
+        state.register_worker(WorkerEntry {
+            session_name: "OmegaOS-worker-1".to_string(),
+            task_id: "task-1".to_string(),
+            task_name: "implement".to_string(),
+            attempt_id: Some(attempt_id),
+            plan_revision: Some(1),
+            files_owned: vec!["src/lib.rs".to_string()],
+            dispatched_at: Utc::now(),
+            status: WorkerEntryStatus::DoneClean,
+        });
+        assert!(state.require_ledger_authority(&ledger).is_err());
+        state.workers[0].status = WorkerEntryStatus::Running;
+        assert!(state.require_ledger_authority(&ledger).is_ok());
+    }
+
+    #[test]
+    fn legacy_oracle_cannot_hide_unregistered_live_worker_from_strict_close_gate() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let ledger = MissionLedger::open(mission_ledger_path(tmp.path())).unwrap();
+        let mission = Mission::new(
+            "OmegaOS",
+            "strict worker ownership",
+            PathBuf::from("/tmp/OmegaOS"),
+        );
+        let created = ledger
+            .create_mission(
+                &mission,
+                &format!("test:{}:created", mission.id.as_str()),
+                "test",
+            )
+            .unwrap();
+        OracleState::from_ledger("oracle-OmegaOS", &mission, &created)
+            .unwrap()
+            .write(tmp.path())
+            .unwrap();
+
+        let mut legacy =
+            OracleState::new_minimal("oracle-OmegaOS-2", "OmegaOS", PathBuf::from("/tmp/OmegaOS"));
+        legacy.register_worker(WorkerEntry {
+            session_name: "OmegaOS-worker-orphan".to_string(),
+            task_id: "legacy-task".to_string(),
+            task_name: "untrusted legacy claim".to_string(),
+            attempt_id: None,
+            plan_revision: None,
+            files_owned: vec!["src/lib.rs".to_string()],
+            dispatched_at: Utc::now(),
+            status: WorkerEntryStatus::DoneClean,
+        });
+        legacy.write(tmp.path()).unwrap();
+
+        let live = vec![crate::session::OmegaSession::classify(
+            "OmegaOS-worker-orphan",
+        )];
+        let workers = live_workers_of_oracle_strict(tmp.path(), "oracle-OmegaOS", &live).unwrap();
+        assert_eq!(workers.running, vec!["OmegaOS-worker-orphan"]);
+        assert!(workers.terminal.is_empty());
+    }
 
     #[test]
     fn stall_detector_idle_prompt() {
@@ -1288,9 +2781,15 @@ mod tests {
     #[test]
     fn idle_prompt_excludes_code_and_markup_endings() {
         // N11: a line that ends in '>' but is code/markup is NOT an idle prompt.
-        assert!(!WorkerStallDetector::detect_idle_prompt("let f = |x| x => x + 1"));
-        assert!(!WorkerStallDetector::detect_idle_prompt("fn foo() -> u32 {\nreturn 1 ->"));
-        assert!(!WorkerStallDetector::detect_idle_prompt("<input type=\"text\" />"));
+        assert!(!WorkerStallDetector::detect_idle_prompt(
+            "let f = |x| x => x + 1"
+        ));
+        assert!(!WorkerStallDetector::detect_idle_prompt(
+            "fn foo() -> u32 {\nreturn 1 ->"
+        ));
+        assert!(!WorkerStallDetector::detect_idle_prompt(
+            "<input type=\"text\" />"
+        ));
         assert!(!WorkerStallDetector::detect_idle_prompt("    </div>"));
         assert!(!WorkerStallDetector::detect_idle_prompt("let v: Vec<T>"));
         assert!(!WorkerStallDetector::detect_idle_prompt("arr.map(x => x);"));
@@ -1338,10 +2837,100 @@ mod tests {
     }
 
     #[test]
+    fn oracle_signal_is_strict_private_cas_and_watcher_fails_closed() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mission = Mission::new("Acme", "signal", PathBuf::from("/tmp/Acme"));
+        let state = OracleState::new("oracle-Acme", &mission);
+        let signal = OracleSignalFile::from_oracle_state(&state, SignalBuild::Pass);
+        let path = signal.write(tmp.path()).unwrap();
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+            assert_eq!(
+                std::fs::metadata(tmp.path()).unwrap().permissions().mode() & 0o777,
+                0o700
+            );
+        }
+
+        let mut first = OracleSignalFile::read(tmp.path(), "oracle-Acme")
+            .unwrap()
+            .unwrap();
+        let mut stale = first.clone();
+        first.summary = "accepted".to_string();
+        first.write(tmp.path()).unwrap();
+        stale.summary = "stale".to_string();
+        assert!(stale.write(tmp.path()).is_err());
+
+        let mut watcher = SignalWatcher::new(tmp.path().to_path_buf());
+        assert_eq!(watcher.poll().unwrap().len(), 1);
+        assert!(watcher.poll().unwrap().is_empty());
+        std::fs::write(&path, b"{").unwrap();
+        assert!(watcher.poll().is_err(), "corruption must not disappear");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn oracle_signal_rejects_symlink_and_hardlink_authority_paths() {
+        use std::os::unix::fs::symlink;
+        let root = tempfile::TempDir::new().unwrap();
+        let mission = Mission::new("Acme", "signal", PathBuf::from("/tmp/Acme"));
+        let state = OracleState::new("oracle-Acme", &mission);
+        let signal = OracleSignalFile::from_oracle_state(&state, SignalBuild::Pass);
+
+        let symlink_dir = root.path().join("symlink");
+        std::fs::create_dir(&symlink_dir).unwrap();
+        let symlink_target = symlink_dir.join("target");
+        std::fs::write(&symlink_target, b"sentinel").unwrap();
+        symlink(&symlink_target, symlink_dir.join("oracle-Acme.result.json")).unwrap();
+        assert!(signal.write(&symlink_dir).is_err());
+        assert_eq!(std::fs::read(&symlink_target).unwrap(), b"sentinel");
+
+        let hardlink_dir = root.path().join("hardlink");
+        std::fs::create_dir(&hardlink_dir).unwrap();
+        let hardlink_target = hardlink_dir.join("target");
+        std::fs::write(&hardlink_target, b"{}").unwrap();
+        std::fs::hard_link(
+            &hardlink_target,
+            hardlink_dir.join("oracle-Acme.result.json"),
+        )
+        .unwrap();
+        assert!(signal.write(&hardlink_dir).is_err());
+
+        let markdown_dir = root.path().join("markdown");
+        std::fs::create_dir(&markdown_dir).unwrap();
+        let markdown_target = markdown_dir.join("target");
+        std::fs::write(&markdown_target, b"sentinel").unwrap();
+        symlink(&markdown_target, markdown_dir.join("oracle-result-Acme.md")).unwrap();
+        assert!(signal.write_markdown(&markdown_dir).is_err());
+        assert_eq!(std::fs::read(&markdown_target).unwrap(), b"sentinel");
+    }
+
+    #[test]
+    fn oracle_signal_read_migrates_legacy_double_prefix_under_lock() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mission = Mission::new("Acme", "signal", PathBuf::from("/tmp/Acme"));
+        let state = OracleState::new("oracle-Acme", &mission);
+        let signal = OracleSignalFile::from_oracle_state(&state, SignalBuild::Pass);
+        let legacy = tmp.path().join("oracle-oracle-Acme.result.json");
+        crate::config::atomic_write_private(&legacy, &serde_json::to_vec_pretty(&signal).unwrap())
+            .unwrap();
+
+        let observed = OracleSignalFile::read(tmp.path(), "oracle-Acme")
+            .unwrap()
+            .unwrap();
+        assert_eq!(observed.oracle, "oracle-Acme");
+        assert!(tmp.path().join("oracle-Acme.result.json").exists());
+        assert!(!legacy.exists());
+    }
+
+    #[test]
     fn oracle_registry_next_name() {
-        let mut reg = OracleRegistry {
-            oracles: Vec::new(),
-        };
+        let mut reg = OracleRegistry::default();
 
         assert_eq!(reg.next_oracle_name("Kommu"), "oracle-Kommu");
 
@@ -1352,7 +2941,8 @@ mod tests {
             status: OracleRegistryStatus::Active,
             spawned_at: Utc::now(),
             files_owned: Vec::new(),
-        });
+        })
+        .unwrap();
 
         assert_eq!(reg.next_oracle_name("Kommu"), "oracle-Kommu-2");
     }
@@ -1381,11 +2971,114 @@ mod tests {
         // reservation gets a DISTINCT name (pre-fix they all read the same stale
         // registry and collided on oracle-Race / -2 …).
         let unique: HashSet<&String> = names.iter().collect();
-        assert_eq!(unique.len(), N, "concurrent reservations must be unique: {:?}", names);
+        assert_eq!(
+            unique.len(),
+            N,
+            "concurrent reservations must be unique: {:?}",
+            names
+        );
 
         // All N registrations survive (none clobbered by a racing save).
-        let reg = OracleRegistry::load(dir.as_path());
-        assert_eq!(reg.oracles.iter().filter(|e| e.project == "Race").count(), N);
+        let reg = OracleRegistry::load_strict(dir.as_path()).unwrap();
+        assert_eq!(
+            reg.oracles.iter().filter(|e| e.project == "Race").count(),
+            N
+        );
+    }
+
+    #[test]
+    fn oracle_registry_strict_load_cas_and_cross_project_reservation() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dir = tmp.path();
+        assert_eq!(
+            OracleRegistry::reserve_oracle(dir, "Foo", None).unwrap(),
+            "oracle-Foo"
+        );
+        OracleRegistry::update_locked(dir, |registry| {
+            registry.mark_status("oracle-Foo", OracleRegistryStatus::Idle);
+        })
+        .unwrap();
+        assert_eq!(
+            OracleRegistry::reserve_oracle(dir, "Bar", Some("oracle-Foo")).unwrap(),
+            "oracle-Bar",
+            "an idle oracle from another project must never be reused"
+        );
+
+        let mut first = OracleRegistry::load_strict(dir).unwrap();
+        let mut stale = first.clone();
+        first.mark_status("oracle-Foo", OracleRegistryStatus::Done);
+        first.save(dir).unwrap();
+        stale.mark_status("oracle-Foo", OracleRegistryStatus::Active);
+        assert!(stale.save(dir).is_err());
+        assert_eq!(
+            OracleRegistry::load_strict(dir)
+                .unwrap()
+                .oracles
+                .iter()
+                .find(|entry| entry.oracle_name == "oracle-Foo")
+                .unwrap()
+                .status,
+            OracleRegistryStatus::Done
+        );
+
+        assert!(OracleRegistry::reserve_oracle(dir, "../escape", None).is_err());
+        assert!(OracleRegistry::reserve_oracle(dir, "Safe", Some("../escape")).is_err());
+    }
+
+    #[test]
+    fn oracle_registry_corruption_blocks_mutation_and_project_prefix_collision() {
+        let corrupt = tempfile::TempDir::new().unwrap();
+        let path = corrupt.path().join("oracle-registry.json");
+        std::fs::write(&path, b"{").unwrap();
+        assert!(OracleRegistry::load_strict(corrupt.path()).is_err());
+        assert!(OracleRegistry::reserve_oracle(corrupt.path(), "Acme", None).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), b"{");
+
+        let collision = tempfile::TempDir::new().unwrap();
+        assert_eq!(
+            OracleRegistry::reserve_oracle(collision.path(), "Foo", None).unwrap(),
+            "oracle-Foo"
+        );
+        assert_eq!(
+            OracleRegistry::reserve_oracle(collision.path(), "Foo", None).unwrap(),
+            "oracle-Foo-2"
+        );
+        assert_eq!(
+            OracleRegistry::reserve_oracle(collision.path(), "Foo-2", None).unwrap(),
+            "oracle-Foo-2-2",
+            "project names that overlap another project's numeric suffix need a globally unique session"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn oracle_registry_rejects_symlink_hardlink_and_lock_aliases() {
+        use std::os::unix::fs::symlink;
+        let root = tempfile::TempDir::new().unwrap();
+
+        let symlink_dir = root.path().join("symlink");
+        std::fs::create_dir(&symlink_dir).unwrap();
+        let symlink_target = symlink_dir.join("target");
+        std::fs::write(&symlink_target, b"sentinel").unwrap();
+        symlink(&symlink_target, symlink_dir.join("oracle-registry.json")).unwrap();
+        assert!(OracleRegistry::load_strict(&symlink_dir).is_err());
+        assert!(OracleRegistry::reserve_oracle(&symlink_dir, "Acme", None).is_err());
+        assert_eq!(std::fs::read(&symlink_target).unwrap(), b"sentinel");
+
+        let hardlink_dir = root.path().join("hardlink");
+        std::fs::create_dir(&hardlink_dir).unwrap();
+        let hardlink_target = hardlink_dir.join("target");
+        std::fs::write(&hardlink_target, b"{}").unwrap();
+        std::fs::hard_link(&hardlink_target, hardlink_dir.join("oracle-registry.json")).unwrap();
+        assert!(OracleRegistry::load_strict(&hardlink_dir).is_err());
+
+        let lock_dir = root.path().join("lock");
+        std::fs::create_dir(&lock_dir).unwrap();
+        let lock_target = lock_dir.join("target");
+        std::fs::write(&lock_target, b"sentinel").unwrap();
+        symlink(&lock_target, lock_dir.join(".oracle-registry.lock")).unwrap();
+        assert!(OracleRegistry::reserve_oracle(&lock_dir, "Acme", None).is_err());
+        assert_eq!(std::fs::read(&lock_target).unwrap(), b"sentinel");
     }
 
     #[test]
@@ -1420,7 +3113,10 @@ mod tests {
 
         let read = OracleState::read(dir, "oracle-Acme").unwrap();
         assert!(read.is_some(), "legacy state must remain readable");
-        assert!(dir.join("oracle-Acme.state.json").exists(), "must migrate in place");
+        assert!(
+            dir.join("oracle-Acme.state.json").exists(),
+            "must migrate in place"
+        );
         assert!(!legacy.exists(), "legacy file must be renamed away");
     }
 
@@ -1460,7 +3156,7 @@ mod tests {
 
     #[test]
     fn cleanup_purges_done_entries_with_dead_sessions_after_grace() {
-        let mut reg = OracleRegistry { oracles: Vec::new() };
+        let mut reg = OracleRegistry::default();
         let old = Utc::now() - chrono::Duration::hours(1);
         // Done + dead session + past the spawn grace → purged.
         reg.register(OracleRegistryEntry {
@@ -1470,7 +3166,8 @@ mod tests {
             status: OracleRegistryStatus::Done,
             spawned_at: old,
             files_owned: vec![],
-        });
+        })
+        .unwrap();
         // Active + dead but JUST spawned → kept (snapshot may predate spawn).
         reg.register(OracleRegistryEntry {
             oracle_name: "oracle-B".into(),
@@ -1479,7 +3176,8 @@ mod tests {
             status: OracleRegistryStatus::Active,
             spawned_at: Utc::now(),
             files_owned: vec![],
-        });
+        })
+        .unwrap();
         // Done + LIVE session → kept.
         reg.register(OracleRegistryEntry {
             oracle_name: "oracle-C".into(),
@@ -1488,11 +3186,18 @@ mod tests {
             status: OracleRegistryStatus::Done,
             spawned_at: old,
             files_owned: vec![],
-        });
+        })
+        .unwrap();
         reg.cleanup(&["oracle-C".to_string()]);
         let names: Vec<&str> = reg.oracles.iter().map(|e| e.oracle_name.as_str()).collect();
-        assert!(!names.contains(&"oracle-A"), "Done+dead+aged must be purged");
-        assert!(names.contains(&"oracle-B"), "fresh spawn must survive a stale snapshot");
+        assert!(
+            !names.contains(&"oracle-A"),
+            "Done+dead+aged must be purged"
+        );
+        assert!(
+            names.contains(&"oracle-B"),
+            "fresh spawn must survive a stale snapshot"
+        );
         assert!(names.contains(&"oracle-C"), "Done+live must be retained");
     }
 
@@ -1505,7 +3210,7 @@ mod tests {
             reg.mark_status("oracle-Acme", OracleRegistryStatus::Done);
         })
         .unwrap();
-        let reg = OracleRegistry::load(dir);
+        let reg = OracleRegistry::load_strict(dir).unwrap();
         assert_eq!(reg.oracles[0].status, OracleRegistryStatus::Done);
     }
 
@@ -1520,7 +3225,9 @@ mod tests {
     #[test]
     fn god_mode_detection() {
         assert!(OraclePromptGenerator::is_god_mode("Run in god mode"));
-        assert!(OraclePromptGenerator::is_god_mode("/godmode fix everything"));
+        assert!(OraclePromptGenerator::is_god_mode(
+            "/godmode fix everything"
+        ));
         assert!(!OraclePromptGenerator::is_god_mode("Fix the login flow"));
     }
 
@@ -1538,11 +3245,26 @@ mod tests {
             false,
             false,
         );
-        assert!(prompt.contains("How to run THIS mission"), "shape block missing");
-        assert!(prompt.contains("P-AUDIT"), "an audit mission must match the audit shape");
-        assert!(prompt.contains("P-PARALLEL"), "\"en parallele\" must match the parallel shape");
-        assert!(prompt.contains("spawn-worker"), "it must tell the oracle to dispatch");
-        assert!(prompt.contains("Done when"), "it must carry a stop condition");
+        assert!(
+            prompt.contains("How to run THIS mission"),
+            "shape block missing"
+        );
+        assert!(
+            prompt.contains("P-AUDIT"),
+            "an audit mission must match the audit shape"
+        );
+        assert!(
+            prompt.contains("P-PARALLEL"),
+            "\"en parallele\" must match the parallel shape"
+        );
+        assert!(
+            prompt.contains("spawn-worker"),
+            "it must tell the oracle to dispatch"
+        );
+        assert!(
+            prompt.contains("Done when"),
+            "it must carry a stop condition"
+        );
         // And the mission itself still leads.
         assert!(prompt.starts_with("## Mission"));
     }

@@ -78,8 +78,7 @@ impl AccountsMeta {
             std::fs::create_dir_all(parent).ok();
         }
         let json = serde_json::to_string_pretty(self)?;
-        std::fs::write(&path, json)
-            .with_context(|| format!("writing {}", path.display()))?;
+        std::fs::write(&path, json).with_context(|| format!("writing {}", path.display()))?;
         chmod_600(&path);
         Ok(())
     }
@@ -172,8 +171,14 @@ impl CurrentAccount {
             expires_min,
             valid,
             warning,
-            tier: creds.rate_limit_tier.clone().unwrap_or_else(|| "?".to_string()),
-            subscription: creds.subscription_type.clone().unwrap_or_else(|| "?".to_string()),
+            tier: creds
+                .rate_limit_tier
+                .clone()
+                .unwrap_or_else(|| "?".to_string()),
+            subscription: creds
+                .subscription_type
+                .clone()
+                .unwrap_or_else(|| "?".to_string()),
         }
     }
 }
@@ -324,7 +329,10 @@ pub fn switch_account(name: &str) -> SwitchResult {
             label: entry.label.clone(),
             email: entry.email.clone(),
             expires_min: 0,
-            error: Some(format!("credential file missing: {}", entry.credential_file)),
+            error: Some(format!(
+                "credential file missing: {}",
+                entry.credential_file
+            )),
         };
     }
 

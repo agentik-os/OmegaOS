@@ -2012,7 +2012,10 @@ mod fingerprint_tests {
             h.update(text.as_bytes());
             h.finalize().to_hex()[..16].to_string()
         };
-        assert_ne!(hash_of("R-X: do the thing"), hash_of("R-X: do the other thing"));
+        assert_ne!(
+            hash_of("R-X: do the thing"),
+            hash_of("R-X: do the other thing")
+        );
     }
 
     #[test]

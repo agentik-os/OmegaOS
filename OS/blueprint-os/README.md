@@ -53,8 +53,8 @@ Stepper consumes - never a moving latest pointer.
 
 The pack defines three deployment profiles (`references/omega-os-integration.md`
 §10). This integration runs the pack-sanctioned **minimal single-agent
-profile** — one master prompt, sequential passes, JSON state file,
-deterministic validation, markdown export — with every boundary, gate and ID
+profile**: one master prompt, sequential passes, JSON state file,
+deterministic validation, markdown export, with every boundary, gate and ID
 rule preserved:
 
 - **Fan-out**: the 15 specialist roles (`assets/blueprint-role-prompts.json`)

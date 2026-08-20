@@ -1,0 +1,181 @@
+{
+  "00_control": [
+    "BUILD_REQUEST.md",
+    "BUILD_CONTRACT.yaml",
+    "BUILD_STATE.json",
+    "ASSUMPTIONS.md",
+    "DECISION_LOG.md",
+    "BUILD_EVENT_LOG.jsonl",
+    "ARTIFACT_INDEX.json"
+  ],
+  "01_domain": [
+    "DOMAIN_MAP.md",
+    "GLOSSARY.yaml",
+    "SUBDOMAIN_MAP.yaml",
+    "BOUNDARIES.md",
+    "STAKEHOLDERS.yaml",
+    "RISK_MAP.yaml"
+  ],
+  "02_outcomes": [
+    "JOB_OUTCOME_MAP.yaml",
+    "USER_STAGES.yaml",
+    "SUCCESS_METRICS.yaml",
+    "FAILURE_MODES.yaml",
+    "USE_CASES.yaml"
+  ],
+  "03_research": [
+    "RESEARCH_PROTOCOL.yaml",
+    "SEARCH_PLAN.md",
+    "SOURCE_STRATEGY.yaml",
+    "QUERY_LOG.jsonl",
+    "RECENCY_POLICY.yaml",
+    "EVIDENCE_QUALITY_RUBRIC.yaml"
+  ],
+  "04_discovery": [
+    "BOOK_CANDIDATES.jsonl",
+    "CANONICAL_SOURCES.jsonl",
+    "SCHOOL_CANDIDATES.yaml",
+    "EXPERT_CANDIDATES.yaml",
+    "GAP_LOG.yaml"
+  ],
+  "05_corpus": [
+    "CORPUS_MATRIX.csv",
+    "RETAINED_BOOKS.yaml",
+    "REJECTED_BOOKS.yaml",
+    "RETAINED_NONBOOK_SOURCES.yaml",
+    "COVERAGE_MATRIX.yaml",
+    "CORPUS_AUDIT.md"
+  ],
+  "06_books": [
+    "BOOK_SYNTHESIS_INDEX.yaml"
+  ],
+  "07_evidence": [
+    "PRIMARY_RESEARCH_INDEX.yaml",
+    "STANDARDS_INDEX.yaml",
+    "CASE_STUDY_INDEX.yaml",
+    "POSTMORTEM_INDEX.yaml"
+  ],
+  "08_ledgers": [
+    "SOURCE_LEDGER.jsonl",
+    "SOURCE_GRAPH.json",
+    "PROVENANCE_AUDIT.md",
+    "CITATION_MAP.yaml"
+  ],
+  "09_claims": [
+    "CLAIM_LEDGER.jsonl",
+    "CLAIM_SUPPORT_GRAPH.json",
+    "CLAIM_GAPS.yaml",
+    "CLAIM_AUDIT.md"
+  ],
+  "10_conflicts": [
+    "SCHOOL_MAP.yaml",
+    "CONTRADICTION_REGISTER.yaml",
+    "UNCERTAINTY_REGISTER.yaml",
+    "CONTEXT_CONDITIONS.yaml",
+    "RESOLUTION_LOG.md"
+  ],
+  "11_synthesis": [
+    "SYNTHESIS_MAP.yaml",
+    "MECHANISM_MAP.yaml",
+    "PRINCIPLES.yaml",
+    "PATTERNS.yaml",
+    "ANTI_PATTERNS.yaml",
+    "KNOWLEDGE_BASE.md",
+    "SYNTHESIS_AUDIT.md"
+  ],
+  "12_model": [
+    "ONTOLOGY.yaml",
+    "ENTITY_MODEL.yaml",
+    "RELATION_MODEL.yaml",
+    "STATE_MODEL.yaml",
+    "EVENT_MODEL.yaml",
+    "SIGNAL_MODEL.yaml",
+    "ARTIFACT_MODEL.yaml"
+  ],
+  "13_logic": [
+    "DECISION_RULES.yaml",
+    "DIAGNOSTICS.yaml",
+    "POLICIES.yaml",
+    "ESCALATION_RULES.yaml",
+    "STOPPING_RULES.yaml",
+    "PRIORITIZATION_RULES.yaml",
+    "FEEDBACK_LOOPS.yaml"
+  ],
+  "14_architecture": [
+    "OS_MANIFEST.yaml",
+    "CAPABILITIES.yaml",
+    "CAPABILITY_GRAPH.yaml",
+    "MODULE_MAP.yaml",
+    "DEPENDENCY_MAP.yaml",
+    "ARCHITECTURE.md"
+  ],
+  "15_interfaces": [
+    "COMMANDS.yaml",
+    "COMMAND_REFERENCE.md",
+    "WORKFLOW_MAP.yaml",
+    "INPUT_OUTPUT_CONTRACTS.yaml",
+    "ERROR_MODEL.yaml"
+  ],
+  "16_runtime_design": [
+    "AGENT_ROSTER.yaml",
+    "TOOLS.yaml",
+    "MEMORY_MODEL.yaml",
+    "CONTEXT_POLICY.yaml",
+    "ROUTING_POLICY.yaml"
+  ],
+  "17_handoffs": [
+    "HANDOFF_REGISTRY.yaml",
+    "ROUTING_GRAPH.yaml",
+    "FAILURE_AND_FALLBACK.md"
+  ],
+  "19_validation": [
+    "SCHEMA_REPORT.md",
+    "LINKAGE_REPORT.md",
+    "TRACEABILITY_REPORT.md",
+    "COMPLETENESS_REPORT.md",
+    "VALIDATION_FINDINGS.yaml"
+  ],
+  "20_evals": [
+    "EVAL_PLAN.yaml",
+    "EVAL_RESULTS.jsonl",
+    "EVAL_REPORT.md",
+    "REGRESSION_BASELINE.json"
+  ],
+  "21_audit": [
+    "GAUNTLET_PLAN.yaml",
+    "RED_TEAM_CASES.yaml",
+    "OMEGA_AUDIT.md",
+    "AUDIT_FINDINGS.yaml",
+    "RISK_ACCEPTANCE.md"
+  ],
+  "22_repair": [
+    "REPAIR_PLAN.yaml",
+    "REPAIR_LOG.md",
+    "CHANGESET.jsonl",
+    "REGRESSION_REPORT.md",
+    "OPEN_FINDINGS.yaml"
+  ],
+  "23_docs": [
+    "README.md",
+    "HOW_TO_USE.md",
+    "PRESENTATION_OS.md",
+    "COMMAND_REFERENCE.md",
+    "WORKFLOW_COOKBOOK.md",
+    "EXAMPLES.md",
+    "CHANGELOG.md"
+  ],
+  "24_release": [
+    "RELEASE_MANIFEST.json",
+    "RELEASE_REPORT.md",
+    "CHECKSUMS.txt",
+    "REGISTRY_PATCH.yaml",
+    "MIGRATION_NOTES.md"
+  ],
+  "25_update": [
+    "UPDATE_POLICY.yaml",
+    "WATCHLIST.yaml",
+    "BASELINE_SNAPSHOT.json",
+    "REGRESSION_POLICY.yaml",
+    "SOURCE_REFRESH_PLAN.yaml"
+  ]
+}

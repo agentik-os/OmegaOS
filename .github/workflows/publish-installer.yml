@@ -29,6 +29,7 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           node --check bin/omega-os.js
+          npm test
           LOCAL=$(node -p "require('./package.json').version")
           PUBLISHED=$(npm view omega-os version 2>/dev/null || echo 0.0.0)
           if [ "$LOCAL" = "$PUBLISHED" ]; then

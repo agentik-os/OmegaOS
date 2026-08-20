@@ -1,0 +1,53 @@
+version: 1.0.0
+scale:
+  min: 0
+  max: 5
+dimensions:
+  - id: domain_coverage
+    critical: false
+    description: Major subdomains, users, contexts, risks and outcomes are represented.
+  - id: source_quality
+    critical: false
+    description: Sources are credible, transparent and appropriate to the claims.
+  - id: corpus_diversity
+    critical: false
+    description: Foundational, practical, evidence-led, current and critical schools are covered without unnecessary redundancy.
+  - id: book_analysis_completeness
+    critical: true
+    description: Every retained book has a validated deep analysis with OS extraction candidates.
+  - id: claim_traceability
+    critical: true
+    description: Material rules and principles trace to sources or explicit design choices.
+  - id: contradiction_handling
+    critical: false
+    description: Disagreements are visible and compiled into conditional logic where possible.
+  - id: synthesis_coherence
+    critical: false
+    description: Concepts, mechanisms, principles and rules form a coherent model.
+  - id: operationalization
+    critical: true
+    description: Knowledge is converted into diagnostics, decisions, actions, feedback and adaptation.
+  - id: command_workflow_completeness
+    critical: true
+    description: Commands have executable contracts and workflows have state and recovery.
+  - id: evaluation_strength
+    critical: true
+    description: Critical behavior is covered by deterministic, rubric and adversarial evals.
+  - id: safety_boundaries
+    critical: true
+    description: Risks, escalation, permissions and misuse resistance are implemented.
+  - id: usability
+    critical: false
+    description: Novice and advanced users can operate the system without hidden assumptions.
+  - id: maintainability
+    critical: false
+    description: Files, schemas, logs and registries support coherent changes.
+  - id: updateability
+    critical: false
+    description: New evidence can be diffed, compiled, tested and released.
+release_thresholds:
+  minimum_each: 3
+  minimum_critical: 4
+  minimum_average: 4
+  unresolved_critical_findings: 0
+  unresolved_high_findings: 0

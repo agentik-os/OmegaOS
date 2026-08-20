@@ -1,0 +1,1900 @@
+{
+  "summary": {
+    "total_os_units": 29,
+    "tier_full": 13,
+    "tier_thin": 16,
+    "orphans": [
+      "books-os",
+      "content-os",
+      "context-memory-os",
+      "delivery-customer-success-os",
+      "health-energy-os",
+      "operations-automation-os",
+      "quality-evaluation-release-os",
+      "relationship-network-os",
+      "revenue-os",
+      "review-governance-os",
+      "strategy-portfolio-os",
+      "wealth-capital-os"
+    ],
+    "not_in_registry": [
+      "books-os",
+      "identity-shift-os",
+      "intuitive-os",
+      "journal-os",
+      "personal-os-builder",
+      "seductive-os"
+    ],
+    "pillar_coverage": {
+      "install": 17,
+      "configure": 12,
+      "run": 29,
+      "compose": 23,
+      "update": 0,
+      "evaluate": 12,
+      "permissions": 11
+    },
+    "verdicts": {
+      "RUNTIME-READY": 0,
+      "PARTIAL": 12,
+      "NOT-READY": 17
+    }
+  },
+  "os": [
+    {
+      "unit": "ai-logic-os",
+      "tier": "thin",
+      "ssot": {
+        "omegaos_repo": true,
+        "agentik_skills_library": true,
+        "orphan": false
+      },
+      "registry": {
+        "listed": true,
+        "slug": "ai-logic",
+        "deps": {
+          "consumes": [],
+          "hands_off": [
+            "operations-automation",
+            "review-governance"
+          ]
+        }
+      },
+      "manifest": {
+        "present": false,
+        "parse_error": null,
+        "version": null,
+        "schema_version": null,
+        "slug": null,
+        "declares_dependencies": false,
+        "declares_permissions": false,
+        "declares_targets": false
+      },
+      "files": {
+        "SKILL.md": true,
+        "README.md": false,
+        "INSTALL.md": false,
+        "CHANGELOG.md": false,
+        "MASTER.md": false,
+        "OMEGA_INTEGRATION.md": false,
+        "config/os.yaml": false
+      },
+      "dirs": {
+        "evals": false,
+        "examples": false,
+        "memory": false,
+        "system": false,
+        "protocols": false,
+        "schemas": false,
+        "agents": false,
+        "references": true,
+        "knowledge": false,
+        "scripts": false,
+        "runtime": false
+      },
+      "pillars": {
+        "install": true,
+        "configure": false,
+        "run": true,
+        "compose": true,
+        "update": false,
+        "evaluate": false,
+        "permissions": false
+      },
+      "pillars_ready": 3,
+      "verdict": "NOT-READY"
+    },
+    {
+      "unit": "alignment-os",
+      "tier": "full",
+      "ssot": {
+        "omegaos_repo": true,
+        "agentik_skills_library": true,
+        "orphan": false
+      },
+      "registry": {
+        "listed": true,
+        "slug": "alignment",
+        "deps": {
+          "consumes": [],
+          "hands_off": [
+            "mindset",
+            "context-memory"
+          ]
+        }
+      },
+      "manifest": {
+        "present": true,
+        "parse_error": null,
+        "version": "1.0.0",
+        "schema_version": null,
+        "slug": null,
+        "declares_dependencies": false,
+        "declares_permissions": false,
+        "declares_targets": false
+      },
+      "files": {
+        "SKILL.md": true,
+        "README.md": true,
+        "INSTALL.md": true,
+        "CHANGELOG.md": false,
+        "MASTER.md": false,
+        "OMEGA_INTEGRATION.md": false,
+        "config/os.yaml": true
+      },
+      "dirs": {
+        "evals": true,
+        "examples": true,
+        "memory": true,
+        "system": true,
+        "protocols": true,
+        "schemas": true,
+        "agents": true,
+        "references": false,
+        "knowledge": true,
+        "scripts": false,
+        "runtime": false
+      },
+      "pillars": {
+        "install": true,
+        "configure": true,
+        "run": true,
+        "compose": true,
+        "update": false,
+        "evaluate": true,
+        "permissions": false
+      },
+      "pillars_ready": 5,
+      "verdict": "PARTIAL"
+    },
+    {
+      "unit": "blueprint-os",
+      "tier": "thin",
+      "ssot": {
+        "omegaos_repo": true,
+        "agentik_skills_library": true,
+        "orphan": false
+      },
+      "registry": {
+        "listed": true,
+        "slug": "blueprint",
+        "deps": {
+          "consumes": [
+            "strategy-portfolio",
+            "market-research",
+            "brainstorm"
+          ],
+          "hands_off": [
+            "design",
+            "stepper"
+          ]
+        }
+      },
+      "manifest": {
+        "present": false,
+        "parse_error": null,
+        "version": null,
+        "schema_version": null,
+        "slug": null,
+        "declares_dependencies": false,
+        "declares_permissions": false,
+        "declares_targets": false
+      },
+      "files": {
+        "SKILL.md": true,
+        "README.md": false,
+        "INSTALL.md": false,
+        "CHANGELOG.md": false,
+        "MASTER.md": false,
+        "OMEGA_INTEGRATION.md": false,
+        "config/os.yaml": false
+      },
+      "dirs": {
+        "evals": false,
+        "examples": false,
+        "memory": false,
+        "system": false,
+        "protocols": false,
+        "schemas": false,
+        "agents": false,
+        "references": true,
+        "knowledge": false,
+        "scripts": true,
+        "runtime": false
+      },
+      "pillars": {
+        "install": true,
+        "configure": false,
+        "run": true,
+        "compose": true,
+        "update": false,
+        "evaluate": false,
+        "permissions": false
+      },
+      "pillars_ready": 3,
+      "verdict": "NOT-READY"
+    },
+    {
+      "unit": "books-os",
+      "tier": "full",
+      "ssot": {
+        "omegaos_repo": false,
+        "agentik_skills_library": false,
+        "orphan": true
+      },
+      "registry": {
+        "listed": false,
+        "slug": "books",
+        "deps": null
+      },
+      "manifest": {
+        "present": true,
+        "parse_error": null,
+        "version": "1.0.0",
+        "schema_version": 1,
+        "slug": "books",
+        "declares_dependencies": false,
+        "declares_permissions": false,
+        "declares_targets": false
+      },
+      "files": {
+        "SKILL.md": true,
+        "README.md": true,
+        "INSTALL.md": false,
+        "CHANGELOG.md": false,
+        "MASTER.md": true,
+        "OMEGA_INTEGRATION.md": true,
+        "config/os.yaml": false
+      },
+      "dirs": {
+        "evals": false,
+        "examples": false,
+        "memory": false,
+        "system": false,
+        "protocols": false,
+        "schemas": false,
+        "agents": false,
+        "references": false,
+        "knowledge": false,
+        "scripts": false,
+        "runtime": false
+      },
+      "pillars": {
+        "install": false,
+        "configure": false,
+        "run": true,
+        "compose": false,
+        "update": false,
+        "evaluate": false,
+        "permissions": false
+      },
+      "pillars_ready": 1,
+      "verdict": "NOT-READY"
+    },
+    {
+      "unit": "brainstorm-os",
+      "tier": "thin",
+      "ssot": {
+        "omegaos_repo": true,
+        "agentik_skills_library": true,
+        "orphan": false
+      },
+      "registry": {
+        "listed": true,
+        "slug": "brainstorm",
+        "deps": {
+          "consumes": [],
+          "hands_off": [
+            "market-research",
+            "blueprint"
+          ]
+        }
+      },
+      "manifest": {
+        "present": false,
+        "parse_error": null,
+        "version": null,
+        "schema_version": null,
+        "slug": null,
+        "declares_dependencies": false,
+        "declares_permissions": false,
+        "declares_targets": false
+      },
+      "files": {
+        "SKILL.md": true,
+        "README.md": false,
+        "INSTALL.md": false,
+        "CHANGELOG.md": false,
+        "MASTER.md": false,
+        "OMEGA_INTEGRATION.md": false,
+        "config/os.yaml": false
+      },
+      "dirs": {
+        "evals": false,
+        "examples": false,
+        "memory": false,
+        "system": false,
+        "protocols": false,
+        "schemas": false,
+        "agents": true,
+        "references": true,
+        "knowledge": false,
+        "scripts": true,
+        "runtime": false
+      },
+      "pillars": {
+        "install": true,
+        "configure": false,
+        "run": true,
+        "compose": true,
+        "update": false,
+        "evaluate": false,
+        "permissions": false
+      },
+      "pillars_ready": 3,
+      "verdict": "NOT-READY"
+    },
+    {
+      "unit": "builder-os",
+      "tier": "thin",
+      "ssot": {
+        "omegaos_repo": true,
+        "agentik_skills_library": true,
+        "orphan": false
+      },
+      "registry": {
+        "listed": true,
+        "slug": "builder",
+        "deps": {
+          "consumes": [
+            "stepper"
+          ],
+          "hands_off": [
+            "quality-evaluation-release"
+          ]
+        }
+      },
+      "manifest": {
+        "present": false,
+        "parse_error": null,
+        "version": null,
+        "schema_version": null,
+        "slug": null,
+        "declares_dependencies": false,
+        "declares_permissions": false,
+        "declares_targets": false
+      },
+      "files": {
+        "SKILL.md": true,
+        "README.md": false,
+        "INSTALL.md": false,
+        "CHANGELOG.md": false,
+        "MASTER.md": false,
+        "OMEGA_INTEGRATION.md": false,
+        "config/os.yaml": false
+      },
+      "dirs": {
+        "evals": false,
+        "examples": false,
+        "memory": false,
+        "system": false,
+        "protocols": false,
+        "schemas": false,
+        "agents": true,
+        "references": true,
+        "knowledge": false,
+        "scripts": true,
+        "runtime": false
+      },
+      "pillars": {
+        "install": true,
+        "configure": false,
+        "run": true,
+        "compose": true,
+        "update": false,
+        "evaluate": false,
+        "permissions": false
+      },
+      "pillars_ready": 3,
+      "verdict": "NOT-READY"
+    },
+    {
+      "unit": "content-os",
+      "tier": "full",
+      "ssot": {
+        "omegaos_repo": false,
+        "agentik_skills_library": false,
+        "orphan": true
+      },
+      "registry": {
+        "listed": true,
+        "slug": "content",
+        "deps": {
+          "consumes": [
+            "storyteller",
+            "context-memory"
+          ],
+          "hands_off": [
+            "revenue",
+            "storyteller"
+          ]
+        }
+      },
+      "manifest": {
+        "present": true,
+        "parse_error": null,
+        "version": "1.0.0",
+        "schema_version": 1,
+        "slug": "content",
+        "declares_dependencies": false,
+        "declares_permissions": false,
+        "declares_targets": false
+      },
+      "files": {
+        "SKILL.md": true,
+        "README.md": true,
+        "INSTALL.md": true,
+        "CHANGELOG.md": false,
+        "MASTER.md": true,
+        "OMEGA_INTEGRATION.md": true,
+        "config/os.yaml": true
+      },
+      "dirs": {
+        "evals": true,
+        "examples": true,
+        "memory": true,
+        "system": true,
+        "protocols": true,
+        "schemas": true,
+        "agents": true,
+        "references": false,
+        "knowledge": true,
+        "scripts": false,
+        "runtime": true
+      },
+      "pillars": {
+        "install": false,
+        "configure": true,
+        "run": true,
+        "compose": true,
+        "update": false,
+        "evaluate": true,
+        "permissions": true
+      },
+      "pillars_ready": 5,
+      "verdict": "PARTIAL"
+    },
+    {
+      "unit": "context-memory-os",
+      "tier": "full",
+      "ssot": {
+        "omegaos_repo": false,
+        "agentik_skills_library": false,
+        "orphan": true
+      },
+      "registry": {
+        "listed": true,
+        "slug": "context-memory",
+        "deps": {
+          "consumes": [
+            "review-governance"
+          ],
+          "hands_off": [
+            "strategy-portfolio"
+          ]
+        }
+      },
+      "manifest": {
+        "present": true,
+        "parse_error": null,
+        "version": "1.0.0",
+        "schema_version": 1,
+        "slug": "context-memory",
+        "declares_dependencies": false,
+        "declares_permissions": false,
+        "declares_targets": false
+      },
+      "files": {
+        "SKILL.md": true,
+        "README.md": true,
+        "INSTALL.md": true,
+        "CHANGELOG.md": false,
+        "MASTER.md": true,
+        "OMEGA_INTEGRATION.md": true,
+        "config/os.yaml": true
+      },
+      "dirs": {
+        "evals": true,
+        "examples": true,
+        "memory": true,
+        "system": true,
+        "protocols": true,
+        "schemas": true,
+        "agents": true,
+        "references": false,
+        "knowledge": true,
+        "scripts": false,
+        "runtime": true
+      },
+      "pillars": {
+        "install": false,
+        "configure": true,
+        "run": true,
+        "compose": true,
+        "update": false,
+        "evaluate": true,
+        "permissions": true
+      },
+      "pillars_ready": 5,
+      "verdict": "PARTIAL"
+    },
+    {
+      "unit": "delivery-customer-success-os",
+      "tier": "full",
+      "ssot": {
+        "omegaos_repo": false,
+        "agentik_skills_library": false,
+        "orphan": true
+      },
+      "registry": {
+        "listed": true,
+        "slug": "delivery-customer-success",
+        "deps": {
+          "consumes": [
+            "revenue",
+            "builder",
+            "operations-automation"
+          ],
+          "hands_off": [
+            "revenue",
+            "operations-automation",
+            "review-governance",
+            "content"
+          ]
+        }
+      },
+      "manifest": {
+        "present": true,
+        "parse_error": null,
+        "version": "1.0.0",
+        "schema_version": 1,
+        "slug": "delivery-customer-success",
+        "declares_dependencies": false,
+        "declares_permissions": false,
+        "declares_targets": false
+      },
+      "files": {
+        "SKILL.md": true,
+        "README.md": true,
+        "INSTALL.md": true,
+        "CHANGELOG.md": false,
+        "MASTER.md": true,
+        "OMEGA_INTEGRATION.md": true,
+        "config/os.yaml": true
+      },
+      "dirs": {
+        "evals": true,
+        "examples": true,
+        "memory": true,
+        "system": true,
+        "protocols": true,
+        "schemas": true,
+        "agents": true,
+        "references": false,
+        "knowledge": true,
+        "scripts": false,
+        "runtime": true
+      },
+      "pillars": {
+        "install": false,
+        "configure": true,
+        "run": true,
+        "compose": true,
+        "update": false,
+        "evaluate": true,
+        "permissions": true
+      },
+      "pillars_ready": 5,
+      "verdict": "PARTIAL"
+    },
+    {
+      "unit": "design-os",
+      "tier": "thin",
+      "ssot": {
+        "omegaos_repo": true,
+        "agentik_skills_library": true,
+        "orphan": false
+      },
+      "registry": {
+        "listed": true,
+        "slug": "design",
+        "deps": {
+          "consumes": [
+            "blueprint"
+          ],
+          "hands_off": [
+            "stepper"
+          ]
+        }
+      },
+      "manifest": {
+        "present": false,
+        "parse_error": null,
+        "version": null,
+        "schema_version": null,
+        "slug": null,
+        "declares_dependencies": false,
+        "declares_permissions": false,
+        "declares_targets": false
+      },
+      "files": {
+        "SKILL.md": true,
+        "README.md": false,
+        "INSTALL.md": false,
+        "CHANGELOG.md": false,
+        "MASTER.md": false,
+        "OMEGA_INTEGRATION.md": false,
+        "config/os.yaml": false
+      },
+      "dirs": {
+        "evals": false,
+        "examples": false,
+        "memory": false,
+        "system": false,
+        "protocols": false,
+        "schemas": false,
+        "agents": true,
+        "references": true,
+        "knowledge": false,
+        "scripts": true,
+        "runtime": false
+      },
+      "pillars": {
+        "install": true,
+        "configure": false,
+        "run": true,
+        "compose": true,
+        "update": false,
+        "evaluate": false,
+        "permissions": false
+      },
+      "pillars_ready": 3,
+      "verdict": "NOT-READY"
+    },
+    {
+      "unit": "execution-os",
+      "tier": "thin",
+      "ssot": {
+        "omegaos_repo": true,
+        "agentik_skills_library": true,
+        "orphan": false
+      },
+      "registry": {
+        "listed": true,
+        "slug": "execution",
+        "deps": {
+          "consumes": [
+            "strategy-portfolio",
+            "health-energy"
+          ],
+          "hands_off": [
+            "strategy-portfolio",
+            "review-governance"
+          ]
+        }
+      },
+      "manifest": {
+        "present": false,
+        "parse_error": null,
+        "version": null,
+        "schema_version": null,
+        "slug": null,
+        "declares_dependencies": false,
+        "declares_permissions": false,
+        "declares_targets": false
+      },
+      "files": {
+        "SKILL.md": true,
+        "README.md": false,
+        "INSTALL.md": false,
+        "CHANGELOG.md": false,
+        "MASTER.md": false,
+        "OMEGA_INTEGRATION.md": false,
+        "config/os.yaml": false
+      },
+      "dirs": {
+        "evals": false,
+        "examples": false,
+        "memory": false,
+        "system": false,
+        "protocols": false,
+        "schemas": false,
+        "agents": true,
+        "references": true,
+        "knowledge": false,
+        "scripts": true,
+        "runtime": false
+      },
+      "pillars": {
+        "install": true,
+        "configure": false,
+        "run": true,
+        "compose": true,
+        "update": false,
+        "evaluate": false,
+        "permissions": false
+      },
+      "pillars_ready": 3,
+      "verdict": "NOT-READY"
+    },
+    {
+      "unit": "habit-tracker-os",
+      "tier": "thin",
+      "ssot": {
+        "omegaos_repo": true,
+        "agentik_skills_library": true,
+        "orphan": false
+      },
+      "registry": {
+        "listed": true,
+        "slug": "habit-tracker",
+        "deps": {
+          "consumes": [
+            "mindset",
+            "health-energy"
+          ],
+          "hands_off": [
+            "context-memory"
+          ]
+        }
+      },
+      "manifest": {
+        "present": false,
+        "parse_error": null,
+        "version": null,
+        "schema_version": null,
+        "slug": null,
+        "declares_dependencies": false,
+        "declares_permissions": false,
+        "declares_targets": false
+      },
+      "files": {
+        "SKILL.md": true,
+        "README.md": false,
+        "INSTALL.md": false,
+        "CHANGELOG.md": false,
+        "MASTER.md": false,
+        "OMEGA_INTEGRATION.md": false,
+        "config/os.yaml": false
+      },
+      "dirs": {
+        "evals": false,
+        "examples": false,
+        "memory": false,
+        "system": false,
+        "protocols": false,
+        "schemas": false,
+        "agents": true,
+        "references": true,
+        "knowledge": false,
+        "scripts": true,
+        "runtime": false
+      },
+      "pillars": {
+        "install": true,
+        "configure": false,
+        "run": true,
+        "compose": true,
+        "update": false,
+        "evaluate": false,
+        "permissions": false
+      },
+      "pillars_ready": 3,
+      "verdict": "NOT-READY"
+    },
+    {
+      "unit": "health-energy-os",
+      "tier": "full",
+      "ssot": {
+        "omegaos_repo": false,
+        "agentik_skills_library": false,
+        "orphan": true
+      },
+      "registry": {
+        "listed": true,
+        "slug": "health-energy",
+        "deps": {
+          "consumes": [],
+          "hands_off": [
+            "execution",
+            "strategy-portfolio",
+            "habit-tracker"
+          ]
+        }
+      },
+      "manifest": {
+        "present": true,
+        "parse_error": null,
+        "version": "1.0.0",
+        "schema_version": 1,
+        "slug": "health-energy",
+        "declares_dependencies": false,
+        "declares_permissions": false,
+        "declares_targets": false
+      },
+      "files": {
+        "SKILL.md": true,
+        "README.md": true,
+        "INSTALL.md": true,
+        "CHANGELOG.md": false,
+        "MASTER.md": true,
+        "OMEGA_INTEGRATION.md": true,
+        "config/os.yaml": true
+      },
+      "dirs": {
+        "evals": true,
+        "examples": true,
+        "memory": true,
+        "system": true,
+        "protocols": true,
+        "schemas": true,
+        "agents": true,
+        "references": false,
+        "knowledge": true,
+        "scripts": false,
+        "runtime": true
+      },
+      "pillars": {
+        "install": false,
+        "configure": true,
+        "run": true,
+        "compose": true,
+        "update": false,
+        "evaluate": true,
+        "permissions": true
+      },
+      "pillars_ready": 5,
+      "verdict": "PARTIAL"
+    },
+    {
+      "unit": "identity-shift-os",
+      "tier": "thin",
+      "ssot": {
+        "omegaos_repo": false,
+        "agentik_skills_library": true,
+        "orphan": false
+      },
+      "registry": {
+        "listed": false,
+        "slug": "identity-shift",
+        "deps": null
+      },
+      "manifest": {
+        "present": false,
+        "parse_error": null,
+        "version": null,
+        "schema_version": null,
+        "slug": null,
+        "declares_dependencies": false,
+        "declares_permissions": false,
+        "declares_targets": false
+      },
+      "files": {
+        "SKILL.md": true,
+        "README.md": true,
+        "INSTALL.md": false,
+        "CHANGELOG.md": false,
+        "MASTER.md": false,
+        "OMEGA_INTEGRATION.md": false,
+        "config/os.yaml": false
+      },
+      "dirs": {
+        "evals": false,
+        "examples": true,
+        "memory": false,
+        "system": false,
+        "protocols": true,
+        "schemas": true,
+        "agents": false,
+        "references": false,
+        "knowledge": false,
+        "scripts": false,
+        "runtime": false
+      },
+      "pillars": {
+        "install": true,
+        "configure": false,
+        "run": true,
+        "compose": false,
+        "update": false,
+        "evaluate": false,
+        "permissions": false
+      },
+      "pillars_ready": 2,
+      "verdict": "NOT-READY"
+    },
+    {
+      "unit": "intuitive-os",
+      "tier": "thin",
+      "ssot": {
+        "omegaos_repo": false,
+        "agentik_skills_library": true,
+        "orphan": false
+      },
+      "registry": {
+        "listed": false,
+        "slug": "intuitive",
+        "deps": null
+      },
+      "manifest": {
+        "present": false,
+        "parse_error": null,
+        "version": null,
+        "schema_version": null,
+        "slug": null,
+        "declares_dependencies": false,
+        "declares_permissions": false,
+        "declares_targets": false
+      },
+      "files": {
+        "SKILL.md": true,
+        "README.md": true,
+        "INSTALL.md": true,
+        "CHANGELOG.md": true,
+        "MASTER.md": false,
+        "OMEGA_INTEGRATION.md": false,
+        "config/os.yaml": false
+      },
+      "dirs": {
+        "evals": false,
+        "examples": false,
+        "memory": false,
+        "system": false,
+        "protocols": false,
+        "schemas": true,
+        "agents": false,
+        "references": false,
+        "knowledge": false,
+        "scripts": false,
+        "runtime": false
+      },
+      "pillars": {
+        "install": true,
+        "configure": false,
+        "run": true,
+        "compose": false,
+        "update": false,
+        "evaluate": false,
+        "permissions": false
+      },
+      "pillars_ready": 2,
+      "verdict": "NOT-READY"
+    },
+    {
+      "unit": "journal-os",
+      "tier": "thin",
+      "ssot": {
+        "omegaos_repo": false,
+        "agentik_skills_library": true,
+        "orphan": false
+      },
+      "registry": {
+        "listed": false,
+        "slug": "journal",
+        "deps": null
+      },
+      "manifest": {
+        "present": false,
+        "parse_error": null,
+        "version": null,
+        "schema_version": null,
+        "slug": null,
+        "declares_dependencies": false,
+        "declares_permissions": false,
+        "declares_targets": false
+      },
+      "files": {
+        "SKILL.md": true,
+        "README.md": false,
+        "INSTALL.md": false,
+        "CHANGELOG.md": false,
+        "MASTER.md": false,
+        "OMEGA_INTEGRATION.md": false,
+        "config/os.yaml": false
+      },
+      "dirs": {
+        "evals": false,
+        "examples": false,
+        "memory": false,
+        "system": false,
+        "protocols": true,
+        "schemas": true,
+        "agents": false,
+        "references": false,
+        "knowledge": false,
+        "scripts": false,
+        "runtime": false
+      },
+      "pillars": {
+        "install": true,
+        "configure": false,
+        "run": true,
+        "compose": false,
+        "update": false,
+        "evaluate": false,
+        "permissions": false
+      },
+      "pillars_ready": 2,
+      "verdict": "NOT-READY"
+    },
+    {
+      "unit": "market-research-os",
+      "tier": "thin",
+      "ssot": {
+        "omegaos_repo": true,
+        "agentik_skills_library": true,
+        "orphan": false
+      },
+      "registry": {
+        "listed": true,
+        "slug": "market-research",
+        "deps": {
+          "consumes": [
+            "brainstorm"
+          ],
+          "hands_off": [
+            "blueprint",
+            "strategy-portfolio"
+          ]
+        }
+      },
+      "manifest": {
+        "present": false,
+        "parse_error": null,
+        "version": null,
+        "schema_version": null,
+        "slug": null,
+        "declares_dependencies": false,
+        "declares_permissions": false,
+        "declares_targets": false
+      },
+      "files": {
+        "SKILL.md": true,
+        "README.md": false,
+        "INSTALL.md": false,
+        "CHANGELOG.md": false,
+        "MASTER.md": false,
+        "OMEGA_INTEGRATION.md": false,
+        "config/os.yaml": false
+      },
+      "dirs": {
+        "evals": false,
+        "examples": false,
+        "memory": false,
+        "system": false,
+        "protocols": false,
+        "schemas": false,
+        "agents": true,
+        "references": true,
+        "knowledge": false,
+        "scripts": true,
+        "runtime": false
+      },
+      "pillars": {
+        "install": true,
+        "configure": false,
+        "run": true,
+        "compose": true,
+        "update": false,
+        "evaluate": false,
+        "permissions": false
+      },
+      "pillars_ready": 3,
+      "verdict": "NOT-READY"
+    },
+    {
+      "unit": "mindset-os",
+      "tier": "thin",
+      "ssot": {
+        "omegaos_repo": true,
+        "agentik_skills_library": true,
+        "orphan": false
+      },
+      "registry": {
+        "listed": true,
+        "slug": "mindset",
+        "deps": {
+          "consumes": [
+            "alignment"
+          ],
+          "hands_off": [
+            "habit-tracker",
+            "strategy-portfolio"
+          ]
+        }
+      },
+      "manifest": {
+        "present": false,
+        "parse_error": null,
+        "version": null,
+        "schema_version": null,
+        "slug": null,
+        "declares_dependencies": false,
+        "declares_permissions": false,
+        "declares_targets": false
+      },
+      "files": {
+        "SKILL.md": true,
+        "README.md": false,
+        "INSTALL.md": false,
+        "CHANGELOG.md": false,
+        "MASTER.md": false,
+        "OMEGA_INTEGRATION.md": false,
+        "config/os.yaml": false
+      },
+      "dirs": {
+        "evals": false,
+        "examples": false,
+        "memory": false,
+        "system": false,
+        "protocols": false,
+        "schemas": false,
+        "agents": true,
+        "references": true,
+        "knowledge": false,
+        "scripts": true,
+        "runtime": false
+      },
+      "pillars": {
+        "install": true,
+        "configure": false,
+        "run": true,
+        "compose": true,
+        "update": false,
+        "evaluate": false,
+        "permissions": false
+      },
+      "pillars_ready": 3,
+      "verdict": "NOT-READY"
+    },
+    {
+      "unit": "operations-automation-os",
+      "tier": "full",
+      "ssot": {
+        "omegaos_repo": false,
+        "agentik_skills_library": false,
+        "orphan": true
+      },
+      "registry": {
+        "listed": true,
+        "slug": "operations-automation",
+        "deps": {
+          "consumes": [
+            "strategy-portfolio",
+            "quality-evaluation-release",
+            "delivery-customer-success"
+          ],
+          "hands_off": [
+            "builder",
+            "quality-evaluation-release",
+            "wealth-capital",
+            "review-governance"
+          ]
+        }
+      },
+      "manifest": {
+        "present": true,
+        "parse_error": null,
+        "version": "1.0.0",
+        "schema_version": 1,
+        "slug": "operations-automation",
+        "declares_dependencies": false,
+        "declares_permissions": false,
+        "declares_targets": false
+      },
+      "files": {
+        "SKILL.md": true,
+        "README.md": true,
+        "INSTALL.md": true,
+        "CHANGELOG.md": false,
+        "MASTER.md": true,
+        "OMEGA_INTEGRATION.md": true,
+        "config/os.yaml": true
+      },
+      "dirs": {
+        "evals": true,
+        "examples": true,
+        "memory": true,
+        "system": true,
+        "protocols": true,
+        "schemas": true,
+        "agents": true,
+        "references": false,
+        "knowledge": true,
+        "scripts": false,
+        "runtime": true
+      },
+      "pillars": {
+        "install": false,
+        "configure": true,
+        "run": true,
+        "compose": true,
+        "update": false,
+        "evaluate": true,
+        "permissions": true
+      },
+      "pillars_ready": 5,
+      "verdict": "PARTIAL"
+    },
+    {
+      "unit": "personal-os-builder",
+      "tier": "thin",
+      "ssot": {
+        "omegaos_repo": false,
+        "agentik_skills_library": true,
+        "orphan": false
+      },
+      "registry": {
+        "listed": false,
+        "slug": "personal-os-builder",
+        "deps": null
+      },
+      "manifest": {
+        "present": false,
+        "parse_error": null,
+        "version": null,
+        "schema_version": null,
+        "slug": null,
+        "declares_dependencies": false,
+        "declares_permissions": false,
+        "declares_targets": false
+      },
+      "files": {
+        "SKILL.md": true,
+        "README.md": true,
+        "INSTALL.md": false,
+        "CHANGELOG.md": false,
+        "MASTER.md": false,
+        "OMEGA_INTEGRATION.md": false,
+        "config/os.yaml": false
+      },
+      "dirs": {
+        "evals": false,
+        "examples": false,
+        "memory": false,
+        "system": false,
+        "protocols": false,
+        "schemas": false,
+        "agents": false,
+        "references": true,
+        "knowledge": false,
+        "scripts": false,
+        "runtime": false
+      },
+      "pillars": {
+        "install": true,
+        "configure": false,
+        "run": true,
+        "compose": false,
+        "update": false,
+        "evaluate": false,
+        "permissions": false
+      },
+      "pillars_ready": 2,
+      "verdict": "NOT-READY"
+    },
+    {
+      "unit": "quality-evaluation-release-os",
+      "tier": "full",
+      "ssot": {
+        "omegaos_repo": false,
+        "agentik_skills_library": false,
+        "orphan": true
+      },
+      "registry": {
+        "listed": true,
+        "slug": "quality-evaluation-release",
+        "deps": {
+          "consumes": [
+            "builder"
+          ],
+          "hands_off": [
+            "operations-automation",
+            "review-governance",
+            "context-memory"
+          ]
+        }
+      },
+      "manifest": {
+        "present": true,
+        "parse_error": null,
+        "version": "1.0.0",
+        "schema_version": 1,
+        "slug": "quality-evaluation-release",
+        "declares_dependencies": false,
+        "declares_permissions": false,
+        "declares_targets": false
+      },
+      "files": {
+        "SKILL.md": true,
+        "README.md": true,
+        "INSTALL.md": true,
+        "CHANGELOG.md": false,
+        "MASTER.md": true,
+        "OMEGA_INTEGRATION.md": true,
+        "config/os.yaml": true
+      },
+      "dirs": {
+        "evals": true,
+        "examples": true,
+        "memory": true,
+        "system": true,
+        "protocols": true,
+        "schemas": true,
+        "agents": true,
+        "references": false,
+        "knowledge": true,
+        "scripts": false,
+        "runtime": true
+      },
+      "pillars": {
+        "install": false,
+        "configure": true,
+        "run": true,
+        "compose": true,
+        "update": false,
+        "evaluate": true,
+        "permissions": true
+      },
+      "pillars_ready": 5,
+      "verdict": "PARTIAL"
+    },
+    {
+      "unit": "relationship-network-os",
+      "tier": "full",
+      "ssot": {
+        "omegaos_repo": false,
+        "agentik_skills_library": false,
+        "orphan": true
+      },
+      "registry": {
+        "listed": true,
+        "slug": "relationship-network",
+        "deps": {
+          "consumes": [],
+          "hands_off": [
+            "content",
+            "revenue",
+            "delivery-customer-success",
+            "execution"
+          ]
+        }
+      },
+      "manifest": {
+        "present": true,
+        "parse_error": null,
+        "version": "1.0.0",
+        "schema_version": 1,
+        "slug": "relationship-network",
+        "declares_dependencies": false,
+        "declares_permissions": false,
+        "declares_targets": false
+      },
+      "files": {
+        "SKILL.md": true,
+        "README.md": true,
+        "INSTALL.md": true,
+        "CHANGELOG.md": false,
+        "MASTER.md": true,
+        "OMEGA_INTEGRATION.md": true,
+        "config/os.yaml": true
+      },
+      "dirs": {
+        "evals": true,
+        "examples": true,
+        "memory": true,
+        "system": true,
+        "protocols": true,
+        "schemas": true,
+        "agents": true,
+        "references": false,
+        "knowledge": true,
+        "scripts": false,
+        "runtime": true
+      },
+      "pillars": {
+        "install": false,
+        "configure": true,
+        "run": true,
+        "compose": true,
+        "update": false,
+        "evaluate": true,
+        "permissions": true
+      },
+      "pillars_ready": 5,
+      "verdict": "PARTIAL"
+    },
+    {
+      "unit": "revenue-os",
+      "tier": "full",
+      "ssot": {
+        "omegaos_repo": false,
+        "agentik_skills_library": false,
+        "orphan": true
+      },
+      "registry": {
+        "listed": true,
+        "slug": "revenue",
+        "deps": {
+          "consumes": [
+            "content",
+            "market-research"
+          ],
+          "hands_off": [
+            "delivery-customer-success",
+            "wealth-capital",
+            "strategy-portfolio"
+          ]
+        }
+      },
+      "manifest": {
+        "present": true,
+        "parse_error": null,
+        "version": "1.0.0",
+        "schema_version": 1,
+        "slug": "revenue",
+        "declares_dependencies": false,
+        "declares_permissions": false,
+        "declares_targets": false
+      },
+      "files": {
+        "SKILL.md": true,
+        "README.md": true,
+        "INSTALL.md": true,
+        "CHANGELOG.md": false,
+        "MASTER.md": true,
+        "OMEGA_INTEGRATION.md": true,
+        "config/os.yaml": true
+      },
+      "dirs": {
+        "evals": true,
+        "examples": true,
+        "memory": true,
+        "system": true,
+        "protocols": true,
+        "schemas": true,
+        "agents": true,
+        "references": false,
+        "knowledge": true,
+        "scripts": false,
+        "runtime": true
+      },
+      "pillars": {
+        "install": false,
+        "configure": true,
+        "run": true,
+        "compose": true,
+        "update": false,
+        "evaluate": true,
+        "permissions": true
+      },
+      "pillars_ready": 5,
+      "verdict": "PARTIAL"
+    },
+    {
+      "unit": "review-governance-os",
+      "tier": "full",
+      "ssot": {
+        "omegaos_repo": false,
+        "agentik_skills_library": false,
+        "orphan": true
+      },
+      "registry": {
+        "listed": true,
+        "slug": "review-governance",
+        "deps": {
+          "consumes": [
+            "strategy-portfolio",
+            "revenue",
+            "quality-evaluation-release",
+            "operations-automation",
+            "wealth-capital",
+            "execution",
+            "delivery-customer-success",
+            "content",
+            "strategy-portfolio"
+          ],
+          "hands_off": [
+            "context-memory",
+            "strategy-portfolio"
+          ]
+        }
+      },
+      "manifest": {
+        "present": true,
+        "parse_error": null,
+        "version": "1.0.0",
+        "schema_version": 1,
+        "slug": "review-governance",
+        "declares_dependencies": false,
+        "declares_permissions": false,
+        "declares_targets": false
+      },
+      "files": {
+        "SKILL.md": true,
+        "README.md": true,
+        "INSTALL.md": true,
+        "CHANGELOG.md": false,
+        "MASTER.md": true,
+        "OMEGA_INTEGRATION.md": true,
+        "config/os.yaml": true
+      },
+      "dirs": {
+        "evals": true,
+        "examples": true,
+        "memory": true,
+        "system": true,
+        "protocols": true,
+        "schemas": true,
+        "agents": true,
+        "references": false,
+        "knowledge": true,
+        "scripts": false,
+        "runtime": true
+      },
+      "pillars": {
+        "install": false,
+        "configure": true,
+        "run": true,
+        "compose": true,
+        "update": false,
+        "evaluate": true,
+        "permissions": true
+      },
+      "pillars_ready": 5,
+      "verdict": "PARTIAL"
+    },
+    {
+      "unit": "seductive-os",
+      "tier": "thin",
+      "ssot": {
+        "omegaos_repo": false,
+        "agentik_skills_library": true,
+        "orphan": false
+      },
+      "registry": {
+        "listed": false,
+        "slug": "seductive",
+        "deps": null
+      },
+      "manifest": {
+        "present": false,
+        "parse_error": null,
+        "version": null,
+        "schema_version": null,
+        "slug": null,
+        "declares_dependencies": false,
+        "declares_permissions": false,
+        "declares_targets": false
+      },
+      "files": {
+        "SKILL.md": true,
+        "README.md": false,
+        "INSTALL.md": false,
+        "CHANGELOG.md": false,
+        "MASTER.md": false,
+        "OMEGA_INTEGRATION.md": false,
+        "config/os.yaml": false
+      },
+      "dirs": {
+        "evals": false,
+        "examples": false,
+        "memory": false,
+        "system": false,
+        "protocols": true,
+        "schemas": true,
+        "agents": true,
+        "references": true,
+        "knowledge": false,
+        "scripts": false,
+        "runtime": false
+      },
+      "pillars": {
+        "install": true,
+        "configure": false,
+        "run": true,
+        "compose": false,
+        "update": false,
+        "evaluate": false,
+        "permissions": false
+      },
+      "pillars_ready": 2,
+      "verdict": "NOT-READY"
+    },
+    {
+      "unit": "stepper-os",
+      "tier": "thin",
+      "ssot": {
+        "omegaos_repo": true,
+        "agentik_skills_library": true,
+        "orphan": false
+      },
+      "registry": {
+        "listed": true,
+        "slug": "stepper",
+        "deps": {
+          "consumes": [
+            "blueprint",
+            "design"
+          ],
+          "hands_off": [
+            "builder"
+          ]
+        }
+      },
+      "manifest": {
+        "present": false,
+        "parse_error": null,
+        "version": null,
+        "schema_version": null,
+        "slug": null,
+        "declares_dependencies": false,
+        "declares_permissions": false,
+        "declares_targets": false
+      },
+      "files": {
+        "SKILL.md": true,
+        "README.md": false,
+        "INSTALL.md": false,
+        "CHANGELOG.md": false,
+        "MASTER.md": false,
+        "OMEGA_INTEGRATION.md": false,
+        "config/os.yaml": false
+      },
+      "dirs": {
+        "evals": false,
+        "examples": false,
+        "memory": false,
+        "system": false,
+        "protocols": false,
+        "schemas": false,
+        "agents": false,
+        "references": false,
+        "knowledge": false,
+        "scripts": false,
+        "runtime": false
+      },
+      "pillars": {
+        "install": true,
+        "configure": false,
+        "run": true,
+        "compose": true,
+        "update": false,
+        "evaluate": false,
+        "permissions": false
+      },
+      "pillars_ready": 3,
+      "verdict": "NOT-READY"
+    },
+    {
+      "unit": "storyteller-os",
+      "tier": "thin",
+      "ssot": {
+        "omegaos_repo": true,
+        "agentik_skills_library": true,
+        "orphan": false
+      },
+      "registry": {
+        "listed": true,
+        "slug": "storyteller",
+        "deps": {
+          "consumes": [
+            "content"
+          ],
+          "hands_off": [
+            "content"
+          ]
+        }
+      },
+      "manifest": {
+        "present": false,
+        "parse_error": null,
+        "version": null,
+        "schema_version": null,
+        "slug": null,
+        "declares_dependencies": false,
+        "declares_permissions": false,
+        "declares_targets": false
+      },
+      "files": {
+        "SKILL.md": true,
+        "README.md": false,
+        "INSTALL.md": false,
+        "CHANGELOG.md": false,
+        "MASTER.md": false,
+        "OMEGA_INTEGRATION.md": false,
+        "config/os.yaml": false
+      },
+      "dirs": {
+        "evals": false,
+        "examples": false,
+        "memory": false,
+        "system": false,
+        "protocols": false,
+        "schemas": false,
+        "agents": true,
+        "references": true,
+        "knowledge": false,
+        "scripts": true,
+        "runtime": false
+      },
+      "pillars": {
+        "install": true,
+        "configure": false,
+        "run": true,
+        "compose": true,
+        "update": false,
+        "evaluate": false,
+        "permissions": false
+      },
+      "pillars_ready": 3,
+      "verdict": "NOT-READY"
+    },
+    {
+      "unit": "strategy-portfolio-os",
+      "tier": "full",
+      "ssot": {
+        "omegaos_repo": false,
+        "agentik_skills_library": false,
+        "orphan": true
+      },
+      "registry": {
+        "listed": true,
+        "slug": "strategy-portfolio",
+        "deps": {
+          "consumes": [
+            "health-energy",
+            "context-memory",
+            "market-research",
+            "execution",
+            "wealth-capital"
+          ],
+          "hands_off": [
+            "execution",
+            "blueprint",
+            "review-governance"
+          ]
+        }
+      },
+      "manifest": {
+        "present": true,
+        "parse_error": null,
+        "version": "1.0.0",
+        "schema_version": 1,
+        "slug": "strategy-portfolio",
+        "declares_dependencies": false,
+        "declares_permissions": false,
+        "declares_targets": false
+      },
+      "files": {
+        "SKILL.md": true,
+        "README.md": true,
+        "INSTALL.md": true,
+        "CHANGELOG.md": false,
+        "MASTER.md": true,
+        "OMEGA_INTEGRATION.md": true,
+        "config/os.yaml": true
+      },
+      "dirs": {
+        "evals": true,
+        "examples": true,
+        "memory": true,
+        "system": true,
+        "protocols": true,
+        "schemas": true,
+        "agents": true,
+        "references": false,
+        "knowledge": true,
+        "scripts": false,
+        "runtime": true
+      },
+      "pillars": {
+        "install": false,
+        "configure": true,
+        "run": true,
+        "compose": true,
+        "update": false,
+        "evaluate": true,
+        "permissions": true
+      },
+      "pillars_ready": 5,
+      "verdict": "PARTIAL"
+    },
+    {
+      "unit": "wealth-capital-os",
+      "tier": "full",
+      "ssot": {
+        "omegaos_repo": false,
+        "agentik_skills_library": false,
+        "orphan": true
+      },
+      "registry": {
+        "listed": true,
+        "slug": "wealth-capital",
+        "deps": {
+          "consumes": [
+            "revenue",
+            "operations-automation"
+          ],
+          "hands_off": [
+            "strategy-portfolio",
+            "execution"
+          ]
+        }
+      },
+      "manifest": {
+        "present": true,
+        "parse_error": null,
+        "version": "1.0.0",
+        "schema_version": 1,
+        "slug": "wealth-capital",
+        "declares_dependencies": false,
+        "declares_permissions": false,
+        "declares_targets": false
+      },
+      "files": {
+        "SKILL.md": true,
+        "README.md": true,
+        "INSTALL.md": true,
+        "CHANGELOG.md": false,
+        "MASTER.md": true,
+        "OMEGA_INTEGRATION.md": true,
+        "config/os.yaml": true
+      },
+      "dirs": {
+        "evals": true,
+        "examples": true,
+        "memory": true,
+        "system": true,
+        "protocols": true,
+        "schemas": true,
+        "agents": true,
+        "references": false,
+        "knowledge": true,
+        "scripts": false,
+        "runtime": true
+      },
+      "pillars": {
+        "install": false,
+        "configure": true,
+        "run": true,
+        "compose": true,
+        "update": false,
+        "evaluate": true,
+        "permissions": true
+      },
+      "pillars_ready": 5,
+      "verdict": "PARTIAL"
+    }
+  ]
+}

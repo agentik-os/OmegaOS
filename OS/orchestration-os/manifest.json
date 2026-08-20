@@ -1,0 +1,122 @@
+{
+  "schema_version": "2.0.0",
+  "id": "orchestration-os",
+  "num": 72,
+  "name": "Orchestration {OS}",
+  "version": "0.1.0",
+  "status": "scaffold",
+  "group": {
+    "key": "systems",
+    "label": "08 · AI & SYSTEMS",
+    "purpose": "Intelligence infrastructure for everything"
+  },
+  "tagline": "Compose many agents and systems into one reliable mission.",
+  "inherits_from": null,
+  "commands": [
+    {
+      "name": "/orchestrate shape <mission>",
+      "mode": "shape",
+      "summary": "Draw the topology and justify every edge and every barrier."
+    },
+    {
+      "name": "/orchestrate plan <mission>",
+      "mode": "plan",
+      "summary": "Write the durable ledger, one entry per ask, persisted to a file."
+    },
+    {
+      "name": "/orchestrate dispatch",
+      "mode": "dispatch",
+      "summary": "Start the ready set concurrently, with owners, budgets and scope claims."
+    },
+    {
+      "name": "/orchestrate watch",
+      "mode": "watch",
+      "summary": "Classify each running step as working, stalled, blocked or asking, and act."
+    },
+    {
+      "name": "/orchestrate verify <task>",
+      "mode": "verify",
+      "summary": "Run the verification the brief named, recorded apart from the delegate's claim."
+    },
+    {
+      "name": "/orchestrate synthesise",
+      "mode": "synthesise",
+      "summary": "Assemble every child output into one coherent result."
+    },
+    {
+      "name": "/orchestrate close",
+      "mode": "close",
+      "summary": "Signal clean, pending or failed, release claims, and leave nothing running."
+    },
+    {
+      "name": "/orchestrate resume <mission>",
+      "mode": "plan",
+      "summary": "Continue an interrupted mission from its persisted ledger."
+    },
+    {
+      "name": "/orchestrate postmortem <mission>",
+      "mode": "postmortem",
+      "summary": "Turn a failure or an overrun into a change to the shape or the ledger."
+    }
+  ],
+  "dependencies": {
+    "requires": [
+      "context-memory-os",
+      "agent-os"
+    ],
+    "consumes": [
+      "agent.brief.approved",
+      "agent.run.completed",
+      "ailogic.arbitration.decided",
+      "integration.contract.published",
+      "memory.context.compiled"
+    ],
+    "emits": [
+      "orchestration.mission.planned",
+      "orchestration.step.dispatched",
+      "orchestration.step.verified",
+      "orchestration.step.failed",
+      "orchestration.mission.completed",
+      "orchestration.mission.pending",
+      "memory.record.staged"
+    ]
+  },
+  "targets": {
+    "claude": {
+      "supported": true
+    },
+    "chatgpt": {
+      "supported": true
+    },
+    "gemini": {
+      "supported": true
+    },
+    "codex": {
+      "supported": true
+    }
+  },
+  "entrypoints": {
+    "spec": "OS.md",
+    "system": "SYSTEM.md",
+    "skill": "SKILL.md",
+    "setup": "SETUP.md",
+    "workflows": "WORKFLOWS/",
+    "commands": "COMMANDS/",
+    "prompts": "PROMPTS/",
+    "references": "REFERENCES/",
+    "memory": "MEMORY/",
+    "tools": "TOOLS/",
+    "evals": "EVALS/",
+    "examples": "EXAMPLES/",
+    "interfaces": "INTERFACES/",
+    "adapters": "ADAPTERS/"
+  },
+  "requires_human_approval_for": [
+    "dispatching a step that performs an irreversible action with no recorded gate",
+    "exceeding the mission budget ceiling",
+    "changing an agent's brief mid mission",
+    "closing a mission as clean when any entry lacks independent verification",
+    "killing a worker that holds uncommitted work",
+    "re-running a step whose external effects are not idempotent"
+  ]
+}

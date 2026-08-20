@@ -1,0 +1,27 @@
+version: 1.0.0
+workflow_id: builder.book_deep_fanout
+input:
+  retained_books_file: RETAINED_BOOKS.yaml
+strategy:
+  type: parallel_fanout
+  isolation: first_pass_independent
+  max_books_per_worker: 1
+for_each:
+  item: book
+  steps:
+    - validate_identity_and_edition
+    - record_access_basis
+    - extract_thesis_and_problem
+    - extract_concepts_and_mechanisms
+    - extract_principles_and_rules
+    - extract_procedures_exercises_metrics
+    - extract_boundaries_failures_biases
+    - map_os_compilation_candidates
+    - validate_against_book_analysis_schema
+    - write_human_and_structured_outputs
+outputs:
+  human: knowledge/books/{book.slug}/analysis.md
+  structured: knowledge/books/{book.slug}/analysis.json
+merge_gate:
+  condition: every_retained_book_has_valid_outputs
+  on_failure: block_synthesis

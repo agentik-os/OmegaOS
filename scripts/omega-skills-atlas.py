@@ -76,7 +76,7 @@ def validate_unique(rows):
 
 def canonical_native():
     if not os.path.isfile(CATALOG):
-        return None, None
+        return None, None, None, None
     try:
         data = json.load(open(CATALOG, encoding="utf-8"))
         if data.get("schema_version") != 1:
@@ -108,11 +108,16 @@ def canonical_native():
             })
         rows.sort(key=lambda row: (identity(row["name"]), row["slug"]))
         validate_unique(rows)
-        return rows, digest
+        source_tree_digest = data.get("source_tree_digest")
+        if source_tree_digest is not None and (
+                not isinstance(source_tree_digest, str) or
+                len(source_tree_digest) < 32):
+            raise ValueError("canonical catalog has an invalid source_tree_digest")
+        return rows, digest, source_tree_digest, data.get("metadata_coverage")
     except Exception as exc:
         print(f"[atlas] canonical catalog invalid ({exc}); using legacy fallback",
               file=sys.stderr)
-        return None, None
+        return None, None, None, None
 
 def legacy_native():
     rows = []
@@ -195,12 +200,15 @@ def cookbook_recipes():
     except Exception as exc:
         print(f"[atlas] cookbook index invalid ({exc}); skipping", file=sys.stderr)
         return []
-native, catalog_hash = canonical_native()
+
+native, catalog_hash, source_tree_digest, metadata_coverage = canonical_native()
 if native is None:
     native = legacy_native()
     legacy_projection = json.dumps(native, ensure_ascii=False, sort_keys=True,
                                    separators=(",", ":")).encode()
     catalog_hash = "legacy-sha256:" + hashlib.sha256(legacy_projection).hexdigest()
+    source_tree_digest = catalog_hash
+    metadata_coverage = None
 
 # ---- 2. power-up library ----
 powerups = []
@@ -222,6 +230,8 @@ atlas = {
     "generated": datetime.date.today().isoformat(),
     "schema_version": 2,
     "catalog_hash": catalog_hash,
+    "source_tree_digest": source_tree_digest,
+    "metadata_coverage": metadata_coverage,
     "native_count": len(native),
     "powerup_count": len(powerups),
     "cookbook_count": len(cookbooks),
@@ -232,6 +242,7 @@ atlas = {
 }
 hash_payload = {
     "catalog_hash": catalog_hash,
+    "source_tree_digest": source_tree_digest,
     "native": native,
     "powerups": powerups,
     "cookbooks": cookbooks,

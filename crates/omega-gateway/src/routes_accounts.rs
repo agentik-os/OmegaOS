@@ -11,7 +11,8 @@
 use crate::account_login::{self, AuthStatus, LoginOutcome};
 use crate::accounts;
 use crate::protocol::{
-    Account, AccountCreateRequest, AccountKind, AccountLoginServerMsg, AccountWithStatus, ApiKeyRequest,
+    Account, AccountCreateRequest, AccountKind, AccountLoginServerMsg, AccountWithStatus,
+    ApiKeyRequest,
 };
 use crate::server::AppState;
 use axum::{
@@ -125,8 +126,10 @@ pub async fn apikey(
     }
     let slot = state.accounts.slot_dir(&slug);
     let api_key = req.api_key;
-    let result =
-        tokio::task::spawn_blocking(move || account_login::codex_login_with_api_key(&slot, &api_key)).await;
+    let result = tokio::task::spawn_blocking(move || {
+        account_login::codex_login_with_api_key(&slot, &api_key)
+    })
+    .await;
     match result {
         Ok(Ok(())) => StatusCode::OK,
         Ok(Err(e)) => {
@@ -156,7 +159,10 @@ pub async fn login(
     ws.on_upgrade(move |socket| login_loop(socket, slug, state))
 }
 
-async fn send_login_frame(socket: &mut WebSocket, frame: &AccountLoginServerMsg) -> Result<(), axum::Error> {
+async fn send_login_frame(
+    socket: &mut WebSocket,
+    frame: &AccountLoginServerMsg,
+) -> Result<(), axum::Error> {
     let text = serde_json::to_string(frame).expect("serialize AccountLoginServerMsg");
     socket.send(Message::Text(text.into())).await
 }
@@ -183,7 +189,9 @@ async fn login_loop(mut socket: WebSocket, slug: String, state: AppState) {
     let Some(account) = state.accounts.get(&slug) else {
         let _ = send_login_frame(
             &mut socket,
-            &AccountLoginServerMsg::Error { message: "unknown account".to_string() },
+            &AccountLoginServerMsg::Error {
+                message: "unknown account".to_string(),
+            },
         )
         .await;
         let _ = socket.send(Message::Close(None)).await;
@@ -206,15 +214,22 @@ async fn login_loop(mut socket: WebSocket, slug: String, state: AppState) {
     let outcome = match begin_result {
         Ok(Ok(outcome)) => outcome,
         Ok(Err(e)) => {
-            let _ =
-                send_login_frame(&mut socket, &AccountLoginServerMsg::Error { message: e.to_string() }).await;
+            let _ = send_login_frame(
+                &mut socket,
+                &AccountLoginServerMsg::Error {
+                    message: e.to_string(),
+                },
+            )
+            .await;
             let _ = socket.send(Message::Close(None)).await;
             return;
         }
         Err(e) => {
             let _ = send_login_frame(
                 &mut socket,
-                &AccountLoginServerMsg::Error { message: format!("login task panicked: {e}") },
+                &AccountLoginServerMsg::Error {
+                    message: format!("login task panicked: {e}"),
+                },
             )
             .await;
             let _ = socket.send(Message::Close(None)).await;
@@ -233,7 +248,10 @@ async fn login_loop(mut socket: WebSocket, slug: String, state: AppState) {
         }
         LoginOutcome::Url(url, child) => {
             _child_reaper = ChildReaper(Some(child));
-            if send_login_frame(&mut socket, &AccountLoginServerMsg::LoginUrl { url }).await.is_err() {
+            if send_login_frame(&mut socket, &AccountLoginServerMsg::LoginUrl { url })
+                .await
+                .is_err()
+            {
                 return; // socket already dead; _child_reaper drops here
             }
         }
@@ -258,7 +276,7 @@ async fn login_loop(mut socket: WebSocket, slug: String, state: AppState) {
             Ok(None) | Ok(Some(Err(_))) => return, // client gone / socket dead
             Ok(Some(Ok(Message::Close(_)))) => return, // client closed
             Ok(Some(Ok(_))) => {}                  // other client frames: ignore, keep polling
-            Err(_) => {}                            // poll interval elapsed: check status again
+            Err(_) => {}                           // poll interval elapsed: check status again
         }
     }
 }

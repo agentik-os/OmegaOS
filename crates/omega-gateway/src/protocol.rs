@@ -157,14 +157,20 @@ pub enum AccountLoginServerMsg {
 #[derive(Serialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ChatStreamServerMsg {
-    Delta { text: String },
-    AssistantMessage { text: String },
+    Delta {
+        text: String,
+    },
+    AssistantMessage {
+        text: String,
+    },
     ToolEvent {
         name: String,
         detail: Option<String>,
     },
     TurnDone,
-    Error { message: String },
+    Error {
+        message: String,
+    },
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -259,6 +265,23 @@ pub struct AgentsResponse {
     pub agents: Vec<AgentEntry>,
 }
 
+/// One AISB/OmegaOS system agent. This registry is intentionally distinct
+/// from [`AgentEntry`], which represents dispatch-provider engines.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct SystemAgentEntry {
+    pub name: String,
+    pub model: String,
+    pub role: String,
+    pub tagline: String,
+    pub tools: Vec<String>,
+    pub responsibilities: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct SystemAgentsResponse {
+    pub agents: Vec<SystemAgentEntry>,
+}
+
 /// `POST /v1/agents/{name}/install` response body — a pure pre-flight
 /// check, never a spawn: confirms `{name}` parses via
 /// `omega_core::agents::Agent::from_name` and is installable
@@ -311,6 +334,54 @@ pub struct SkillEntry {
 pub struct SkillsResponse {
     pub skills: Vec<SkillEntry>,
     pub total: usize,
+}
+
+/// The editable detail projection of one skill. The server never exposes the
+/// backing absolute path; the skill name remains the only client identifier.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct SkillDetail {
+    pub name: String,
+    pub description: String,
+    pub category: String,
+    pub content: String,
+    pub read_only: bool,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct SkillDetailResponse {
+    pub skill: SkillDetail,
+}
+
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+pub struct SkillUpdateRequest {
+    pub content: String,
+}
+
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+pub struct SkillAgentRequest {
+    pub prompt: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct SkillAgentResponse {
+    pub session: String,
+}
+
+/// One operative system from OmegaOS's compiled 24-product registry. `path`
+/// is deliberately relative, never the host's absolute filesystem path.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct OsProductEntry {
+    pub slug: String,
+    pub name: String,
+    pub category: String,
+    pub status: String,
+    pub path: String,
+    pub bot: bool,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct OsProductsResponse {
+    pub os: Vec<OsProductEntry>,
 }
 
 /// One entry of `GET /v1/projects`'s `projects` array — a field-for-field
@@ -1297,10 +1368,19 @@ pub struct Protocol {
     pub rules_response: RulesResponse,
     pub agent_entry: AgentEntry,
     pub agents_response: AgentsResponse,
+    pub system_agent_entry: SystemAgentEntry,
+    pub system_agents_response: SystemAgentsResponse,
     pub agent_install_check_response: AgentInstallCheckResponse,
     pub agent_install_stream_msg: AgentInstallStreamMsg,
     pub skill_entry: SkillEntry,
     pub skills_response: SkillsResponse,
+    pub skill_detail: SkillDetail,
+    pub skill_detail_response: SkillDetailResponse,
+    pub skill_update_request: SkillUpdateRequest,
+    pub skill_agent_request: SkillAgentRequest,
+    pub skill_agent_response: SkillAgentResponse,
+    pub os_product_entry: OsProductEntry,
+    pub os_products_response: OsProductsResponse,
     pub project_entry: ProjectEntry,
     pub projects_response: ProjectsResponse,
     pub marketing_project_entry: MarketingProjectEntry,

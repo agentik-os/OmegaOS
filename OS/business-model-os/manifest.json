@@ -1,0 +1,100 @@
+{
+  "schema_version": "2.0.0",
+  "id": "business-model-os",
+  "num": 20,
+  "name": "Business Model {OS}",
+  "version": "0.1.0",
+  "status": "authored",
+  "group": {
+    "key": "discover",
+    "label": "02 · DISCOVER & DECIDE",
+    "purpose": "Find what is worth building"
+  },
+  "tagline": "How value is created, delivered and captured, made explicit.",
+  "inherits_from": null,
+  "commands": [
+    "/business-model",
+    "/canvas",
+    "/value-map",
+    "/revenue-mechanics",
+    "/cost-structure",
+    "/unit-economics",
+    "/breakeven",
+    "/viability",
+    "/variants",
+    "/stress",
+    "/model-audit"
+  ],
+  "dependencies": {
+    "requires": [
+      "agentik-runtime",
+      "context-memory-os"
+    ],
+    "consumes": [
+      "market.validation.completed",
+      "market.sizing.modeled",
+      "discovery.segment.profiled",
+      "validation.verdict.issued",
+      "librarian.extract.delivered"
+    ],
+    "emits": [
+      "business_model.canvas.drafted",
+      "business_model.unit_economics.modeled",
+      "business_model.viability.assessed",
+      "business_model.assumption.registered"
+    ],
+    "consumes_from": [
+      "market-research-os",
+      "customer-discovery-os",
+      "validation-os",
+      "librarian-os"
+    ],
+    "emits_to": [
+      "context-memory-os",
+      "pricing-os",
+      "revenue-os",
+      "strategy-portfolio-os",
+      "blueprint-os",
+      "validation-os"
+    ]
+  },
+  "targets": {
+    "claude": {
+      "supported": true
+    },
+    "chatgpt": {
+      "supported": true
+    },
+    "gemini": {
+      "supported": true
+    },
+    "codex": {
+      "supported": true
+    }
+  },
+  "entrypoints": {
+    "spec": "OS.md",
+    "system": "SYSTEM.md",
+    "skill": "SKILL.md",
+    "setup": "SETUP.md",
+    "workflows": "WORKFLOWS/",
+    "commands": "COMMANDS/",
+    "prompts": "PROMPTS/",
+    "references": "REFERENCES/",
+    "memory": "MEMORY/",
+    "tools": "TOOLS/",
+    "evals": "EVALS/",
+    "examples": "EXAMPLES/",
+    "interfaces": "INTERFACES/",
+    "adapters": "ADAPTERS/"
+  },
+  "requires_human_approval_for": [
+    "publishing or sending a model, canvas, unit economics or viability assessment to an investor, a board or a partner",
+    "committing publicly to a revenue mechanism, including announcing a subscription, a usage-based charge, a commission, a free tier or its removal",
+    "changing a model that live customers are already on, including the billing trigger, the frequency, the commitment or what is included",
+    "sharing cost, margin or unit economics data outside the organisation, including with contractors and advisers",
+    "replacing a measured number with an assumed one in a canonical model",
+    "issuing a viability verdict against a bar the owner has not stated",
+    "overwriting rather than superseding a previous viability assessment"
+  ]
+}

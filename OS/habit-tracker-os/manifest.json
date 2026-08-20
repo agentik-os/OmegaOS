@@ -1,0 +1,97 @@
+{
+  "schema_version": "2.0.0",
+  "id": "habit-tracker-os",
+  "num": 6,
+  "name": "Habit Tracker {OS}",
+  "version": "0.1.0",
+  "status": "scaffold",
+  "group": {
+    "key": "personal",
+    "label": "01 · PERSONAL",
+    "purpose": "Operate yourself"
+  },
+  "tagline": "Recurring behaviour contracts and the evidence they actually happened.",
+  "inherits_from": "habit-tracker-os",
+  "commands": [
+    "habits",
+    "habit-setup",
+    "today",
+    "checkin",
+    "urge",
+    "lapse",
+    "habit-review",
+    "recover",
+    "adapt",
+    "visualize",
+    "omega-habits:init",
+    "omega-habits:add",
+    "omega-habits:update",
+    "omega-habits:list",
+    "omega-habits:log",
+    "omega-habits:correct",
+    "omega-habits:today",
+    "omega-habits:review",
+    "omega-habits:chart",
+    "omega-habits:context",
+    "omega-habits:export",
+    "omega-habits:season",
+    "omega-habits:experiment",
+    "omega-habits:delete",
+    "omega-habits:doctor"
+  ],
+  "dependencies": {
+    "requires": [
+      "context-memory-os"
+    ],
+    "consumes_from": [
+      "mindset-os",
+      "identity-shift-os",
+      "goal-life-strategy-os",
+      "health-energy-os"
+    ],
+    "emits_to": [
+      "mindset-os",
+      "journal-os",
+      "health-energy-os",
+      "review-governance-os"
+    ]
+  },
+  "targets": {
+    "claude": {
+      "supported": true
+    },
+    "chatgpt": {
+      "supported": true
+    },
+    "gemini": {
+      "supported": true
+    },
+    "codex": {
+      "supported": true
+    }
+  },
+  "entrypoints": {
+    "spec": "OS.md",
+    "system": "SYSTEM.md",
+    "skill": "SKILL.md",
+    "setup": "SETUP.md",
+    "workflows": "WORKFLOWS/",
+    "commands": "COMMANDS/",
+    "prompts": "PROMPTS/",
+    "references": "REFERENCES/",
+    "memory": "MEMORY/",
+    "tools": "TOOLS/",
+    "evals": "EVALS/",
+    "examples": "EXAMPLES/",
+    "interfaces": "INTERFACES/",
+    "adapters": "ADAPTERS/"
+  },
+  "requires_human_approval_for": [
+    "promoting an inferred or proposed record into completion evidence",
+    "changing, pausing, retiring or archiving an ACTIVE habit contract",
+    "changing the operating season, including entering or leaving RECOVERING",
+    "starting or rolling back an adaptation experiment",
+    "deleting user-owned habit state, which is irreversible",
+    "exporting or sending habit contracts, check-in logs, reviews or lapse debriefs off the local machine"
+  ]
+}

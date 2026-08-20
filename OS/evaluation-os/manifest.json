@@ -1,0 +1,108 @@
+{
+  "schema_version": "2.0.0",
+  "id": "evaluation-os",
+  "num": 70,
+  "name": "Evaluation {OS}",
+  "version": "0.1.0",
+  "status": "scaffold",
+  "group": {
+    "key": "systems",
+    "label": "08 · AI & SYSTEMS",
+    "purpose": "Intelligence infrastructure for everything"
+  },
+  "tagline": "Measure AI output quality with rubrics, not vibes.",
+  "inherits_from": null,
+  "commands": [
+    {
+      "name": "/eval rubric <task>",
+      "mode": "rubric",
+      "summary": "Turn examples of good and bad output into criteria with observable anchors."
+    },
+    {
+      "name": "/eval set <task>",
+      "mode": "set",
+      "summary": "Build the fixed versioned evaluation set, adversarial and refusal cases included."
+    },
+    {
+      "name": "/eval run <version>",
+      "mode": "run",
+      "summary": "Score a version per case per criterion, each score with its reason."
+    },
+    {
+      "name": "/eval calibrate",
+      "mode": "calibrate",
+      "summary": "Measure how well an automated grader agrees with human labels, per criterion."
+    },
+    {
+      "name": "/eval compare <a> <b>",
+      "mode": "compare",
+      "summary": "Compare two versions with the uncertainty stated alongside the difference."
+    },
+    {
+      "name": "/eval regress [baseline]",
+      "mode": "regress",
+      "summary": "Detect regressions against the accepted baseline and name the failing cases."
+    },
+    {
+      "name": "/eval report",
+      "mode": "report",
+      "summary": "Report the trend, checked against outcomes, with no release recommendation."
+    }
+  ],
+  "dependencies": {
+    "requires": [
+      "context-memory-os"
+    ],
+    "consumes": [
+      "agent.run.completed",
+      "orchestration.mission.completed",
+      "knowledge.retrieval.answered",
+      "memory.context.compiled"
+    ],
+    "emits": [
+      "evaluation.rubric.published",
+      "evaluation.set.versioned",
+      "evaluation.score.recorded",
+      "evaluation.grader.calibrated",
+      "evaluation.regression.detected",
+      "memory.record.staged"
+    ]
+  },
+  "targets": {
+    "claude": {
+      "supported": true
+    },
+    "chatgpt": {
+      "supported": true
+    },
+    "gemini": {
+      "supported": true
+    },
+    "codex": {
+      "supported": true
+    }
+  },
+  "entrypoints": {
+    "spec": "OS.md",
+    "system": "SYSTEM.md",
+    "skill": "SKILL.md",
+    "setup": "SETUP.md",
+    "workflows": "WORKFLOWS/",
+    "commands": "COMMANDS/",
+    "prompts": "PROMPTS/",
+    "references": "REFERENCES/",
+    "memory": "MEMORY/",
+    "tools": "TOOLS/",
+    "evals": "EVALS/",
+    "examples": "EXAMPLES/",
+    "interfaces": "INTERFACES/",
+    "adapters": "ADAPTERS/"
+  },
+  "requires_human_approval_for": [
+    "changing an accepted baseline",
+    "changing the evaluation set, which invalidates historical comparisons",
+    "retiring a criterion, especially one the system currently scores badly on",
+    "publishing a score as a claim outside the team",
+    "using an automated grader in place of human labels where measured agreement is low"
+  ]
+}

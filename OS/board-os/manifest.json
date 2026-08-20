@@ -1,0 +1,88 @@
+{
+  "schema_version": "2.0.0",
+  "id": "board-os",
+  "num": 64,
+  "name": "Board {OS}",
+  "version": "0.1.0",
+  "status": "scaffold",
+  "group": {
+    "key": "capital",
+    "label": "07 · CAPITAL",
+    "purpose": "Turn assets into capital allocation"
+  },
+  "tagline": "Governance at the board level: papers, cadence, real oversight.",
+  "inherits_from": null,
+  "commands": [
+    "/board",
+    "/board constitute",
+    "/board authority",
+    "/board calendar",
+    "/board pack",
+    "/board agenda",
+    "/board meeting",
+    "/board minute",
+    "/board actions",
+    "/board oversight",
+    "/board effectiveness",
+    "/board conflicts"
+  ],
+  "dependencies": {
+    "requires": [
+      "agentik-runtime",
+      "context-memory-os"
+    ],
+    "consumes": [
+      "structure.terms.agreed",
+      "acquisition.closed",
+      "portfolio.report.published",
+      "portfolio.position.impaired",
+      "change.approved"
+    ],
+    "emits": [
+      "board.calendar.set",
+      "board.pack.published",
+      "board.resolution.recorded",
+      "board.minutes.approved",
+      "board.escalation.raised"
+    ]
+  },
+  "targets": {
+    "claude": {
+      "supported": true
+    },
+    "chatgpt": {
+      "supported": true
+    },
+    "gemini": {
+      "supported": true
+    },
+    "codex": {
+      "supported": true
+    }
+  },
+  "entrypoints": {
+    "spec": "OS.md",
+    "system": "SYSTEM.md",
+    "skill": "SKILL.md",
+    "setup": "SETUP.md",
+    "workflows": "WORKFLOWS/",
+    "commands": "COMMANDS/",
+    "prompts": "PROMPTS/",
+    "references": "REFERENCES/",
+    "memory": "MEMORY/",
+    "tools": "TOOLS/",
+    "evals": "EVALS/",
+    "examples": "EXAMPLES/",
+    "interfaces": "INTERFACES/",
+    "adapters": "ADAPTERS/"
+  },
+  "requires_human_approval_for": [
+    "issuing a board pack to directors",
+    "circulating draft minutes or a draft resolution",
+    "recording any resolution as adopted",
+    "amending the delegated authority matrix",
+    "communicating a board decision outside the board",
+    "naming a director in a recorded conflict, dissent or abstention",
+    "scheduling or cancelling a meeting under a notice period"
+  ]
+}

@@ -1,0 +1,123 @@
+{
+  "schema_version": "2.0.0",
+  "id": "client-os",
+  "num": 45,
+  "name": "Client {OS}",
+  "version": "0.1.0",
+  "status": "scaffold",
+  "group": {
+    "key": "operate",
+    "label": "05 · OPERATE",
+    "purpose": "Turn chaos into repeatable execution"
+  },
+  "tagline": "The client relationship: expectations, comms and boundaries.",
+  "inherits_from": null,
+  "commands": [
+    {
+      "name": "/client-open",
+      "mode": "OPEN",
+      "summary": "Write the expectation record and the confirmation message to send."
+    },
+    {
+      "name": "/client-brief",
+      "mode": "STEADY",
+      "summary": "Maintain the one-page account brief anyone can pick up."
+    },
+    {
+      "name": "/client-update",
+      "mode": "STEADY",
+      "summary": "Draft the cadence update in the client's language, carrying position not activity."
+    },
+    {
+      "name": "/client-bad-news",
+      "mode": "STRAIN",
+      "summary": "Draft the early bad-news message with the recovery already chosen."
+    },
+    {
+      "name": "/client-boundary",
+      "mode": "BOUNDARY",
+      "summary": "Answer an out-of-scope request: included, extra with a price, or refused with an alternative."
+    },
+    {
+      "name": "/client-exception",
+      "mode": "BOUNDARY",
+      "summary": "Record a granted exception with its date, its reason and its normal price."
+    },
+    {
+      "name": "/client-strain",
+      "mode": "STRAIN",
+      "summary": "Diagnose the cause behind the symptom and name a specific repair with an owner and a date."
+    },
+    {
+      "name": "/client-health",
+      "mode": "HEALTH",
+      "summary": "Produce the health read with evidence and the revenue at risk."
+    },
+    {
+      "name": "/client-close",
+      "mode": "CLOSE",
+      "summary": "Run offboarding or non-renewal as a conversation and a record."
+    }
+  ],
+  "dependencies": {
+    "requires": [
+      "context-memory-os"
+    ],
+    "emits": [
+      "client.expectations.set",
+      "client.update.sent",
+      "client.badnews.sent",
+      "client.boundary.answered",
+      "client.exception.granted",
+      "client.risk.flagged",
+      "client.relationship.closed"
+    ],
+    "consumes_from": [
+      "project-os",
+      "execution-os",
+      "delivery-cs-os",
+      "revenue-os",
+      "offer-os",
+      "pricing-os"
+    ]
+  },
+  "targets": {
+    "claude": {
+      "supported": true
+    },
+    "chatgpt": {
+      "supported": true
+    },
+    "gemini": {
+      "supported": true
+    },
+    "codex": {
+      "supported": true
+    }
+  },
+  "entrypoints": {
+    "spec": "OS.md",
+    "system": "SYSTEM.md",
+    "skill": "SKILL.md",
+    "setup": "SETUP.md",
+    "workflows": "WORKFLOWS/",
+    "commands": "COMMANDS/",
+    "prompts": "PROMPTS/",
+    "references": "REFERENCES/",
+    "memory": "MEMORY/",
+    "tools": "TOOLS/",
+    "evals": "EVALS/",
+    "examples": "EXAMPLES/",
+    "interfaces": "INTERFACES/",
+    "adapters": "ADAPTERS/"
+  },
+  "requires_human_approval_for": [
+    "sending anything at all to the client",
+    "committing to a date, a price or a deliverable",
+    "granting an exception to what was agreed",
+    "escalating to the client's superior or to a legal channel",
+    "pausing or stopping delivery, including for non-payment",
+    "ending an engagement or declining a renewal",
+    "sharing internal position, cost or capacity information externally"
+  ]
+}

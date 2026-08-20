@@ -27,7 +27,7 @@ pub enum Action {
     DispatchOracle(String, String),
     /// New-project wizard result: spawn a Claude session that runs
     /// `/omega-new-project <stack> <category> <name>` (provision + scaffold +
-    /// vision/PRD/planner). `category` is "works" | "client", `stack` a stack id.
+    /// vision/PRD/planner). `category` and `stack` come from the typed wizard registries.
     CreateProject {
         name: String,
         category: String,
@@ -96,7 +96,7 @@ pub enum Action {
     /// operator pastes the @BotFather token there; the bot's brain is the
     /// OS's master agent.
     LinkOsBot { slug: String },
-    /// Projects tab: dispatch `omega planner` for the selected project.
+    /// Projects tab: open the canonical `/omg-planner` skill for the project.
     RunPlannerForProject { name: String, path: String },
     /// Projects tab: register an existing folder into the project registry
     /// (reuses `project_manager::add_existing_project`).
@@ -168,10 +168,10 @@ pub fn handle_event(app: &mut App, event: Event) -> Action {
 }
 
 fn handle_mouse(app: &mut App, mouse: MouseEvent) -> Action {
-    // Modal guard: while the SelectModel picker overlay is open, mouse events
-    // must not leak to the screen beneath it (scroll/clicks were mutating the
-    // panels under the modal). The picker is keyboard-driven.
-    if matches!(app.input_mode, InputMode::SelectModel(..)) {
+    // Every non-Normal input mode paints a modal overlay. Until a modal grows
+    // an explicit mouse contract, swallow the event: clicks and wheel motion
+    // must never mutate the hidden screen underneath it.
+    if !matches!(app.input_mode, InputMode::Normal) {
         return Action::None;
     }
     match mouse.kind {
@@ -417,6 +417,13 @@ fn scroll_active_panel(app: &mut App, lines: u16, down: bool) {
             else { app.scroll_detail_up(lines); }
         }
     }
+}
+
+/// Tabs that share the list/detail focus contract. Keeping this predicate in
+/// one place prevents a new two-column screen from gaining a visible `Tab ->
+/// detail` hint without receiving the keyboard handlers that make it true.
+fn is_two_column_tab(tab: Tab) -> bool {
+    matches!(tab, Tab::Settings | Tab::Projects | Tab::System | Tab::Os)
 }
 
 fn handle_paste(app: &mut App, text: String) -> Action {
@@ -1319,7 +1326,7 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
                     SessionFocus::Chat => "In session — Shift+↑↓ read (pause) · End: back live · Tab: list · Ctrl+X: close".to_string(),
                     SessionFocus::ChatFullscreen => "Session FULLSCREEN — Ctrl+X: close · Tab-Tab: show menu".to_string(),
                 });
-            } else if matches!(app.tab, Tab::Settings | Tab::Projects | Tab::System) {
+            } else if is_two_column_tab(app.tab) {
                 // 2-column tabs: Tab toggles list↔detail, Tab-Tab → fullscreen
                 app.handle_tab_in_2col();
                 // When entering detail on the Settings group, snap cursor to the
@@ -1352,7 +1359,7 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
         // Scroll: depends on the active tab + focus. PageUp/PageDown super-
         // scroll a FULL page of the preview (Termius swipe rips through fast).
         KeyCode::PageDown => {
-            if matches!(app.tab, Tab::Settings | Tab::Projects | Tab::System) {
+            if is_two_column_tab(app.tab) {
                 app.scroll_detail_down(10);
             } else {
                 app.scroll_preview_down(app.preview_inner_height.max(10));
@@ -1360,7 +1367,7 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
             Action::None
         }
         KeyCode::PageUp => {
-            if matches!(app.tab, Tab::Settings | Tab::Projects | Tab::System) {
+            if is_two_column_tab(app.tab) {
                 app.scroll_detail_up(10);
             } else {
                 app.scroll_preview_up(app.preview_inner_height.max(10));
@@ -1368,7 +1375,7 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
             Action::None
         }
         KeyCode::Home => {
-            if matches!(app.tab, Tab::Settings | Tab::Projects | Tab::System) {
+            if is_two_column_tab(app.tab) {
                 app.detail_scroll = 0;
                 // Explicit scroll wins over the sub-cursor snap-back.
                 app.detail_follow_cursor = false;
@@ -1378,7 +1385,7 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
             Action::None
         }
         KeyCode::End => {
-            if matches!(app.tab, Tab::Settings | Tab::Projects | Tab::System) {
+            if is_two_column_tab(app.tab) {
                 // Jump to the renderer-published bound, not a huge sentinel:
                 // u16::MAX/2 scrolled the Paragraph ~32k lines past its
                 // content — an empty panel only Home could recover.
@@ -1442,6 +1449,10 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
                 app.scroll_detail_down(1);
                 return Action::None;
             }
+            if app.tab == Tab::Os && app.detail_focused {
+                app.scroll_detail_down(1);
+                return Action::None;
+            }
             match app.tab {
                 Tab::Sessions => app.select_next(),
                 Tab::Menu => app.select_menu_next(),
@@ -1484,6 +1495,10 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
                 app.scroll_detail_up(1);
                 return Action::None;
             }
+            if app.tab == Tab::Os && app.detail_focused {
+                app.scroll_detail_up(1);
+                return Action::None;
+            }
             match app.tab {
                 Tab::Sessions => app.select_prev(),
                 Tab::Menu => app.select_menu_prev(),
@@ -1519,18 +1534,7 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
                 // Once focused, Enter is forwarded to the rmux session below
                 // (interactive passthrough — see the SessionFocus::Chat branch
                 // earlier in this function).
-                if let Some(entry) = app.selected_session() {
-                    // Master + Telegram-not-yet-configured → Enter opens the
-                    // existing 3-step Telegram setup wizard instead of focusing
-                    // the (empty) live mirror. Reuses the canonical wizard;
-                    // commit auto-attaches the master so the user watches the
-                    // confirmation stream in (see TelegramSetupCommit handler).
-                    if app.session_focus == SessionFocus::List
-                        && omega_core::aisb::is_master(&entry.session.name)
-                        && !omega_core::monitor::OmegaTelegramConfig::exists()
-                    {
-                        return Action::TelegramSetup;
-                    }
+                if app.selected_session().is_some() {
                     if app.session_focus == SessionFocus::List {
                         // Canonical focus path (chord reset + follow tail,
                         // FIX-4) — same as the mouse click.
@@ -1736,10 +1740,22 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
                 Action::None
             }
             Tab::Os => {
-                // Enter opens a Claude session in the selected OS's directory
-                // running that OS's MASTER AGENT: the MASTER.md prompt every
-                // OS carries (same brain the Telegram bot gets via
-                // omega-os-bot). Fallback: the generic integrator prompt.
+                // Match every other two-column tab: the first Enter moves focus
+                // into the detail panel; only a deliberate second Enter opens
+                // the selected OS master prompt.
+                if !app.detail_focused {
+                    app.detail_focused = true;
+                    app.detail_scroll = 0;
+                    app.status_message = Some(
+                        "Focus: OS detail (up/down scroll, Enter opens master, Tab returns to list)"
+                            .to_string(),
+                    );
+                    return Action::None;
+                }
+
+                // Detail-focused Enter opens a session in the selected OS's
+                // directory with its MASTER.md prompt. Fallback: the generic
+                // integrator prompt.
                 match app.selected_os_entry() {
                     Some(e) => match e.path.clone() {
                         Some(path) if path.is_dir() => {
@@ -2294,9 +2310,9 @@ fn handle_key_chat(app: &mut App, key: KeyEvent) -> Action {
         _ => {}
     }
 
-    // Tab behavior (corrected per user):
-    //   Shift+Tab  → FORWARD to Claude — Claude Code uses Shift+Tab to
-    //                cycle modes (plan mode, bypass, accept-edits, …).
+    // Tab behavior:
+    //   Shift+Tab  → FORWARD to the focused agent session. Providers may use
+    //                this terminal key for their own mode cycling.
     //   Tab        → return to the session list (back out of chat focus).
     // crossterm delivers Shift+Tab as KeyCode::BackTab (and on some
     // terminals as Tab+SHIFT) — handle both, forward the rmux "BTab".
@@ -2308,7 +2324,7 @@ fn handle_key_chat(app: &mut App, key: KeyEvent) -> Action {
     if key.code == KeyCode::Tab {
         // Unified Tab behavior (same as from the list): single Tab navigates
         // list↔session, Tab-Tab toggles the left session menu (hide↔show).
-        // Shift+Tab (→ BTab for Claude mode-cycling) is handled above.
+        // Shift+Tab (forwarded as BTab) is handled above.
         app.handle_tab_in_sessions();
         app.status_message = Some(match app.session_focus {
             SessionFocus::List => "Session list — Tab: open · Tab-Tab: hide/show menu".to_string(),
@@ -2355,7 +2371,7 @@ fn handle_key_chat(app: &mut App, key: KeyEvent) -> Action {
 
     match key.code {
         // (Tab + Shift+Tab handled earlier: Tab=back to list,
-        //  Shift+Tab=forward BTab to Claude for mode cycling.)
+        //  Shift+Tab=forward BTab to the focused agent session.)
 
         // Word-delete (readline conventions):
         //   Ctrl+W            → kill word back   (universal)
@@ -3704,5 +3720,177 @@ mod tests {
             matches!(act, Action::None),
             "Ctrl+X must not kill the clamped-in selection during the grace"
         );
+    }
+
+    #[test]
+    fn project_planner_shortcut_emits_the_plan_create_contract() {
+        use omega_core::project_manager::ManagedProject;
+        let mut app = test_app();
+        app.tab = Tab::Projects;
+        app.projects_selected = 1; // index 0 is the pinned OS row
+        app.project_registry.projects = vec![ManagedProject {
+            name: "ContractProject".to_string(),
+            path: std::path::PathBuf::from("/tmp/contract-project"),
+            telegram_topic_id: None,
+            oracle_session: None,
+            git_email: None,
+            created_at: String::new(),
+            telegram: None,
+            category: None,
+        }];
+
+        let action = handle_key(&mut app, press('p'));
+        assert!(matches!(
+            action,
+            Action::RunPlannerForProject { name, path }
+                if name == "ContractProject" && path == "/tmp/contract-project"
+        ));
+    }
+
+    #[test]
+    fn new_project_wizard_only_emits_supported_strategy_ids() {
+        let ids: Vec<&str> = crate::app::NEW_PROJECT_STACKS
+            .iter()
+            .map(|(id, _)| *id)
+            .collect();
+        assert_eq!(ids, vec!["nextstack", "custom"]);
+
+        let mut app = test_app();
+        app.input_mode = InputMode::NewProjectStack(
+            "demo".to_string(),
+            "side-business".to_string(),
+            0,
+        );
+        handle_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(matches!(
+            app.input_mode,
+            InputMode::NewProjectLaunchPrompt(_, _, ref stack) if stack == "custom"
+        ));
+    }
+
+    fn os_entry(product: omega_core::os_products::OsProduct) -> omega_core::os_products::OsEntry {
+        omega_core::os_products::OsEntry {
+            product,
+            readiness: omega_core::os_products::OsReadiness {
+                level: omega_core::os_products::OsReadinessLevel::Reference,
+                directory_present: true,
+                master_present: false,
+                payload_present: true,
+                manifest: omega_core::os_products::OsManifestStatus::Missing,
+                runtime_present: false,
+                tests_present: false,
+                event_schema_status: None,
+            },
+            path: Some(std::path::PathBuf::from("/tmp")),
+            bot_linked: false,
+        }
+    }
+
+    #[test]
+    fn os_tab_obeys_the_two_column_keyboard_contract() {
+        let products = omega_core::os_products::OsProduct::all();
+        let mut app = test_app();
+        app.tab = Tab::Os;
+        app.os_entries = vec![os_entry(products[0]), os_entry(products[1])];
+        app.detail_max_scroll = 100;
+
+        handle_key(&mut app, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        assert!(app.detail_focused, "Tab must focus the OS detail panel");
+
+        let selected = app.os_selected;
+        handle_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        assert_eq!(app.os_selected, selected, "detail arrows must not move the OS list");
+        assert_eq!(app.detail_scroll, 1, "detail arrows must scroll the OS detail");
+
+        handle_key(&mut app, KeyEvent::new(KeyCode::End, KeyModifiers::NONE));
+        assert_eq!(app.detail_scroll, 100);
+        handle_key(&mut app, KeyEvent::new(KeyCode::Home, KeyModifiers::NONE));
+        assert_eq!(app.detail_scroll, 0);
+
+        // A rapid second Tab uses the same fullscreen contract as Settings,
+        // Projects, and System.
+        app.last_tab_press = Some(std::time::Instant::now());
+        handle_key(&mut app, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        assert!(app.detail_fullscreen);
+    }
+
+    #[test]
+    fn os_enter_focuses_detail_before_opening_the_master_prompt() {
+        let mut app = test_app();
+        app.tab = Tab::Os;
+        app.os_entries = vec![os_entry(omega_core::os_products::OsProduct::all()[0])];
+
+        let first = handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(matches!(first, Action::None));
+        assert!(app.detail_focused);
+
+        let second = handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(matches!(second, Action::OpenOsSession { .. }));
+    }
+
+    #[test]
+    fn every_modal_swallows_mouse_events_before_the_underlay_can_change() {
+        let modes = vec![
+            InputMode::NewNamedSession("codex".into()),
+            InputMode::NewSessionPromptDirect("s".into(), "codex".into()),
+            InputMode::DispatchProject(vec!["p".into()], 0),
+            InputMode::ProjectOpenLane("p".into(), "/tmp".into(), 0),
+            InputMode::ProjectOpenAgentPick {
+                lane: ProjectLane::Coding,
+                name: "p".into(),
+                path: "/tmp".into(),
+                agents: vec![omega_core::agents::Agent::Codex],
+                sel: 0,
+            },
+            InputMode::ProjectDelete("p".into(), 0),
+            InputMode::DispatchMission("p".into()),
+            InputMode::RenameSession("s".into()),
+            InputMode::SessionFilter,
+            InputMode::NewProjectName,
+            InputMode::NewProjectCategory("p".into(), 0),
+            InputMode::NewProjectCredGroup("p".into(), "customer".into()),
+            InputMode::NewProjectStack("p".into(), "tools".into(), 0),
+            InputMode::NewProjectLaunchPrompt("p".into(), "tools".into(), "custom".into()),
+            InputMode::NewProjectLaunchDocs(
+                "p".into(),
+                "tools".into(),
+                "custom".into(),
+                None,
+            ),
+            InputMode::ProvisioningSetup {
+                step: 0,
+                collected: Vec::new(),
+            },
+            InputMode::TelegramSetupToken,
+            InputMode::TelegramSetupChatId("token".into()),
+            InputMode::TelegramSetupUserId("token".into(), "chat".into()),
+            InputMode::EditSettingsField {
+                config_key: "general.theme".into(),
+                masked: false,
+            },
+            InputMode::SelectModel("model".into(), vec!["one".into()], 0),
+            InputMode::GroupSetupId,
+            InputMode::AddProjectPath,
+            InputMode::ReauthCode,
+        ];
+        let mouse = MouseEvent {
+            kind: MouseEventKind::ScrollDown,
+            column: 1,
+            row: 1,
+            modifiers: KeyModifiers::NONE,
+        };
+
+        for mode in modes {
+            let mut app = test_app();
+            app.tab = Tab::Projects;
+            app.detail_focused = true;
+            app.detail_max_scroll = 50;
+            app.detail_scroll = 7;
+            app.input_mode = mode.clone();
+            let action = handle_event(&mut app, Event::Mouse(mouse));
+            assert!(matches!(action, Action::None), "modal {:?} must swallow mouse", mode);
+            assert_eq!(app.detail_scroll, 7, "modal {:?} leaked wheel scroll", mode);
+        }
     }
 }

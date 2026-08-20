@@ -1,0 +1,29 @@
+name: ""
+slug: ""
+version: 0.1.0
+purpose: ""
+audiences: []
+jobs_to_be_done: []
+outcomes: []
+core_model: ""
+capabilities: []
+commands: []
+workflows: []
+state_model: {}
+memory: {}
+agents: []
+skills: []
+tools: []
+events: []
+hooks: []
+handoffs: []
+boundaries: []
+evidence:
+  source_ledger: SOURCE_LEDGER.jsonl
+  claim_ledger: CLAIM_LEDGER.jsonl
+  synthesis_map: SYNTHESIS_MAP.yaml
+evals: []
+release:
+  status: draft
+  build_id: ""
+  generated_at: ""

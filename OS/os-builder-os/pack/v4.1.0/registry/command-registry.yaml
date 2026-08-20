@@ -1,0 +1,27 @@
+version: 3.0.0
+os: builder-os
+commands:
+  - /os-build
+  - /os-build-status
+  - /os-build-resume
+  - /os-build-explain
+  - /os-research-plan
+  - /os-corpus-discover
+  - /os-corpus-curate
+  - /os-book-deep
+  - /os-corpus-audit
+  - /os-evidence-research
+  - /os-evidence-map
+  - /os-contradictions
+  - /os-synthesize
+  - /os-ontology
+  - /os-architecture
+  - /os-implement
+  - /os-eval
+  - /os-gauntlet
+  - /os-repair
+  - /os-audit
+  - /os-document
+  - /os-package
+  - /os-update
+  - /os-diff

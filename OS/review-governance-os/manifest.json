@@ -1,0 +1,140 @@
+{
+  "schema_version": "2.0.0",
+  "id": "review-governance-os",
+  "num": 50,
+  "name": "Review & Governance {OS}",
+  "version": "0.1.0",
+  "status": "scaffold",
+  "group": {
+    "key": "operate",
+    "label": "05 · OPERATE",
+    "purpose": "Turn chaos into repeatable execution"
+  },
+  "tagline": "Cross-OS learning and approval of consequential change.",
+  "inherits_from": "review-governance-os",
+  "commands": [
+    {
+      "name": "/review",
+      "mode": "weekly",
+      "summary": "Open a review at the default cadence and drive it to decisions with owners."
+    },
+    {
+      "name": "/daily-review",
+      "mode": "daily",
+      "summary": "Run the short daily reflection against what was intended."
+    },
+    {
+      "name": "/weekly-review",
+      "mode": "weekly",
+      "summary": "Run the weekly operating review."
+    },
+    {
+      "name": "/monthly-review",
+      "mode": "monthly",
+      "summary": "Run the metrics review against thresholds, and the systemic findings."
+    },
+    {
+      "name": "/quarterly-review",
+      "mode": "quarterly",
+      "summary": "Run strategic governance: policy, decision rights, risk, change portfolio."
+    },
+    {
+      "name": "/postmortem",
+      "mode": "postmortem",
+      "summary": "Analyse an incident blamelessly and produce one owned change."
+    },
+    {
+      "name": "/policy",
+      "mode": "policy",
+      "summary": "Create or audit a written policy with scope, owner, exceptions and review date."
+    },
+    {
+      "name": "/change-request",
+      "mode": "change",
+      "summary": "Authorise a consequential change, with conditions, reversal path and verification test."
+    },
+    {
+      "name": "/risk-register",
+      "mode": "monthly",
+      "summary": "Review risks: trigger, response, owner, review date."
+    },
+    {
+      "name": "/ai-governance",
+      "mode": "ai-risk",
+      "summary": "Assess an AI system's decision limits and name its human oversight point."
+    },
+    {
+      "name": "/verify-change",
+      "mode": "verify",
+      "summary": "Judge an approved change after the fact: standardise, adjust or revert."
+    }
+  ],
+  "dependencies": {
+    "requires": [
+      "context-memory-os"
+    ],
+    "emits": [
+      "review.completed",
+      "postmortem.published",
+      "policy.published",
+      "decision.rights.assigned",
+      "change.approved",
+      "change.rejected",
+      "change.verified",
+      "change.reverted",
+      "risk.register.updated",
+      "ai.governance.assessed"
+    ],
+    "consumes_from": [
+      "execution-os",
+      "project-os",
+      "meeting-os",
+      "documentation-os",
+      "client-os",
+      "operations-os",
+      "process-sop-os",
+      "team-delegation-os",
+      "kpi-analytics-os",
+      "quality-evaluation-os"
+    ]
+  },
+  "targets": {
+    "claude": {
+      "supported": true
+    },
+    "chatgpt": {
+      "supported": true
+    },
+    "gemini": {
+      "supported": true
+    },
+    "codex": {
+      "supported": true
+    }
+  },
+  "entrypoints": {
+    "spec": "OS.md",
+    "system": "SYSTEM.md",
+    "skill": "SKILL.md",
+    "setup": "SETUP.md",
+    "workflows": "WORKFLOWS/",
+    "commands": "COMMANDS/",
+    "prompts": "PROMPTS/",
+    "references": "REFERENCES/",
+    "memory": "MEMORY/",
+    "tools": "TOOLS/",
+    "evals": "EVALS/",
+    "examples": "EXAMPLES/",
+    "interfaces": "INTERFACES/",
+    "adapters": "ADAPTERS/"
+  },
+  "requires_human_approval_for": [
+    "approving any consequential change",
+    "publishing or amending a policy that binds other people",
+    "assigning or changing decision rights",
+    "accepting a risk rather than mitigating it",
+    "reverting a change other people are relying on",
+    "recording anything about an individual's conduct in a postmortem",
+    "allowing an AI system to act on a consequential decision without a human in the path"
+  ]
+}

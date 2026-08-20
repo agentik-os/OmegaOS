@@ -1,0 +1,117 @@
+{
+  "schema_version": "2.0.0",
+  "id": "business-strategy-os",
+  "num": 55,
+  "name": "Business Strategy {OS}",
+  "version": "0.1.0",
+  "status": "scaffold",
+  "group": {
+    "key": "own",
+    "label": "06 · OWN",
+    "purpose": "Turn work into assets"
+  },
+  "tagline": "The strategy of the business as an asset, not as a job.",
+  "inherits_from": null,
+  "commands": [
+    {
+      "name": "/thesis",
+      "summary": "Write or revise the asset thesis: what a buyer would be buying, and why it is not just the owner.",
+      "mode": "THESIS",
+      "emits": ["strategy.asset_thesis.published"]
+    },
+    {
+      "name": "/dependence",
+      "summary": "Score owner dependence per decision class, naming the specific decisions that live only in the owner's head.",
+      "mode": "DEPENDENCE",
+      "emits": ["strategy.owner_dependence.scored"]
+    },
+    {
+      "name": "/drivers",
+      "summary": "Build and maintain the value driver table, each entry labelled verified or unverified with its source and date.",
+      "mode": "DRIVERS",
+      "emits": ["strategy.value_driver.measured"]
+    },
+    {
+      "name": "/advantage",
+      "summary": "Run the copy test on each claimed advantage and maintain the durable advantage register.",
+      "mode": "ADVANTAGE",
+      "emits": []
+    },
+    {
+      "name": "/readiness",
+      "summary": "Compute the gap to a stated readiness standard, always naming the unverified inputs and showing the gap without them.",
+      "mode": "READINESS",
+      "emits": ["strategy.readiness.flagged"]
+    },
+    {
+      "name": "/options",
+      "summary": "Generate the strategic option set, each option naming the driver it moves, its cost and its reversibility.",
+      "mode": "OPTIONS",
+      "emits": []
+    },
+    {
+      "name": "/value-range",
+      "summary": "Produce an internal working valuation range from the operator's own numbers, with method and inputs exposed. Not an audited valuation.",
+      "mode": "DRIVERS",
+      "emits": []
+    },
+    {
+      "name": "/review",
+      "summary": "Run the review cadence, report the delta, and attach the age of every carried forward measurement.",
+      "mode": "REVIEW",
+      "emits": ["strategy.value_driver.measured", "strategy.readiness.flagged"]
+    }
+  ],
+  "dependencies": {
+    "requires": ["context-memory-os"],
+    "consumes": [
+      "kpi.metric.verified",
+      "ownership.entity.registered",
+      "ipasset.registered"
+    ],
+    "emits": [
+      "strategy.asset_thesis.published",
+      "strategy.owner_dependence.scored",
+      "strategy.value_driver.measured",
+      "strategy.readiness.flagged"
+    ]
+  },
+  "targets": {
+    "claude": {
+      "supported": true
+    },
+    "chatgpt": {
+      "supported": true
+    },
+    "gemini": {
+      "supported": true
+    },
+    "codex": {
+      "supported": true
+    }
+  },
+  "entrypoints": {
+    "spec": "OS.md",
+    "system": "SYSTEM.md",
+    "skill": "SKILL.md",
+    "setup": "SETUP.md",
+    "workflows": "WORKFLOWS/",
+    "commands": "COMMANDS/",
+    "prompts": "PROMPTS/",
+    "references": "REFERENCES/",
+    "memory": "MEMORY/",
+    "tools": "TOOLS/",
+    "evals": "EVALS/",
+    "examples": "EXAMPLES/",
+    "interfaces": "INTERFACES/",
+    "adapters": "ADAPTERS/"
+  },
+  "requires_human_approval_for": [
+    "publishing or revising the asset thesis",
+    "recording a readiness gap that will be handed to exit-liquidity-os",
+    "sending any finding or proposal to another OS",
+    "carrying a stale measurement forward into a current readiness claim",
+    "sharing any output outside the operator's own systems",
+    "any action that would move money, sign a document, change a contract, restructure an entity or execute a transaction, none of which this OS performs"
+  ]
+}

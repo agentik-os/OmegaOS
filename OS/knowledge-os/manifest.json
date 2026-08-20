@@ -1,0 +1,110 @@
+{
+  "schema_version": "2.0.0",
+  "id": "knowledge-os",
+  "num": 69,
+  "name": "Knowledge {OS}",
+  "version": "0.1.0",
+  "status": "scaffold",
+  "group": {
+    "key": "systems",
+    "label": "08 · AI & SYSTEMS",
+    "purpose": "Intelligence infrastructure for everything"
+  },
+  "tagline": "Turn scattered information into a retrievable knowledge base.",
+  "inherits_from": null,
+  "commands": [
+    {
+      "name": "/knowledge ingest <source>",
+      "mode": "ingest",
+      "summary": "Register, screen and chunk a source with its provenance."
+    },
+    {
+      "name": "/knowledge index",
+      "mode": "index",
+      "summary": "Build or rebuild the index from registered sources, then re-score retrieval."
+    },
+    {
+      "name": "/knowledge ask <question>",
+      "mode": "ask",
+      "summary": "Answer with claims that each cite a span, or abstain honestly."
+    },
+    {
+      "name": "/knowledge pack <purpose>",
+      "mode": "pack",
+      "summary": "Build a scoped retrieval pack for another OS, stating what was withheld."
+    },
+    {
+      "name": "/knowledge trace <claim>",
+      "mode": "trace",
+      "summary": "Follow a claim back through chunk, source and span to the original document."
+    },
+    {
+      "name": "/knowledge gaps",
+      "mode": "gaps",
+      "summary": "Report the questions the corpus cannot answer, ranked and routed to their owner."
+    },
+    {
+      "name": "/knowledge stale",
+      "mode": "stale",
+      "summary": "Report passages past their review date or superseded, with their owner."
+    }
+  ],
+  "dependencies": {
+    "requires": [
+      "context-memory-os"
+    ],
+    "consumes": [
+      "memory.context.compiled",
+      "documentation.page.published",
+      "librarian.extract.delivered"
+    ],
+    "emits": [
+      "knowledge.source.ingested",
+      "knowledge.index.rebuilt",
+      "knowledge.retrieval.answered",
+      "knowledge.retrieval.abstained",
+      "knowledge.claim.confirmed",
+      "knowledge.gap.detected",
+      "knowledge.source.superseded",
+      "memory.record.staged"
+    ]
+  },
+  "targets": {
+    "claude": {
+      "supported": true
+    },
+    "chatgpt": {
+      "supported": true
+    },
+    "gemini": {
+      "supported": true
+    },
+    "codex": {
+      "supported": true
+    }
+  },
+  "entrypoints": {
+    "spec": "OS.md",
+    "system": "SYSTEM.md",
+    "skill": "SKILL.md",
+    "setup": "SETUP.md",
+    "workflows": "WORKFLOWS/",
+    "commands": "COMMANDS/",
+    "prompts": "PROMPTS/",
+    "references": "REFERENCES/",
+    "memory": "MEMORY/",
+    "tools": "TOOLS/",
+    "evals": "EVALS/",
+    "examples": "EXAMPLES/",
+    "interfaces": "INTERFACES/",
+    "adapters": "ADAPTERS/"
+  },
+  "requires_human_approval_for": [
+    "ingesting a source whose licence or confidentiality is unclear",
+    "indexing content from a quarantined or unattributed source",
+    "widening a retrieval scope across a project boundary",
+    "deleting a source rather than marking it superseded",
+    "publishing a gap report that names individuals as the origin of missing material",
+    "exporting the corpus or a substantial part of it"
+  ]
+}

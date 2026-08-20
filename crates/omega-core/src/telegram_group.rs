@@ -32,7 +32,11 @@ pub struct TelegramGroupConfig {
 impl TelegramGroupConfig {
     pub fn path() -> PathBuf {
         dirs::home_dir()
-            .unwrap_or_else(|| std::env::var("HOME").map(PathBuf::from).unwrap_or_else(|_| PathBuf::from(".")))
+            .unwrap_or_else(|| {
+                std::env::var("HOME")
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|_| PathBuf::from("."))
+            })
             .join(".omega/telegram-group.toml")
     }
 

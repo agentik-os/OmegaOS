@@ -100,7 +100,8 @@ fn macos_meminfo() -> Option<(u64, u64)> {
         .ok()?
         / (1024 * 1024);
     let (page_size, pages) = read_vm_stat()?;
-    let used_pages = pages("Pages active") + pages("Pages wired down") + pages("Pages occupied by compressor");
+    let used_pages =
+        pages("Pages active") + pages("Pages wired down") + pages("Pages occupied by compressor");
     Some(((used_pages * page_size) / (1024 * 1024), total_mb))
 }
 

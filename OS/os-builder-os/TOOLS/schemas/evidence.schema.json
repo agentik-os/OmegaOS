@@ -1,0 +1,76 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentik.os/schemas/evidence.schema.json",
+  "title": "Evidence Item",
+  "description": "One observation extracted from one source, carrying its state and its provenance. The evidence register of a generated OS is an array of these. See REFERENCES/TRACEABILITY.md for what each state may support.",
+  "type": "object",
+  "required": ["id", "claim", "state", "source"],
+  "additionalProperties": false,
+  "properties": {
+    "id": {
+      "type": "string",
+      "pattern": "^E-[0-9]{3,}$",
+      "description": "Stable identifier, E-001 upward. Referenced by findings, so it never changes once assigned."
+    },
+    "claim": {
+      "type": "string",
+      "minLength": 5,
+      "description": "What is being asserted, in one sentence, phrased so it could be wrong."
+    },
+    "state": {
+      "enum": ["VERIFIED", "SUPPORTED", "INFERRED", "ASSUMED", "CONFLICTING", "UNKNOWN"],
+      "description": "VERIFIED observed directly or confirmed by two independent sources. SUPPORTED one credible source within its class limits. INFERRED derived from verified or supported items, with the inference shown. ASSUMED taken as true to proceed. CONFLICTING credible sources disagree, unresolved. UNKNOWN required and not found."
+    },
+    "source": {
+      "type": "string",
+      "minLength": 3,
+      "description": "The capture record this came from: title plus author or organisation. For state UNKNOWN, what was searched and where."
+    },
+    "source_class": {
+      "enum": ["foundational", "official", "regulatory", "academic", "technical", "practical", "book", "case_study"],
+      "description": "Bounds what this item may support. A case_study never supports a base rate; a practical source never supports a number."
+    },
+    "confidence": {
+      "enum": ["HIGH", "MEDIUM", "LOW"],
+      "description": "How sure the OS is of its INTERPRETATION. Separate from state, which is about the underlying fact, and never a substitute for it."
+    },
+    "quote": {
+      "type": "string",
+      "description": "The load bearing line, verbatim, when the item carries a number, a threshold or a definition."
+    },
+    "year": {
+      "type": ["integer", "string"],
+      "description": "Publication year, or the literal string 'undated'. Never guessed. An undated source cannot support a claim about the current state of anything."
+    },
+    "conflicts_with": {
+      "type": "array",
+      "items": { "type": "string", "pattern": "^E-[0-9]{3,}$" },
+      "description": "Other evidence ids this one contradicts. Both sides stay. Averaging two disagreeing sources is forbidden."
+    },
+    "resolution": {
+      "type": "string",
+      "description": "For a resolved conflict: which side the operating logic follows, and why. The losing side stays in the package."
+    },
+    "where_used": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "File and decision, for example 'OS.md section 7, invariant 3'. An item used nowhere is deleted before release, not kept as evidence of diligence."
+    }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "state": { "const": "CONFLICTING" } }, "required": ["state"] },
+      "then": {
+        "required": ["conflicts_with"],
+        "description": "A CONFLICTING item names what it conflicts with, or the conflict cannot be preserved."
+      }
+    },
+    {
+      "if": { "properties": { "state": { "const": "INFERRED" } }, "required": ["state"] },
+      "then": {
+        "required": ["confidence"],
+        "description": "An inference states how sure it is. An unqualified inference reads as a fact."
+      }
+    }
+  ]
+}

@@ -1,5 +1,49 @@
 use crate::providers::ProvidersConfig;
+use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+
+/// A provider launch split into non-secret shell text and structured process
+/// environment. Credentials must travel through rmux's environment field,
+/// never through command text (which can be exposed in argv or scrollback).
+#[derive(Clone, PartialEq, Eq)]
+pub struct AgentLaunch {
+    command: String,
+    environment: Vec<(String, String)>,
+}
+
+impl AgentLaunch {
+    pub fn command(&self) -> &str {
+        &self.command
+    }
+
+    pub fn environment(&self) -> impl Iterator<Item = (&str, &str)> {
+        self.environment
+            .iter()
+            .map(|(key, value)| (key.as_str(), value.as_str()))
+    }
+
+    pub fn into_parts(self) -> (String, Vec<(String, String)>) {
+        (self.command, self.environment)
+    }
+}
+
+impl std::fmt::Debug for AgentLaunch {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("AgentLaunch")
+            .field("command", &"<redacted>")
+            .field("command_bytes", &self.command.len())
+            .field(
+                "environment_keys",
+                &self
+                    .environment
+                    .iter()
+                    .map(|(key, _)| key)
+                    .collect::<Vec<_>>(),
+            )
+            .finish()
+    }
+}
 
 /// Options for launching an agent — used by the Master AISB and other
 /// callers that need to inject a hidden system prompt or continue an
@@ -16,7 +60,6 @@ pub struct LaunchOptions {
     // Other providers (Gemini, Codex, GLM, Pi, Hermes) ignore these
     // fields silently because their CLIs don't have equivalents. We
     // pass them only when Agent::Claude.
-
     /// `/goal` condition (v2.1.139+) — Claude auto-loops until this
     /// is met. Injected as the first slash command in the initial
     /// prompt. Example: "all tests in tests/auth pass and lint is clean".
@@ -31,11 +74,12 @@ pub struct LaunchOptions {
     /// drifts onto the CLI's default model. Claude-only.
     pub model: Option<String>,
 
-    /// `--max-turns N` — hard cap on conversation turns. Bounds
-    /// runaway oracles (rule R-28 cost tracking).
+    /// Requested turn cap for headless execution. Claude Code only supports
+    /// this with `--print`, so interactive rmux launches deliberately omit it.
     pub max_turns: Option<u32>,
 
-    /// `--max-budget-usd N` — hard cap on token spend.
+    /// Requested spend cap for headless execution. Interactive rmux launches
+    /// deliberately omit this print-only Claude flag.
     pub max_budget_usd: Option<f32>,
 
     /// `--name <name>` — deterministic session label for resume.
@@ -46,18 +90,15 @@ pub struct LaunchOptions {
     // set, in the Agent::Claude arm. Headless-only flags (stream-json /
     // --print / --input-format / --include-partial-messages) are NOT here —
     // they live on Lane B (claude_stream.rs) where there is no human attach.
-
     /// `--session-id <uuid>` — deterministic session id for resume/dedupe.
     /// Must be a valid UUID; we generate+persist one per oracle in ~/.omega/state.
     pub session_id: Option<String>,
     /// `--fork-session` — on resume, fork to a NEW id instead of mutating the
     /// original (use with resume_conversation/--continue). Interactive-safe.
     pub fork_session: bool,
-    /// `--permission-mode <mode>` — per-role: "plan" (oracle planning),
-    /// "acceptEdits" (trusted worker), "default"/"auto"/"dontAsk". Validated
-    /// against the CLI's 6 choices. NOTE: today Lane A passes
-    /// --dangerously-skip-permissions (agents.rs:183); a real permission-mode
-    /// policy means dropping skip-perms for roles that get a mode.
+    /// `--permission-mode <mode>` — per-role: `plan` (oracle planning),
+    /// `acceptEdits`, `auto`, `manual`, or `dontAsk`. `bypassPermissions` is
+    /// accepted only with the explicit provider high-risk opt-in.
     pub permission_mode: Option<String>,
     /// `--allowedTools` — comma/space list (e.g. "Bash(git *) Edit Read").
     pub allowed_tools: Option<String>,
@@ -192,9 +233,9 @@ impl Agent {
             Agent::Hermes => Some(
                 "T=$(mktemp) && curl -fsSL https://hermes-agent.nousresearch.com/install.sh -o \"$T\" && bash \"$T\" && hermes setup; rm -f \"$T\"",
             ),
-            // Kimi CLI (Moonshot AI) ships via uv; no curl|sh one-liner we vouch
-            // for. Install it yourself (see homepage), the roster detects it.
-            Agent::Kimi => None,
+            Agent::Kimi => Some(
+                "T=$(mktemp) && curl -fsSL https://code.kimi.com/kimi-code/install.sh -o \"$T\" && bash \"$T\"; R=$?; rm -f \"$T\"; exit $R",
+            ),
             Agent::Shell => None,
         }
     }
@@ -211,10 +252,12 @@ impl Agent {
             Agent::Claude => Some("rm -f \"$(command -v claude)\""),
             // Standalone install (see install_command): drop the binary + the
             // managed package tree, keep ~/.codex (auth + config), same as Claude.
-            Agent::Codex => Some(
-                "rm -f \"$(command -v codex)\" && rm -rf \"$HOME/.codex/packages/standalone\"",
-            ),
-            Agent::Gemini => Some("npm uninstall -g --prefix \"$HOME/.npm-global\" @google/gemini-cli"),
+            Agent::Codex => {
+                Some("rm -f \"$(command -v codex)\" && rm -rf \"$HOME/.codex/packages/standalone\"")
+            }
+            Agent::Gemini => {
+                Some("npm uninstall -g --prefix \"$HOME/.npm-global\" @google/gemini-cli")
+            }
             Agent::Pi => Some("rm -f $(which pi) && rm -rf ~/.pi"),
             Agent::Hermes => Some("rm -f $(which hermes) && rm -rf ~/.hermes"),
             // GLM shares the Claude Code binary — there is nothing GLM-specific to
@@ -234,7 +277,7 @@ impl Agent {
             Agent::Pi => Some("https://pi.dev/"),
             Agent::Hermes => Some("https://hermes-agent.nousresearch.com/"),
             Agent::Glm => Some("https://www.z.ai/"),
-            Agent::Kimi => Some("https://github.com/MoonshotAI/kimi-cli"),
+            Agent::Kimi => Some("https://www.kimi.com/code/docs/en/kimi-code-cli/"),
             Agent::Shell => None,
         }
     }
@@ -245,29 +288,34 @@ impl Agent {
         self.launch_command_with(initial_prompt, LaunchOptions::default())
     }
 
-    /// Inline `export K='V'; …` prefix for the env vars this provider needs in
-    /// its pane, scoped to the LAUNCHED provider (never leak a sibling's key
-    /// into an unrelated pane). Pulled from `providers.toml` via
-    /// [`ProvidersConfig::env_vars`] — this is the wiring that makes the
-    /// previously-dead `env_vars()` actually reach the spawned session.
-    ///
-    /// Returns "" when the provider needs no injected key (Claude/Gemini use
-    /// OAuth; Shell needs nothing). The export is emitted INLINE on the command
-    /// (not via a shell rc) because panes are launched with `bash -c`, which
-    /// reads neither ~/.zshenv nor ~/.bashrc.
-    fn provider_env_prefix(&self, cfg: &ProvidersConfig) -> String {
+    /// Strict launch builder used by session creation. Provider config errors
+    /// are propagated so a corrupt secrets file can never silently launch a
+    /// different/default provider profile.
+    pub fn try_launch_command(&self, initial_prompt: Option<&str>) -> Result<String> {
+        self.try_launch(initial_prompt).map(|launch| launch.command)
+    }
+
+    /// Build a complete typed launch. Callers that execute the command must
+    /// also pass its environment to rmux atomically.
+    pub fn try_launch(&self, initial_prompt: Option<&str>) -> Result<AgentLaunch> {
+        self.try_launch_with(initial_prompt, LaunchOptions::default())
+    }
+
+    /// Provider-scoped environment. Values deliberately never enter the shell
+    /// command string, its argv, logs, or terminal scrollback.
+    fn provider_environment(&self, cfg: &ProvidersConfig) -> Vec<(String, String)> {
         // The full env map from providers.toml (ANTHROPIC_API_KEY, OPENAI_*,
         // GLM_API_KEY, OPENROUTER_*, …). We pick only the keys relevant to the
         // launched provider so a Codex pane never sees GLM's token, etc.
         let all = cfg.env_vars();
-        let pick = |keys: &[&str]| -> String {
-            let mut s = String::new();
+        let pick = |keys: &[&str]| -> Vec<(String, String)> {
+            let mut selected = Vec::new();
             for (k, v) in &all {
                 if keys.contains(&k.as_str()) {
-                    s.push_str(&format!("export {}={}; ", k, shell_quote(v)));
+                    selected.push((k.clone(), v.clone()));
                 }
             }
-            s
+            selected
         };
         match self {
             Agent::Claude => pick(&["ANTHROPIC_API_KEY"]),
@@ -278,16 +326,25 @@ impl Agent {
             // is NO ChatGPT session to protect (API-key users still get their key).
             Agent::Codex => {
                 if crate::codex_trust::is_chatgpt_session() {
-                    String::new()
+                    Vec::new()
                 } else {
                     pick(&["OPENAI_API_KEY", "OPENAI_BASE_URL"])
                 }
             }
             Agent::Gemini => pick(&["GOOGLE_API_KEY", "GEMINI_API_KEY"]),
-            // GLM = Claude Code redirected to Z.AI; it reads ANTHROPIC_AUTH_TOKEN
-            // (falling back to GLM_API_KEY). Inject GLM_API_KEY so the GLM arm's
-            // `${ANTHROPIC_AUTH_TOKEN:-$GLM_API_KEY}` resolves to a real token.
-            Agent::Glm => pick(&["GLM_API_KEY"]),
+            // GLM = Claude Code redirected to Z.AI. Supply the exact native
+            // variable directly so no secret-bearing shell expansion is needed.
+            Agent::Glm => {
+                let mut selected = Vec::new();
+                if !cfg.glm.api_key.is_empty() {
+                    selected.push(("ANTHROPIC_AUTH_TOKEN".to_string(), cfg.glm.api_key.clone()));
+                }
+                selected.push((
+                    "ANTHROPIC_BASE_URL".to_string(),
+                    "https://api.z.ai/api/anthropic".to_string(),
+                ));
+                selected
+            }
             // Pi and Hermes both route through OpenRouter — they need the
             // OpenRouter key/base-url. Pi additionally honors its own api_key
             // (stored as pi.api_key) as the OpenRouter key when set.
@@ -295,47 +352,84 @@ impl Agent {
                 let mut s = pick(&["OPENROUTER_API_KEY", "OPENROUTER_BASE_URL"]);
                 if !cfg.pi.api_key.is_empty() {
                     // pi.api_key wins as the OpenRouter credential for the Pi pane.
-                    s.push_str(&format!(
-                        "export OPENROUTER_API_KEY={}; ",
-                        shell_quote(&cfg.pi.api_key)
-                    ));
+                    s.retain(|(key, _)| key != "OPENROUTER_API_KEY");
+                    s.push(("OPENROUTER_API_KEY".to_string(), cfg.pi.api_key.clone()));
                 }
                 s
             }
             Agent::Hermes => {
                 let mut s = pick(&["OPENROUTER_API_KEY", "OPENROUTER_BASE_URL"]);
                 if !cfg.hermes.api_key.is_empty() {
-                    s.push_str(&format!(
-                        "export OPENROUTER_API_KEY={}; ",
-                        shell_quote(&cfg.hermes.api_key)
-                    ));
+                    s.retain(|(key, _)| key != "OPENROUTER_API_KEY");
+                    s.push(("OPENROUTER_API_KEY".to_string(), cfg.hermes.api_key.clone()));
                 }
                 s
             }
             // Kimi CLI reads its Moonshot key from the environment when set.
-            Agent::Kimi => pick(&["MOONSHOT_API_KEY", "KIMI_API_KEY"]),
-            Agent::Shell => String::new(),
+            Agent::Kimi => pick(&[
+                "KIMI_MODEL_NAME",
+                "KIMI_MODEL_API_KEY",
+                "KIMI_MODEL_PROVIDER_TYPE",
+                "KIMI_MODEL_BASE_URL",
+            ]),
+            Agent::Shell => Vec::new(),
         }
     }
 
     /// Returns the shell command with options (system prompt file, continue, etc.).
     pub fn launch_command_with(&self, initial_prompt: Option<&str>, opts: LaunchOptions) -> String {
+        self.try_launch_command_with(initial_prompt, opts)
+            .unwrap_or_else(blocked_launch_command)
+    }
+
+    pub fn try_launch_command_with(
+        &self,
+        initial_prompt: Option<&str>,
+        opts: LaunchOptions,
+    ) -> Result<String> {
+        self.try_launch_with(initial_prompt, opts)
+            .map(|launch| launch.command)
+    }
+
+    pub fn try_launch_with(
+        &self,
+        initial_prompt: Option<&str>,
+        opts: LaunchOptions,
+    ) -> Result<AgentLaunch> {
+        let providers = ProvidersConfig::try_load()
+            .context("provider configuration is invalid; refusing agent launch")?;
+        self.launch_with_providers(initial_prompt, opts, &providers)
+    }
+
+    #[cfg(test)]
+    fn launch_command_with_providers(
+        &self,
+        initial_prompt: Option<&str>,
+        opts: LaunchOptions,
+        providers: &ProvidersConfig,
+    ) -> Result<String> {
+        self.launch_with_providers(initial_prompt, opts, providers)
+            .map(|launch| launch.command)
+    }
+
+    pub(crate) fn launch_with_providers(
+        &self,
+        initial_prompt: Option<&str>,
+        opts: LaunchOptions,
+        providers: &ProvidersConfig,
+    ) -> Result<AgentLaunch> {
+        providers.validate()?;
+        let environment = self.provider_environment(providers);
         let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-        // Resolve provider credentials once — the env-var wiring (a) above + the
-        // configured model fallbacks (b/c/d) both read from providers.toml.
-        let providers = ProvidersConfig::load();
         // PATH guard: panes launch via `bash -c`, which reads NO shell rc and
         // inherits the rmux daemon's (possibly stale) PATH — so `claude`/`bun`/
         // `omega` in ~/.local/bin or ~/.bun/bin can be "command not found", and a
         // dispatched oracle drops to a bare shell instead of running its mission.
         // Prepend the user bin dirs so every launched agent + tool always resolves.
-        let env_prefix = format!(
-            "export PATH=\"{home}/.local/bin:{home}/.bun/bin:{home}/.npm-global/bin:$PATH\"; {}",
-            self.provider_env_prefix(&providers),
-            home = home
-        );
+        let path_prefix = format!("{home}/.local/bin:{home}/.bun/bin:{home}/.npm-global/bin");
+        let env_prefix = format!("export PATH={}:$PATH; ", shell_quote(&path_prefix));
 
-        match self {
+        let command = match self {
             Agent::Claude => {
                 // CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1: render in the normal
                 // screen (not the alternate screen) so the full conversation
@@ -344,11 +438,9 @@ impl Agent {
                 // `bash -c`, which reads neither ~/.zshenv nor ~/.bashrc, and
                 // panes inherit the (older) rmux daemon env — so a shell-rc
                 // export never reaches it.
-                // A real --permission-mode policy REPLACES blanket
-                // --dangerously-skip-permissions: when a role declares a mode
-                // (oracle→"plan", trusted worker→"acceptEdits", …) we honor it
-                // instead of skipping permissions entirely. With no mode set we
-                // keep the existing skip-perms behavior (unchanged default).
+                // The safe unattended default is Claude Code's native `auto`
+                // policy. Blanket bypass is available only through the explicit
+                // high-risk providers.toml switch.
                 // Pre-trust the pane's cwd in ~/.claude.json IMMEDIATELY before
                 // claude reads it (claude_trust.rs): with many concurrent
                 // sessions the shared config is last-writer-wins, so an earlier
@@ -356,37 +448,43 @@ impl Agent {
                 // dialog re-appears — hanging dispatched oracles. Best-effort:
                 // an old omega binary without the subcommand just skips it.
                 let trust_prefix = "omega trust-dir \"$PWD\" >/dev/null 2>&1; ";
-                let mut args = match opts.permission_mode {
-                    Some(ref mode) => format!(
-                        "{}{}CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1 claude --permission-mode {}",
-                        env_prefix,
-                        trust_prefix,
-                        shell_quote(mode)
-                    ),
-                    None => format!(
-                        "{}{}CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1 claude --dangerously-skip-permissions",
-                        env_prefix, trust_prefix,
-                    ),
-                };
+                let permission_args = claude_permission_args(
+                    opts.permission_mode.as_deref(),
+                    providers.claude.dangerously_skip_permissions,
+                )?;
+                let mut args = format!(
+                    "{}{}CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1 claude{}",
+                    env_prefix, trust_prefix, permission_args
+                );
                 if let Some(ref sys_file) = opts.system_prompt_file {
-                    args.push_str(&format!(" --append-system-prompt-file {}", shell_quote(sys_file)));
+                    args.push_str(&format!(
+                        " --append-system-prompt-file {}",
+                        shell_quote(sys_file)
+                    ));
                 }
                 if opts.resume_conversation {
                     args.push_str(" --continue");
                 }
                 // Claude-only smart flags (2026-w20+). Silently ignored
                 // by older Claude Code installs.
-                if let Some(ref m) = opts.model {
+                if let Some(m) = opts
+                    .model
+                    .as_deref()
+                    .or_else(|| nonempty(&providers.claude.model))
+                {
                     args.push_str(&format!(" --model {}", shell_quote(m)));
                 }
-                if let Some(ref e) = opts.effort {
+                if let Some(e) = opts
+                    .effort
+                    .as_deref()
+                    .or_else(|| nonempty(&providers.claude.effort))
+                {
                     args.push_str(&format!(" --effort {}", shell_quote(e)));
                 }
-                if let Some(t) = opts.max_turns {
-                    args.push_str(&format!(" --max-turns {}", t));
-                }
-                if let Some(b) = opts.max_budget_usd {
-                    args.push_str(&format!(" --max-budget-usd {}", b));
+                if opts.max_turns.is_some() || opts.max_budget_usd.is_some() {
+                    tracing::warn!(
+                        "interactive Claude launch omitted print-only max-turns/max-budget-usd flags"
+                    );
                 }
                 if let Some(ref n) = opts.session_name {
                     args.push_str(&format!(" --name {}", shell_quote(n)));
@@ -479,10 +577,6 @@ impl Agent {
                 //     screen, so the conversation flows into rmux's scrollback and
                 //     scrolls in the panel (Claude's CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1).
                 //
-                // --dangerously-bypass-approvals-and-sandbox is Codex's
-                // --dangerously-skip-permissions: an omega pane is unattended, so a
-                // per-command approval prompt is a hang, not a safety net.
-                //
                 // COLORFGBG='15;0' (light-on-dark) instead of NO_COLOR. Codex's
                 // composer paints a full-width RGB(30,30,30) band; NO_COLOR used
                 // to strip it, but that also killed ALL syntax color and left
@@ -493,29 +587,25 @@ impl Agent {
                 // dark band only mismatches a LIGHT outer terminal now; on the
                 // dark rmux/omega TUI it blends in. Quoted so the ';' is one env
                 // value, not a shell separator.
-                // (3) --dangerously-bypass-hook-trust — same unattended-pane
-                //     problem, third prompt. Codex gates any new or changed
-                //     entry in hooks.json behind "N hooks are new or changed",
-                //     and a dispatched oracle or worker has nobody to accept it,
-                //     so it hangs forever (observed 2026-07-24: every dispatch
-                //     broke the day the OmegaOS hooks were registered). The
-                //     per-hook trusted_hash is not reproducible across machines
-                //     or Codex versions, so install.sh cannot pre-seed it.
-                //
-                //     The residual risk is a repo-local .codex/hooks.json in the
-                //     project being worked on. That risk is real but strictly
-                //     smaller than what this same command line already grants
-                //     one flag earlier: the session runs with approvals AND the
-                //     sandbox fully bypassed, i.e. an unrestricted shell. A hook
-                //     cannot do more than that shell already can. Scoped to
-                //     omega-spawned sessions only — the operator's own
-                //     interactive `codex` keeps the trust prompt.
                 let trust_prefix = "omega trust-dir \"$PWD\" >/dev/null 2>&1; ";
-                let args = format!(
-                    "{}{}COLORFGBG='15;0' codex --dangerously-bypass-approvals-and-sandbox \
-                     --dangerously-bypass-hook-trust --no-alt-screen",
-                    env_prefix, trust_prefix,
+                let mut args = format!(
+                    "{}{}COLORFGBG='15;0' codex --strict-config --sandbox workspace-write \
+                     --approve-for-me --no-alt-screen",
+                    env_prefix, trust_prefix
                 );
+                if let Some(model) = nonempty(&providers.codex.model) {
+                    args.push_str(&format!(" --model {}", shell_quote(model)));
+                }
+                let omega_dir = crate::config::omega_dir();
+                for writable in [omega_dir.join("state"), omega_dir.join("locks")] {
+                    args.push_str(&format!(
+                        " --add-dir {}",
+                        shell_quote(&writable.to_string_lossy())
+                    ));
+                }
+                for writable in &providers.codex.additional_writable_dirs {
+                    args.push_str(&format!(" --add-dir {}", shell_quote(writable)));
+                }
                 match initial_prompt {
                     Some(p) => format!(
                         "bash -c {}",
@@ -525,22 +615,22 @@ impl Agent {
                 }
             }
             Agent::Gemini => {
-                // Try alias first, fall back to npm-global, fall back to plain gemini
-                let gemini_bin = format!("{}/.npm-global/bin/gemini", home);
+                let model_arg = nonempty(&providers.gemini.model)
+                    .map(|model| format!(" --model {}", shell_quote(model)))
+                    .unwrap_or_default();
                 match initial_prompt {
                     Some(p) => format!(
                         "bash -c {}",
                         shell_quote(&format!(
-                            "{}{} {}; exec bash",
+                            "{}gemini{} {}; exec bash",
                             env_prefix,
-                            gemini_bin,
+                            model_arg,
                             shell_quote(p)
                         ))
                     ),
-                    None if env_prefix.is_empty() => gemini_bin,
                     None => format!(
                         "bash -c {}",
-                        shell_quote(&format!("{}{}; exec bash", env_prefix, gemini_bin))
+                        shell_quote(&format!("{}gemini{}; exec bash", env_prefix, model_arg))
                     ),
                 }
             }
@@ -605,17 +695,9 @@ impl Agent {
             Agent::Glm => {
                 // GLM (Z.AI/Zhipu) = Claude Code redirected to Z.AI's Anthropic-
                 // compatible endpoint. The base URL is a constant; the auth token is
-                // taken from $ANTHROPIC_AUTH_TOKEN (or $GLM_API_KEY). Exported INLINE
-                // so only this pane is redirected — a sibling `claude` pane is
-                // untouched. Note: GLM uses ANTHROPIC_AUTH_TOKEN, not ANTHROPIC_API_KEY.
-                // env_prefix injects GLM_API_KEY (from providers.toml) so the
-                // `${ANTHROPIC_AUTH_TOKEN:-$GLM_API_KEY}` fallback below resolves
-                // to a real token (fix d). The base-url + token-redirect stays
-                // inline so only this pane is redirected.
-                let pre = format!(
-                    "{}export ANTHROPIC_BASE_URL=https://api.z.ai/api/anthropic; export ANTHROPIC_AUTH_TOKEN=\"${{ANTHROPIC_AUTH_TOKEN:-$GLM_API_KEY}}\";",
-                    env_prefix
-                );
+                // taken from the structured ANTHROPIC_AUTH_TOKEN environment.
+                // The rmux request scopes the redirect to this pane without
+                // exposing the credential in shell text.
                 // (d) Pass --model when glm.model is configured.
                 let model_arg = if providers.glm.model.is_empty() {
                     String::new()
@@ -623,22 +705,19 @@ impl Agent {
                     format!(" --model {}", shell_quote(&providers.glm.model))
                 };
                 // GLM IS the claude binary, so a detached GLM session hits the
-                // exact same walls as Claude: the "trust this folder?" dialog
-                // and per-action permission prompts, with nobody attached to
-                // answer. Same cure as the Claude arm: pre-trust the cwd,
-                // render inline, and honor an explicit permission mode, else
-                // skip permissions.
+                // GLM uses the Claude binary and therefore the same permission
+                // policy: auto by default, explicit high-risk bypass only.
                 let trust_prefix = "omega trust-dir \"$PWD\" >/dev/null 2>&1; ";
-                let perms = match opts.permission_mode {
-                    Some(ref mode) => format!(" --permission-mode {}", shell_quote(mode)),
-                    None => " --dangerously-skip-permissions".to_string(),
-                };
+                let perms = claude_permission_args(
+                    opts.permission_mode.as_deref(),
+                    providers.glm.dangerously_skip_permissions,
+                )?;
                 match initial_prompt {
                     Some(p) => format!(
                         "bash -c {}",
                         shell_quote(&format!(
                             "{} {}CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1 claude{}{} {}; exec bash",
-                            pre,
+                            env_prefix,
                             trust_prefix,
                             perms,
                             model_arg,
@@ -649,23 +728,49 @@ impl Agent {
                         "bash -c {}",
                         shell_quote(&format!(
                             "{} {}CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1 claude{}{}; exec bash",
-                            pre, trust_prefix, perms, model_arg
+                            env_prefix, trust_prefix, perms, model_arg
                         ))
                     ),
                 }
             }
-            // Kimi CLI: plain interactive launch; a prompt is passed as the
-            // first positional argument (kimi-cli accepts an initial message).
-            Agent::Kimi => match initial_prompt {
-                Some(p) => format!(
-                    "bash -c {}",
-                    shell_quote(&format!("{} kimi {}; exec bash", env_prefix, shell_quote(p)))
-                ),
-                None => format!(
-                    "bash -c {}",
-                    shell_quote(&format!("{} kimi; exec bash", env_prefix))
-                ),
-            },
+            Agent::Kimi => {
+                // Kimi Code's current CLI has no positional prompt. `--prompt`
+                // is its documented one-shot lane; interactive sessions use
+                // `--auto` so detached agents do not block on approval dialogs.
+                let model_arg = if providers.kimi.api_key.is_empty() {
+                    nonempty(&providers.kimi.model)
+                        .map(|model| format!(" --model {}", shell_quote(model)))
+                        .unwrap_or_default()
+                } else {
+                    // The complete KIMI_MODEL_* family above already selects the
+                    // direct provider/model. `--model` would override that alias.
+                    String::new()
+                };
+                let resume_arg = if opts.resume_conversation {
+                    " --continue"
+                } else {
+                    ""
+                };
+                match initial_prompt {
+                    Some(p) => format!(
+                        "bash -c {}",
+                        shell_quote(&format!(
+                            "{}kimi --auto{}{} --prompt {}; exec bash",
+                            env_prefix,
+                            model_arg,
+                            resume_arg,
+                            shell_quote(p)
+                        ))
+                    ),
+                    None => format!(
+                        "bash -c {}",
+                        shell_quote(&format!(
+                            "{}kimi --auto{}{}; exec bash",
+                            env_prefix, model_arg, resume_arg
+                        ))
+                    ),
+                }
+            }
             Agent::Shell => match initial_prompt {
                 Some(p) => format!(
                     "bash -c {}",
@@ -673,7 +778,11 @@ impl Agent {
                 ),
                 None => "bash".to_string(),
             },
-        }
+        };
+        Ok(AgentLaunch {
+            command,
+            environment,
+        })
     }
 
     pub fn is_available(&self) -> bool {
@@ -711,11 +820,47 @@ impl Agent {
     }
 }
 
+fn nonempty(value: &str) -> Option<&str> {
+    (!value.trim().is_empty()).then_some(value)
+}
+
+fn claude_permission_args(requested: Option<&str>, explicit_bypass: bool) -> Result<String> {
+    let mode = requested.unwrap_or(if explicit_bypass {
+        "bypassPermissions"
+    } else {
+        "auto"
+    });
+    match mode {
+        "acceptEdits" | "auto" | "manual" | "dontAsk" | "plan" => {
+            Ok(format!(" --permission-mode {}", shell_quote(mode)))
+        }
+        "bypassPermissions" if explicit_bypass => {
+            Ok(" --dangerously-skip-permissions".to_string())
+        }
+        "bypassPermissions" => anyhow::bail!(
+            "bypassPermissions requires the explicit dangerously_skip_permissions provider setting"
+        ),
+        other => anyhow::bail!(
+            "unsupported Claude permission mode {other:?}; expected acceptEdits, auto, manual, dontAsk, plan, or explicitly-enabled bypassPermissions"
+        ),
+    }
+}
+
+fn blocked_launch_command(error: anyhow::Error) -> String {
+    let message = format!("OmegaOS refused agent launch: {error:#}");
+    format!(
+        "bash -c {}",
+        shell_quote(&format!(
+            "printf '%s\\n' {} >&2; exit 78",
+            shell_quote(&message)
+        ))
+    )
+}
+
 fn has_cmd(name: &str) -> bool {
     let path = std::env::var("PATH").unwrap_or_default();
-    path.split(':').any(|dir| {
-        std::path::Path::new(dir).join(name).exists()
-    })
+    path.split(':')
+        .any(|dir| std::path::Path::new(dir).join(name).exists())
 }
 
 /// True iff the Claude Code binary is reachable — on $PATH, or at a canonical
@@ -737,15 +882,23 @@ fn shell_quote(s: &str) -> String {
 mod tests {
     use super::*;
 
+    fn launch(agent: Agent, prompt: Option<&str>, opts: LaunchOptions) -> String {
+        agent
+            .launch_command_with_providers(prompt, opts, &ProvidersConfig::default())
+            .unwrap()
+    }
+
     // The worker/oracle identity contract: when LaunchOptions.session_name is
     // set, the generated Claude command MUST carry `--name <session>` so the
     // Claude conversation shares the rmux session's deterministic identity
     // (resumable via `claude --resume <name>`).
     #[test]
     fn launch_command_with_session_name_emits_name_flag() {
-        let mut opts = LaunchOptions::default();
-        opts.session_name = Some("Verba-worker-fix-auth-401".to_string());
-        let cmd = Agent::Claude.launch_command_with(Some("do the thing"), opts);
+        let opts = LaunchOptions {
+            session_name: Some("Verba-worker-fix-auth-401".to_string()),
+            ..Default::default()
+        };
+        let cmd = launch(Agent::Claude, Some("do the thing"), opts);
         // The whole command is wrapped in an outer `bash -c '…'`, so the inner
         // shell_quote renders as '\'' — assert on flag + value, not exact quoting.
         assert!(
@@ -756,30 +909,47 @@ mod tests {
 
     #[test]
     fn launch_command_without_session_name_has_no_name_flag() {
-        let cmd = Agent::Claude.launch_command(Some("do the thing"));
+        let cmd = launch(
+            Agent::Claude,
+            Some("do the thing"),
+            LaunchOptions::default(),
+        );
         assert!(!cmd.contains(" --name "), "unexpected --name in: {cmd}");
     }
 
     // A detached GLM worker runs the claude binary: without pre-trust and a
-    // permission stance it hangs on dialogs nobody answers (spawn-worker
-    // --agent glm depends on this).
+    // non-blocking permission stance it hangs on dialogs nobody answers.
     #[test]
     fn glm_launch_is_dispatch_safe() {
-        let cmd = Agent::Glm.launch_command(Some("do the thing"));
+        let launch = Agent::Glm
+            .launch_with_providers(
+                Some("do the thing"),
+                LaunchOptions::default(),
+                &ProvidersConfig::default(),
+            )
+            .unwrap();
+        let cmd = launch.command();
+        let environment = launch
+            .environment()
+            .collect::<std::collections::BTreeMap<_, _>>();
         assert!(
             cmd.contains("omega trust-dir")
-                && cmd.contains("--dangerously-skip-permissions")
+                && cmd.contains("--permission-mode")
+                && cmd.contains("auto")
+                && !cmd.contains("--dangerously-skip-permissions")
                 && cmd.contains("CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1")
-                && cmd.contains("ANTHROPIC_BASE_URL=https://api.z.ai/api/anthropic"),
-            "GLM launch must be dispatch-safe (trust + skip-perms + inline redirect): {cmd}"
+                && environment.get("ANTHROPIC_BASE_URL") == Some(&"https://api.z.ai/api/anthropic"),
+            "GLM launch must be dispatch-safe with a structured redirect: {launch:?}"
         );
     }
 
     #[test]
     fn glm_launch_honors_permission_mode() {
-        let mut opts = LaunchOptions::default();
-        opts.permission_mode = Some("plan".to_string());
-        let cmd = Agent::Glm.launch_command_with(None, opts);
+        let opts = LaunchOptions {
+            permission_mode: Some("plan".to_string()),
+            ..Default::default()
+        };
+        let cmd = launch(Agent::Glm, None, opts);
         assert!(
             cmd.contains("--permission-mode")
                 && cmd.contains("plan")
@@ -790,16 +960,130 @@ mod tests {
 
     #[test]
     fn codex_launch_keeps_color_but_stays_terminal_safe() {
-        let cmd = Agent::Codex.launch_command(None);
+        let cmd = launch(Agent::Codex, None, LaunchOptions::default());
         // Color is preserved (no NO_COLOR); a dark-terminal hint keeps Codex's
         // band readable (light-on-dark) instead of black-on-black; inline render.
         assert!(
             !cmd.contains("NO_COLOR")
                 && cmd.contains("COLORFGBG=")
                 && cmd.contains("15;0")
-                && cmd.contains("codex --dangerously-bypass-approvals-and-sandbox")
+                && cmd.contains("codex --strict-config --sandbox workspace-write")
+                && cmd.contains("--approve-for-me")
+                && cmd.contains("--add-dir")
+                && !cmd.contains("dangerously-bypass")
                 && cmd.contains("--no-alt-screen"),
             "Codex launch must keep color and stay terminal-safe: {cmd}"
         );
+    }
+
+    #[test]
+    fn claude_interactive_defaults_to_auto_and_omits_print_only_limits() {
+        let opts = LaunchOptions {
+            max_turns: Some(7),
+            max_budget_usd: Some(1.25),
+            ..Default::default()
+        };
+        let cmd = launch(Agent::Claude, None, opts);
+        assert!(
+            cmd.contains("--permission-mode") && cmd.contains("auto"),
+            "{cmd}"
+        );
+        assert!(!cmd.contains("--max-turns"), "{cmd}");
+        assert!(!cmd.contains("--max-budget-usd"), "{cmd}");
+        assert!(!cmd.contains("dangerously-skip-permissions"), "{cmd}");
+    }
+
+    #[test]
+    fn claude_bypass_requires_explicit_provider_opt_in() {
+        let opts = LaunchOptions {
+            permission_mode: Some("bypassPermissions".to_string()),
+            ..Default::default()
+        };
+        let err = Agent::Claude
+            .launch_command_with_providers(None, opts.clone(), &ProvidersConfig::default())
+            .unwrap_err();
+        assert!(err.to_string().contains("explicit"));
+
+        let providers = ProvidersConfig {
+            claude: crate::providers::ClaudeConfig {
+                dangerously_skip_permissions: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let cmd = Agent::Claude
+            .launch_command_with_providers(None, opts, &providers)
+            .unwrap();
+        assert!(cmd.contains("--dangerously-skip-permissions"), "{cmd}");
+    }
+
+    #[test]
+    fn kimi_uses_current_auto_prompt_and_model_override_contract() {
+        let providers = ProvidersConfig {
+            kimi: crate::providers::KimiConfig {
+                model: "kimi-for-coding".to_string(),
+                api_key: "key with ' quote; $(touch nope)".to_string(),
+                base_url: "https://api.moonshot.ai/v1".to_string(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let launch = Agent::Kimi
+            .launch_with_providers(
+                Some("inspect; echo unsafe"),
+                LaunchOptions::default(),
+                &providers,
+            )
+            .unwrap();
+        let cmd = launch.command();
+        let env = launch
+            .environment()
+            .collect::<std::collections::BTreeMap<_, _>>();
+        assert_eq!(env.get("KIMI_MODEL_NAME"), Some(&"kimi-for-coding"));
+        assert_eq!(
+            env.get("KIMI_MODEL_API_KEY"),
+            Some(&"key with ' quote; $(touch nope)")
+        );
+        assert!(!cmd.contains("KIMI_MODEL_NAME"), "{cmd}");
+        assert!(!cmd.contains("KIMI_MODEL_API_KEY"), "{cmd}");
+        assert!(!cmd.contains("key with ' quote; $(touch nope)"), "{cmd}");
+        assert!(!cmd.contains("export KIMI_API_KEY="), "{cmd}");
+        assert!(cmd.contains("kimi --auto"), "{cmd}");
+        assert!(cmd.contains("--prompt"), "{cmd}");
+    }
+
+    #[test]
+    fn provider_secrets_are_structured_and_debug_redacted() {
+        let secret = "never-in-command-or-debug-42";
+        let providers = ProvidersConfig {
+            glm: crate::providers::GlmConfig {
+                api_key: secret.to_string(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let launch = Agent::Glm
+            .launch_with_providers(None, LaunchOptions::default(), &providers)
+            .unwrap();
+        let env = launch
+            .environment()
+            .collect::<std::collections::BTreeMap<_, _>>();
+        assert_eq!(env.get("ANTHROPIC_AUTH_TOKEN"), Some(&secret));
+        assert!(!launch.command().contains(secret));
+        assert!(!format!("{launch:?}").contains(secret));
+    }
+
+    #[test]
+    fn injection_shaped_values_round_trip_as_one_shell_argument() {
+        let tmp = tempfile::tempdir().unwrap();
+        let marker = tmp.path().join("injection-marker");
+        let value = format!("model'; touch {}; echo '$HOME", marker.display());
+        let output = std::process::Command::new("bash")
+            .args(["-c", &format!("printf '%s' {}", shell_quote(&value))])
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        assert_eq!(String::from_utf8(output.stdout).unwrap(), value);
+        assert!(!marker.exists());
     }
 }

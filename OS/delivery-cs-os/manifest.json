@@ -1,0 +1,181 @@
+{
+  "schema_version": "2.0.0",
+  "id": "delivery-cs-os",
+  "num": 40,
+  "name": "Delivery & Customer Success {OS}",
+  "version": "0.1.0",
+  "status": "scaffold",
+  "group": {
+    "key": "grow",
+    "label": "04 · GROW",
+    "purpose": "Turn value into distribution and revenue"
+  },
+  "tagline": "Fulfil the promise, drive adoption, earn the renewal.",
+  "inherits_from": "delivery-customer-success-os",
+  "commands": [
+    {
+      "name": "/delivery",
+      "does": "Opens the delivery portfolio.",
+      "returns": "Health per engagement, outstanding promises, and decisions that are due."
+    },
+    {
+      "name": "/handoff-client",
+      "does": "Runs the sales to delivery transfer.",
+      "returns": "An itemised promise register with a scope verdict per promise."
+    },
+    {
+      "name": "/onboard-client",
+      "does": "Creates the onboarding plan.",
+      "returns": "A plan with a first value date and named owners on both sides."
+    },
+    {
+      "name": "/success-plan",
+      "does": "Defines outcomes and measures with the customer.",
+      "returns": "The customer's own measures, baselines and targets, agreed in writing."
+    },
+    {
+      "name": "/client-plan",
+      "does": "Creates milestones and governance.",
+      "returns": "Milestones with acceptance criteria, cadence and decision rights."
+    },
+    {
+      "name": "/client-update",
+      "does": "Drafts a transparent status update.",
+      "returns": "An unsent update stating risk with options before the deadline."
+    },
+    {
+      "name": "/scope-change",
+      "does": "Processes a change request outside agreed scope.",
+      "returns": "A priced change or a stated refusal, never silent absorption."
+    },
+    {
+      "name": "/client-risk",
+      "does": "Creates an escalation plan.",
+      "returns": "The escalation path, the specific ask, and the point of no return."
+    },
+    {
+      "name": "/adoption",
+      "does": "Builds an adoption intervention.",
+      "returns": "An intervention with a measurable target and a review date."
+    },
+    {
+      "name": "/value-proof",
+      "does": "Compiles outcome evidence.",
+      "returns": "Attributed value, plus an explicit list of what cannot be attributed."
+    },
+    {
+      "name": "/qbr",
+      "does": "Prepares a business review.",
+      "returns": "A review built on the success plan measures and the value proof."
+    },
+    {
+      "name": "/renew-client",
+      "does": "Prepares the renewal recommendation.",
+      "returns": "A recommendation with its signals, sent to Revenue {OS} to decide."
+    },
+    {
+      "name": "/case-study",
+      "does": "Requests consent and builds a case study.",
+      "returns": "Scoped written consent, then a draft the customer sees first."
+    },
+    {
+      "name": "/offboard",
+      "does": "Closes an engagement responsibly.",
+      "returns": "A handover pack, data control returned, and the learning captured."
+    }
+  ],
+  "dependencies": {
+    "requires": [
+      "revenue-os"
+    ],
+    "consumes_from": [
+      "sales-os",
+      "offer-os",
+      "revenue-os",
+      "quality-evaluation-os"
+    ],
+    "emits_to": [
+      "revenue-os",
+      "growth-os",
+      "storyteller-os",
+      "content-os"
+    ],
+    "handoffs": [
+      {
+        "to": "sales-os",
+        "artifact": "the signed commitment and every promise made in the sale"
+      },
+      {
+        "to": "offer-os",
+        "artifact": "the scope boundary"
+      },
+      {
+        "to": "revenue-os",
+        "artifact": "contract and payment reconciliation"
+      },
+      {
+        "to": "quality-evaluation-os",
+        "artifact": "acceptance evidence"
+      },
+      {
+        "to": "revenue-os",
+        "artifact": "acceptance record and adoption signal"
+      },
+      {
+        "to": "growth-os",
+        "artifact": "acceptance record and adoption signal"
+      },
+      {
+        "to": "revenue-os",
+        "artifact": "renewal recommendation"
+      },
+      {
+        "to": "storyteller-os",
+        "artifact": "consented case study material"
+      },
+      {
+        "to": "content-os",
+        "artifact": "consented case study material"
+      }
+    ]
+  },
+  "targets": {
+    "claude": {
+      "supported": true
+    },
+    "chatgpt": {
+      "supported": true
+    },
+    "gemini": {
+      "supported": true
+    },
+    "codex": {
+      "supported": true
+    }
+  },
+  "entrypoints": {
+    "spec": "OS.md",
+    "system": "SYSTEM.md",
+    "skill": "SKILL.md",
+    "setup": "SETUP.md",
+    "workflows": "WORKFLOWS/",
+    "commands": "COMMANDS/",
+    "prompts": "PROMPTS/",
+    "references": "REFERENCES/",
+    "memory": "MEMORY/",
+    "tools": "TOOLS/",
+    "evals": "EVALS/",
+    "examples": "EXAMPLES/",
+    "interfaces": "INTERFACES/",
+    "adapters": "ADAPTERS/"
+  },
+  "requires_human_approval_for": [
+    "sending any customer-facing update, on the exact text",
+    "accepting a scope change",
+    "escalating to a customer executive",
+    "publishing a case study, with the customer's written consent and prior review",
+    "recording a deliverable as accepted without customer evidence",
+    "sending a renewal recommendation that diverges from the health signals",
+    "offboarding a customer or deleting their data"
+  ]
+}

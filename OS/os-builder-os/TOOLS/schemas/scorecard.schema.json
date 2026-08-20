@@ -1,0 +1,68 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentik.os/schemas/scorecard.schema.json",
+  "title": "OS Quality Scorecard",
+  "description": "The filled sixteen dimension rubric for one version of one OS. Read by TOOLS/score_os.py, which applies the release threshold. Scores are judged, the threshold arithmetic is not.",
+  "type": "object",
+  "required": ["os", "version", "scored_by", "date", "scores"],
+  "additionalProperties": false,
+  "properties": {
+    "os": { "type": "string", "description": "The slug being scored." },
+    "version": { "type": "string", "description": "The version scored. Scores are versioned, never overwritten: the trend is the point." },
+    "scored_by": { "type": "string", "minLength": 2, "description": "Who or what produced these scores. A scorecard with no author is an assertion." },
+    "date": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$" },
+    "tier": { "enum": ["core", "full"], "description": "Which verify.py tier the package passed before it was scored. Scoring a package that fails CORE is scoring a draft." },
+    "scores": {
+      "type": "object",
+      "required": [
+        "value_proposition", "scope", "domain_depth", "human_skill",
+        "operating_logic", "evidence_discipline", "decision_quality",
+        "artifact_quality", "executive_usability", "security", "testability",
+        "traceability", "reusability", "installability", "handoffs", "adapters"
+      ],
+      "additionalProperties": false,
+      "patternProperties": {
+        "^(value_proposition|scope|domain_depth|human_skill|operating_logic|evidence_discipline|decision_quality|artifact_quality|executive_usability|security|testability|traceability|reusability|installability|handoffs|adapters)$": {
+          "type": "object",
+          "required": ["score", "evidence"],
+          "additionalProperties": false,
+          "properties": {
+            "score": { "type": "integer", "minimum": 0, "maximum": 5 },
+            "evidence": {
+              "type": "string",
+              "minLength": 10,
+              "description": "The specific observation behind the number, citing a file. A score with no evidence is a vibe with a decimal point."
+            }
+          }
+        }
+      }
+    },
+    "waivers": {
+      "type": "array",
+      "description": "A waiver lifts the per dimension minimum for ONE non critical dimension. It can never lift the average threshold, and never applies to evidence_discipline, operating_logic, artifact_quality, security or testability.",
+      "items": {
+        "type": "object",
+        "required": ["dimension", "approver", "reason"],
+        "additionalProperties": false,
+        "properties": {
+          "dimension": {
+            "enum": [
+              "value_proposition", "scope", "domain_depth", "human_skill",
+              "decision_quality", "executive_usability", "traceability",
+              "reusability", "installability", "handoffs", "adapters"
+            ]
+          },
+          "approver": { "type": "string", "minLength": 2 },
+          "reason": { "type": "string", "minLength": 10 },
+          "expires": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$" }
+        }
+      }
+    },
+    "gate": {
+      "type": "object",
+      "description": "The eighteen item release gate result, recorded alongside the scores. See EVALS/RELEASE-GATE.md.",
+      "additionalProperties": { "enum": ["YES", "NO", "NA"] }
+    },
+    "notes": { "type": "string" }
+  }
+}

@@ -7,7 +7,20 @@
 
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
+use std::cell::RefCell;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+
+const MAX_TRACKER_BYTES: u64 = 8 * 1024 * 1024;
+const TRACKER_LOCK: &str = ".tracker.lock";
+static TRACKER_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+#[derive(Debug, Clone)]
+struct PlanSourceState {
+    revision: u64,
+    digest: String,
+}
 
 /// A single implementation step with full context.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -138,6 +151,17 @@ pub struct PlanTracker {
     pub generated_at: String,
     pub phases: Vec<PlanPhase>,
     pub steps: Vec<PlanStep>,
+    /// Monotonic on-disk generation used by the save-time compare-and-swap.
+    /// Kept private so callers cannot forge the generation they are expected
+    /// to have observed through `load_strict`.
+    #[serde(default, rename = "_omega_revision")]
+    storage_revision: u64,
+    /// Exact generation and byte digest observed by this in-memory instance.
+    /// This is deliberately not serialized. Two processes loading generation
+    /// N receive independent snapshots; after one publishes N+1, the other's
+    /// save is rejected instead of silently winning last-writer-wins.
+    #[serde(skip)]
+    source_state: RefCell<Option<PlanSourceState>>,
 }
 
 impl PlanTracker {
@@ -150,6 +174,8 @@ impl PlanTracker {
             generated_at: chrono::Utc::now().to_rfc3339(),
             phases: Vec::new(),
             steps: Vec::new(),
+            storage_revision: 0,
+            source_state: RefCell::new(None),
         }
     }
 
@@ -168,16 +194,7 @@ impl PlanTracker {
     /// a corrupt tracker as "no .planner/tracker.json" — the operator was told
     /// the plan doesn't exist while it sat there with invisible schema drift.
     pub fn load_strict(project_dir: &Path) -> Result<Option<Self>> {
-        let path = Self::tracker_path(project_dir);
-        if !path.exists() {
-            return Ok(None);
-        }
-        let raw = std::fs::read_to_string(&path)
-            .with_context(|| format!("reading {}", path.display()))?;
-        let tracker = serde_json::from_str(&raw).with_context(|| {
-            format!("{} exists but failed to parse — fix the JSON/schema", path.display())
-        })?;
-        Ok(Some(tracker))
+        Self::load_secure_document(project_dir)
     }
 
     /// Strict structural validation of a loaded plan. The engine REFUSES to run a
@@ -245,8 +262,8 @@ impl PlanTracker {
             // Content checks: at run time, only steps with REMAINING work are
             // gated — terminal steps are history, and refusing to resume a
             // half-built project over them would brick it.
-            let content_gated = strict
-                || matches!(s.status, StepStatus::Pending | StepStatus::InProgress);
+            let content_gated =
+                strict || matches!(s.status, StepStatus::Pending | StepStatus::InProgress);
             if !content_gated {
                 continue;
             }
@@ -309,10 +326,108 @@ impl PlanTracker {
 
     pub fn save(&self, project_dir: &Path) -> Result<()> {
         let dir = project_dir.join(".planner");
-        std::fs::create_dir_all(&dir)?;
-        let json = serde_json::to_string_pretty(self)?;
-        std::fs::write(dir.join("tracker.json"), json)?;
+        crate::scope::ensure_private_state_dir(&dir)
+            .with_context(|| format!("preparing private planner state at {}", dir.display()))?;
+        let _lock = crate::scope::lock_private_state_file(&dir, TRACKER_LOCK)?;
+        self.save_locked(project_dir)?;
         Ok(())
+    }
+
+    fn save_locked(&self, project_dir: &Path) -> Result<()> {
+        let path = Self::tracker_path(project_dir);
+        let current = Self::load_secure_document(project_dir)?;
+        let expected = self.source_state.borrow().clone();
+
+        match (expected.as_ref(), current.as_ref()) {
+            (Some(expected), Some(observed))
+                if observed.storage_revision == expected.revision
+                    && observed
+                        .source_state
+                        .borrow()
+                        .as_ref()
+                        .is_some_and(|source| {
+                            source.digest.as_str() == expected.digest.as_str()
+                        }) => {}
+            (None, None) if self.storage_revision == 0 => {}
+            (Some(_), None) => {
+                bail!("planner tracker disappeared before compare-and-swap; reload before saving")
+            }
+            (None, Some(_)) => {
+                bail!("planner tracker already exists; reload before replacing it")
+            }
+            (None, None) => {
+                bail!(
+                    "detached planner tracker carries revision {}; reload before saving",
+                    self.storage_revision
+                )
+            }
+            _ => bail!("stale planner tracker write refused: generation or content digest changed"),
+        }
+
+        let current_revision = current
+            .as_ref()
+            .map(|tracker| tracker.storage_revision)
+            .unwrap_or(0);
+        let next_revision = current_revision
+            .checked_add(1)
+            .ok_or_else(|| anyhow::anyhow!("planner tracker revision overflow"))?;
+        let mut published = self.clone();
+        published.storage_revision = next_revision;
+        published.source_state.replace(None);
+        let bytes = serde_json::to_vec_pretty(&published)?;
+        if bytes.len() as u64 > MAX_TRACKER_BYTES {
+            bail!(
+                "planner tracker is {} bytes; maximum is {} bytes",
+                bytes.len(),
+                MAX_TRACKER_BYTES
+            );
+        }
+        let expected_digest = tracker_digest(&bytes);
+        atomic_write_tracker(&path, &bytes)?;
+
+        let observed = Self::load_secure_document(project_dir)?
+            .ok_or_else(|| anyhow::anyhow!("planner tracker vanished after publish"))?;
+        let observed_source = observed.source_state.borrow().clone().ok_or_else(|| {
+            anyhow::anyhow!("planner tracker lost its source generation after publish")
+        })?;
+        if observed.storage_revision != next_revision || observed_source.digest != expected_digest {
+            bail!("planner tracker changed while being published");
+        }
+        self.source_state.replace(Some(PlanSourceState {
+            revision: next_revision,
+            digest: expected_digest,
+        }));
+        Ok(())
+    }
+
+    fn load_secure_document(project_dir: &Path) -> Result<Option<Self>> {
+        let dir = project_dir.join(".planner");
+        match std::fs::symlink_metadata(&dir) {
+            Ok(_) => crate::scope::ensure_private_state_dir(&dir).with_context(|| {
+                format!("validating private planner state at {}", dir.display())
+            })?,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => {
+                return Err(error).with_context(|| format!("inspecting {}", dir.display()))
+            }
+        }
+
+        let path = Self::tracker_path(project_dir);
+        let Some(bytes) = read_tracker_bytes(&path)? else {
+            return Ok(None);
+        };
+        let digest = tracker_digest(&bytes);
+        let tracker: Self = serde_json::from_slice(&bytes).with_context(|| {
+            format!(
+                "{} exists but failed to parse — fix the JSON/schema",
+                path.display()
+            )
+        })?;
+        tracker.source_state.replace(Some(PlanSourceState {
+            revision: tracker.storage_revision,
+            digest,
+        }));
+        Ok(Some(tracker))
     }
 
     pub fn add_phase(&mut self, name: &str, goal: &str) -> usize {
@@ -336,22 +451,13 @@ impl PlanTracker {
             .context("phase not found")?;
 
         if phase.step_ids.len() >= 25 {
-            bail!(
-                "phase {} already has 25 steps (max per phase)",
-                phase.name
-            );
+            bail!("phase {} already has 25 steps (max per phase)", phase.name);
         }
 
         // Validate dependencies exist
         for dep in &step.depends_on {
-            if !self.steps.iter().any(|s| s.step_id == *dep)
-                && !step.step_id.eq(dep)
-            {
-                bail!(
-                    "step {} depends on unknown step {}",
-                    step.step_id,
-                    dep
-                );
+            if !self.steps.iter().any(|s| s.step_id == *dep) && !step.step_id.eq(dep) {
+                bail!("step {} depends on unknown step {}", step.step_id, dep);
             }
         }
 
@@ -378,9 +484,9 @@ impl PlanTracker {
     /// Returns the next unblocked step whose dependencies are ALL done.
     /// This is the ONLY way to get the next step — enforces the DAG.
     pub fn next_step(&self) -> Option<&PlanStep> {
-        self.steps.iter().find(|step| {
-            step.status == StepStatus::Pending && self.deps_satisfied(&step.step_id)
-        })
+        self.steps
+            .iter()
+            .find(|step| step.status == StepStatus::Pending && self.deps_satisfied(&step.step_id))
     }
 
     /// All pending steps whose deps are Done, whose wave is open, and whose
@@ -449,16 +555,15 @@ impl PlanTracker {
     /// Mark a step as in-progress. Fails if deps aren't met.
     pub fn start_step(&mut self, step_id: &str) -> Result<()> {
         if !self.deps_satisfied(step_id) {
-            bail!(
-                "cannot start {} — dependencies not satisfied",
-                step_id
-            );
+            bail!("cannot start {} — dependencies not satisfied", step_id);
         }
-        let step = self
-            .get_step_mut(step_id)
-            .context("step not found")?;
+        let step = self.get_step_mut(step_id).context("step not found")?;
         if step.status != StepStatus::Pending {
-            bail!("step {} is not pending (status: {})", step_id, step.status.label());
+            bail!(
+                "step {} is not pending (status: {})",
+                step_id,
+                step.status.label()
+            );
         }
         step.status = StepStatus::InProgress;
         step.started_at = Some(chrono::Utc::now().to_rfc3339());
@@ -468,9 +573,7 @@ impl PlanTracker {
     /// Mark a step as done. In a real execution, the verify_command would be
     /// run first — the caller is responsible for checking that.
     pub fn mark_done(&mut self, step_id: &str) -> Result<()> {
-        let step = self
-            .get_step_mut(step_id)
-            .context("step not found")?;
+        let step = self.get_step_mut(step_id).context("step not found")?;
         if step.status != StepStatus::InProgress {
             bail!(
                 "step {} is not in_progress (status: {})",
@@ -489,9 +592,7 @@ impl PlanTracker {
     /// Mark a step as failed. Only an in-progress step can fail (mirrors
     /// `mark_done`'s guard) — a step cannot fail without having been attempted.
     pub fn mark_failed(&mut self, step_id: &str) -> Result<()> {
-        let step = self
-            .get_step_mut(step_id)
-            .context("step not found")?;
+        let step = self.get_step_mut(step_id).context("step not found")?;
         if step.status != StepStatus::InProgress {
             bail!(
                 "step {} is not in_progress (status: {})",
@@ -544,15 +645,31 @@ impl PlanTracker {
     /// Progress summary.
     pub fn status(&self) -> PlanStatus {
         let total = self.steps.len();
-        let done = self.steps.iter().filter(|s| s.status == StepStatus::Done).count();
-        let in_progress = self.steps.iter().filter(|s| s.status == StepStatus::InProgress).count();
-        let failed = self.steps.iter().filter(|s| s.status == StepStatus::Failed).count();
-        let blocked = self.steps.iter().filter(|s| {
-            s.status == StepStatus::Pending && !self.deps_satisfied(&s.step_id)
-        }).count();
-        let ready = self.steps.iter().filter(|s| {
-            s.status == StepStatus::Pending && self.deps_satisfied(&s.step_id)
-        }).count();
+        let done = self
+            .steps
+            .iter()
+            .filter(|s| s.status == StepStatus::Done)
+            .count();
+        let in_progress = self
+            .steps
+            .iter()
+            .filter(|s| s.status == StepStatus::InProgress)
+            .count();
+        let failed = self
+            .steps
+            .iter()
+            .filter(|s| s.status == StepStatus::Failed)
+            .count();
+        let blocked = self
+            .steps
+            .iter()
+            .filter(|s| s.status == StepStatus::Pending && !self.deps_satisfied(&s.step_id))
+            .count();
+        let ready = self
+            .steps
+            .iter()
+            .filter(|s| s.status == StepStatus::Pending && self.deps_satisfied(&s.step_id))
+            .count();
 
         PlanStatus {
             total,
@@ -681,6 +798,310 @@ impl PlanTracker {
         in_stack.remove(node);
         false
     }
+}
+
+fn tracker_digest(bytes: &[u8]) -> String {
+    blake3::hash(bytes).to_hex().to_string()
+}
+
+/// Read a tracker through a no-follow descriptor and cap allocation before
+/// parsing. The path and the opened descriptor must keep the same inode for
+/// the whole read; hard links and foreign-owned files are never authority.
+fn read_tracker_bytes(path: &Path) -> Result<Option<Vec<u8>>> {
+    let before = match std::fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error).with_context(|| format!("inspecting {}", path.display())),
+    };
+    if !before.file_type().is_file() {
+        bail!(
+            "refusing non-regular planner tracker {} (symlinks are not trusted)",
+            path.display()
+        );
+    }
+    if before.len() > MAX_TRACKER_BYTES {
+        bail!(
+            "planner tracker {} is {} bytes; maximum is {} bytes",
+            path.display(),
+            before.len(),
+            MAX_TRACKER_BYTES
+        );
+    }
+
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(planner_no_follow_flag());
+    }
+    let mut file = options.open(path).with_context(|| {
+        format!(
+            "opening planner tracker {} without symlink following",
+            path.display()
+        )
+    })?;
+    let opened = file
+        .metadata()
+        .with_context(|| format!("inspecting opened planner tracker {}", path.display()))?;
+    validate_tracker_file_identity(path, &before, &opened)?;
+    if opened.len() > MAX_TRACKER_BYTES {
+        bail!(
+            "planner tracker {} is {} bytes; maximum is {} bytes",
+            path.display(),
+            opened.len(),
+            MAX_TRACKER_BYTES
+        );
+    }
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        if opened.mode() & 0o777 != 0o600 {
+            file.set_permissions(std::fs::Permissions::from_mode(0o600))
+                .with_context(|| {
+                    format!(
+                        "setting owner-only mode on planner tracker {}",
+                        path.display()
+                    )
+                })?;
+        }
+    }
+
+    let mut bytes = Vec::with_capacity(opened.len() as usize);
+    (&mut file)
+        .take(MAX_TRACKER_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .with_context(|| format!("reading planner tracker {}", path.display()))?;
+    if bytes.len() as u64 > MAX_TRACKER_BYTES {
+        bail!(
+            "planner tracker {} exceeded the {} byte read limit",
+            path.display(),
+            MAX_TRACKER_BYTES
+        );
+    }
+
+    let after = std::fs::symlink_metadata(path)
+        .with_context(|| format!("re-checking planner tracker {}", path.display()))?;
+    let final_opened = file
+        .metadata()
+        .with_context(|| format!("re-checking opened planner tracker {}", path.display()))?;
+    validate_tracker_file_identity(path, &after, &final_opened)?;
+    if opened.len() != final_opened.len() || bytes.len() as u64 != final_opened.len() {
+        bail!(
+            "planner tracker {} changed while being read",
+            path.display()
+        );
+    }
+    Ok(Some(bytes))
+}
+
+fn validate_tracker_file_identity(
+    path: &Path,
+    path_metadata: &std::fs::Metadata,
+    opened_metadata: &std::fs::Metadata,
+) -> Result<()> {
+    if !path_metadata.file_type().is_file() || !opened_metadata.file_type().is_file() {
+        bail!("planner tracker {} is not a regular file", path.display());
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if path_metadata.dev() != opened_metadata.dev()
+            || path_metadata.ino() != opened_metadata.ino()
+        {
+            bail!(
+                "planner tracker {} changed identity while being opened",
+                path.display()
+            );
+        }
+        if opened_metadata.nlink() != 1 {
+            bail!(
+                "planner tracker {} has {} hard links; expected exactly one",
+                path.display(),
+                opened_metadata.nlink()
+            );
+        }
+        let current_uid = planner_effective_uid();
+        if opened_metadata.uid() != current_uid {
+            bail!(
+                "planner tracker {} is owned by uid {}, current uid is {}",
+                path.display(),
+                opened_metadata.uid(),
+                current_uid
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Publish beside the destination, sync the staged file, atomically rename it,
+/// then sync the already-validated parent directory. A stale staged file from
+/// a killed writer is harmless: every attempt uses `create_new` and a fresh
+/// nonce, while the last fully renamed tracker remains the recovery point.
+fn atomic_write_tracker(path: &Path, bytes: &[u8]) -> Result<()> {
+    let parent = path
+        .parent()
+        .with_context(|| format!("{} has no parent directory", path.display()))?;
+    crate::scope::ensure_private_state_dir(parent)?;
+    let directory = std::fs::File::open(parent)
+        .with_context(|| format!("opening planner state directory {}", parent.display()))?;
+    validate_tracker_parent_identity(parent, &directory)?;
+
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let filename = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("tracker.json");
+    let (staged, mut file) = (0..128)
+        .find_map(|_| {
+            let serial = TRACKER_TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+            let candidate = parent.join(format!(
+                ".{filename}.omega-tmp-{}-{timestamp}-{serial}",
+                std::process::id()
+            ));
+            let mut options = std::fs::OpenOptions::new();
+            options.write(true).create_new(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.mode(0o600);
+            }
+            match options.open(&candidate) {
+                Ok(file) => Some(Ok((candidate, file))),
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => None,
+                Err(error) => Some(Err(error).with_context(|| {
+                    format!("creating staged planner tracker {}", candidate.display())
+                })),
+            }
+        })
+        .transpose()?
+        .ok_or_else(|| anyhow::anyhow!("could not allocate a unique staged planner tracker"))?;
+
+    let result = (|| -> Result<()> {
+        file.write_all(bytes)
+            .with_context(|| format!("writing staged planner tracker {}", staged.display()))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            file.set_permissions(std::fs::Permissions::from_mode(0o600))
+                .with_context(|| {
+                    format!(
+                        "setting owner-only mode on staged tracker {}",
+                        staged.display()
+                    )
+                })?;
+        }
+        file.sync_all()
+            .with_context(|| format!("syncing staged planner tracker {}", staged.display()))?;
+        drop(file);
+        std::fs::rename(&staged, path).with_context(|| {
+            format!(
+                "atomically replacing planner tracker {} with {}",
+                path.display(),
+                staged.display()
+            )
+        })?;
+        validate_tracker_parent_identity(parent, &directory)?;
+        directory
+            .sync_all()
+            .with_context(|| format!("syncing planner state directory {}", parent.display()))?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&staged);
+    }
+    result
+}
+
+fn validate_tracker_parent_identity(path: &Path, opened: &std::fs::File) -> Result<()> {
+    let path_metadata = std::fs::symlink_metadata(path)
+        .with_context(|| format!("inspecting planner state directory {}", path.display()))?;
+    let opened_metadata = opened.metadata().with_context(|| {
+        format!(
+            "inspecting opened planner state directory {}",
+            path.display()
+        )
+    })?;
+    if !path_metadata.file_type().is_dir()
+        || path_metadata.file_type().is_symlink()
+        || !opened_metadata.file_type().is_dir()
+    {
+        bail!(
+            "planner state parent {} is not a real directory",
+            path.display()
+        );
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if path_metadata.dev() != opened_metadata.dev()
+            || path_metadata.ino() != opened_metadata.ino()
+        {
+            bail!(
+                "planner state parent {} changed identity during publish",
+                path.display()
+            );
+        }
+        let current_uid = planner_effective_uid();
+        if opened_metadata.uid() != current_uid {
+            bail!(
+                "planner state parent {} is owned by uid {}, current uid is {}",
+                path.display(),
+                opened_metadata.uid(),
+                current_uid
+            );
+        }
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn planner_effective_uid() -> u32 {
+    unsafe extern "C" {
+        fn geteuid() -> u32;
+    }
+    // SAFETY: geteuid has no arguments or preconditions and returns the
+    // effective uid of this process.
+    unsafe { geteuid() }
+}
+
+#[cfg(all(unix, any(target_os = "linux", target_os = "android")))]
+fn planner_no_follow_flag() -> i32 {
+    0o400000
+}
+
+#[cfg(all(
+    unix,
+    any(
+        target_os = "macos",
+        target_os = "ios",
+        target_os = "freebsd",
+        target_os = "openbsd",
+        target_os = "netbsd"
+    )
+))]
+fn planner_no_follow_flag() -> i32 {
+    0x100
+}
+
+#[cfg(all(
+    unix,
+    not(any(
+        target_os = "linux",
+        target_os = "android",
+        target_os = "macos",
+        target_os = "ios",
+        target_os = "freebsd",
+        target_os = "openbsd",
+        target_os = "netbsd"
+    ))
+))]
+fn planner_no_follow_flag() -> i32 {
+    0
 }
 
 #[derive(Debug, Clone)]
@@ -849,7 +1270,10 @@ mod tests {
         // a post-hoc mutation). It must be refused so the step can't fake-pass.
         let mut t = sample_tracker();
         t.steps[0].verify_command = "true".to_string();
-        assert!(t.validate().is_err(), "trivial `true` verify must be rejected");
+        assert!(
+            t.validate().is_err(),
+            "trivial `true` verify must be rejected"
+        );
         t.steps[0].verify_command = "echo done".to_string();
         assert!(t.validate().is_err(), "echo-only verify must be rejected");
         t.steps[0].verify_command = String::new();
@@ -877,12 +1301,18 @@ mod tests {
         // vacuous (R-SCOPE violation); the SKILL promises this is rejected.
         let mut t = sample_tracker();
         t.steps[0].files_to_touch = vec![];
-        assert!(t.validate().is_err(), "empty files_to_touch must be rejected");
+        assert!(
+            t.validate().is_err(),
+            "empty files_to_touch must be rejected"
+        );
 
         // Directory entries are not a claimable scope.
         let mut t = sample_tracker();
         t.steps[0].files_to_touch = vec!["src/".to_string()];
-        assert!(t.validate().is_err(), "directory files_to_touch must be rejected");
+        assert!(
+            t.validate().is_err(),
+            "directory files_to_touch must be rejected"
+        );
     }
 
     #[test]
@@ -906,9 +1336,258 @@ mod tests {
         std::fs::create_dir_all(tmp.path().join(".planner")).unwrap();
         std::fs::write(tmp.path().join(".planner/tracker.json"), "{not json").unwrap();
         let err = PlanTracker::load_strict(tmp.path()).unwrap_err();
-        assert!(format!("{err:#}").contains("failed to parse"), "got: {err:#}");
+        assert!(
+            format!("{err:#}").contains("failed to parse"),
+            "got: {err:#}"
+        );
         // The lenient loader still degrades to None for display surfaces.
         assert!(PlanTracker::load(tmp.path()).is_none());
+    }
+
+    #[test]
+    fn corrupt_live_tracker_is_never_overwritten() {
+        let tmp = tempfile::tempdir().unwrap();
+        let planner_dir = tmp.path().join(".planner");
+        std::fs::create_dir_all(&planner_dir).unwrap();
+        let path = PlanTracker::tracker_path(tmp.path());
+        std::fs::write(&path, b"{partial").unwrap();
+        let before = std::fs::read(&path).unwrap();
+
+        let replacement = sample_tracker();
+        let error = replacement.save(tmp.path()).unwrap_err();
+        assert!(
+            format!("{error:#}").contains("failed to parse"),
+            "unexpected error: {error:#}"
+        );
+        assert_eq!(std::fs::read(path).unwrap(), before);
+    }
+
+    #[test]
+    fn repeated_saves_advance_revision_without_reloading() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut tracker = sample_tracker();
+        tracker.save(tmp.path()).unwrap();
+        tracker.start_step("STEP-001").unwrap();
+        tracker.save(tmp.path()).unwrap();
+
+        let loaded = PlanTracker::load_strict(tmp.path()).unwrap().unwrap();
+        assert_eq!(loaded.storage_revision, 2);
+        assert_eq!(
+            loaded.get_step("STEP-001").unwrap().status,
+            StepStatus::InProgress
+        );
+        assert_eq!(
+            tracker
+                .source_state
+                .borrow()
+                .as_ref()
+                .map(|source| source.revision),
+            Some(2)
+        );
+    }
+
+    #[test]
+    fn stale_loaded_tracker_fails_compare_and_swap() {
+        let tmp = tempfile::tempdir().unwrap();
+        sample_tracker().save(tmp.path()).unwrap();
+        let mut first = PlanTracker::load_strict(tmp.path()).unwrap().unwrap();
+        let mut stale = PlanTracker::load_strict(tmp.path()).unwrap().unwrap();
+        first.project = "first-writer".to_string();
+        stale.project = "stale-writer".to_string();
+
+        first.save(tmp.path()).unwrap();
+        let error = stale.save(tmp.path()).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("stale planner tracker write refused"),
+            "unexpected error: {error:#}"
+        );
+        let current = PlanTracker::load_strict(tmp.path()).unwrap().unwrap();
+        assert_eq!(current.project, "first-writer");
+        assert_eq!(current.storage_revision, 2);
+    }
+
+    #[test]
+    fn concurrent_writers_commit_exactly_one_generation() {
+        let tmp = tempfile::tempdir().unwrap();
+        sample_tracker().save(tmp.path()).unwrap();
+        let mut first = PlanTracker::load_strict(tmp.path()).unwrap().unwrap();
+        let mut second = PlanTracker::load_strict(tmp.path()).unwrap().unwrap();
+        first.project = "concurrent-a".to_string();
+        second.project = "concurrent-b".to_string();
+
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(3));
+        let first_dir = tmp.path().to_path_buf();
+        let first_barrier = barrier.clone();
+        let first_writer = std::thread::spawn(move || {
+            first_barrier.wait();
+            first.save(&first_dir).map_err(|error| format!("{error:#}"))
+        });
+        let second_dir = tmp.path().to_path_buf();
+        let second_barrier = barrier.clone();
+        let second_writer = std::thread::spawn(move || {
+            second_barrier.wait();
+            second
+                .save(&second_dir)
+                .map_err(|error| format!("{error:#}"))
+        });
+        barrier.wait();
+
+        let first_result = first_writer.join().unwrap();
+        let second_result = second_writer.join().unwrap();
+        assert_ne!(first_result.is_ok(), second_result.is_ok());
+        let rejection = first_result.err().or_else(|| second_result.err()).unwrap();
+        assert!(rejection.contains("stale planner tracker write refused"));
+        let current = PlanTracker::load_strict(tmp.path()).unwrap().unwrap();
+        assert!(matches!(
+            current.project.as_str(),
+            "concurrent-a" | "concurrent-b"
+        ));
+        assert_eq!(current.storage_revision, 2);
+    }
+
+    #[test]
+    fn save_waits_for_the_interprocess_tracker_lock() {
+        let tmp = tempfile::tempdir().unwrap();
+        sample_tracker().save(tmp.path()).unwrap();
+        let planner_dir = tmp.path().join(".planner");
+        let held = crate::scope::lock_private_state_file(&planner_dir, TRACKER_LOCK).unwrap();
+        let mut contender = PlanTracker::load_strict(tmp.path()).unwrap().unwrap();
+        contender.project = "after-lock".to_string();
+        let project_dir = tmp.path().to_path_buf();
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let writer = std::thread::spawn(move || {
+            started_tx.send(()).unwrap();
+            done_tx.send(contender.save(&project_dir)).unwrap();
+        });
+        started_rx
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .unwrap();
+        assert!(
+            done_rx
+                .recv_timeout(std::time::Duration::from_millis(150))
+                .is_err(),
+            "save completed while the tracker lock was still held"
+        );
+        drop(held);
+        done_rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .unwrap()
+            .unwrap();
+        writer.join().unwrap();
+        assert_eq!(
+            PlanTracker::load_strict(tmp.path())
+                .unwrap()
+                .unwrap()
+                .project,
+            "after-lock"
+        );
+    }
+
+    #[test]
+    fn interrupted_staged_write_does_not_hide_the_last_commit() {
+        let tmp = tempfile::tempdir().unwrap();
+        let tracker = sample_tracker();
+        tracker.save(tmp.path()).unwrap();
+        let staged = tmp
+            .path()
+            .join(".planner/.tracker.json.omega-tmp-interrupted");
+        std::fs::write(&staged, b"{half-written").unwrap();
+
+        let mut resumed = PlanTracker::load_strict(tmp.path()).unwrap().unwrap();
+        assert_eq!(resumed.project, "TestProject");
+        resumed.project = "resumed".to_string();
+        resumed.save(tmp.path()).unwrap();
+        let current = PlanTracker::load_strict(tmp.path()).unwrap().unwrap();
+        assert_eq!(current.project, "resumed");
+        assert_eq!(current.storage_revision, 2);
+        assert!(
+            staged.exists(),
+            "uncommitted staging data is ignored, not trusted"
+        );
+    }
+
+    #[test]
+    fn oversized_tracker_is_rejected_before_allocation_or_parse() {
+        let tmp = tempfile::tempdir().unwrap();
+        let planner_dir = tmp.path().join(".planner");
+        std::fs::create_dir_all(&planner_dir).unwrap();
+        let file = std::fs::File::create(PlanTracker::tracker_path(tmp.path())).unwrap();
+        file.set_len(MAX_TRACKER_BYTES + 1).unwrap();
+        let error = PlanTracker::load_strict(tmp.path()).unwrap_err();
+        assert!(
+            error.to_string().contains("maximum is"),
+            "unexpected error: {error:#}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn tracker_rejects_symlinks_hardlinks_and_non_regular_paths() {
+        use std::os::unix::fs::symlink;
+        let root = tempfile::tempdir().unwrap();
+
+        let symlink_project = root.path().join("symlink-project");
+        std::fs::create_dir_all(symlink_project.join(".planner")).unwrap();
+        let sentinel = root.path().join("sentinel");
+        std::fs::write(&sentinel, b"sentinel").unwrap();
+        symlink(&sentinel, PlanTracker::tracker_path(&symlink_project)).unwrap();
+        assert!(PlanTracker::load_strict(&symlink_project).is_err());
+        assert!(sample_tracker().save(&symlink_project).is_err());
+        assert_eq!(std::fs::read(&sentinel).unwrap(), b"sentinel");
+
+        let hardlink_project = root.path().join("hardlink-project");
+        std::fs::create_dir_all(hardlink_project.join(".planner")).unwrap();
+        let hard_target = root.path().join("hard-target");
+        std::fs::write(
+            &hard_target,
+            serde_json::to_vec_pretty(&sample_tracker()).unwrap(),
+        )
+        .unwrap();
+        std::fs::hard_link(&hard_target, PlanTracker::tracker_path(&hardlink_project)).unwrap();
+        assert!(PlanTracker::load_strict(&hardlink_project).is_err());
+        assert!(sample_tracker().save(&hardlink_project).is_err());
+
+        let directory_project = root.path().join("directory-project");
+        std::fs::create_dir_all(PlanTracker::tracker_path(&directory_project)).unwrap();
+        assert!(PlanTracker::load_strict(&directory_project).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn planner_parent_and_tracker_are_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let planner_dir = tmp.path().join(".planner");
+        std::fs::create_dir_all(&planner_dir).unwrap();
+        std::fs::set_permissions(&planner_dir, std::fs::Permissions::from_mode(0o777)).unwrap();
+        let tracker_path = PlanTracker::tracker_path(tmp.path());
+        std::fs::write(
+            &tracker_path,
+            serde_json::to_vec_pretty(&sample_tracker()).unwrap(),
+        )
+        .unwrap();
+        std::fs::set_permissions(&tracker_path, std::fs::Permissions::from_mode(0o666)).unwrap();
+
+        PlanTracker::load_strict(tmp.path()).unwrap().unwrap();
+        assert_eq!(
+            std::fs::metadata(&planner_dir)
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o700
+        );
+        assert_eq!(
+            std::fs::metadata(&tracker_path)
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
     }
 
     #[test]
@@ -987,7 +1666,11 @@ mod tests {
         // 26th should fail
         let result = tracker.add_step(
             pid,
-            step("S-026", pid).title("Too many").criteria("ok").verify("true").build(),
+            step("S-026", pid)
+                .title("Too many")
+                .criteria("ok")
+                .verify("true")
+                .build(),
         );
         assert!(result.is_err());
     }
@@ -1003,47 +1686,55 @@ mod tests {
         let mut tracker = PlanTracker::new("Dup");
         let pid = tracker.add_phase("P1", "g");
         tracker
-            .add_step(pid, step("S-001", pid).title("A").criteria("ok").verify("true").build())
+            .add_step(
+                pid,
+                step("S-001", pid)
+                    .title("A")
+                    .criteria("ok")
+                    .verify("true")
+                    .build(),
+            )
             .unwrap();
         let result = tracker.add_step(
             pid,
-            step("S-001", pid).title("B").criteria("ok").verify("true").build(),
+            step("S-001", pid)
+                .title("B")
+                .criteria("ok")
+                .verify("true")
+                .build(),
         );
         assert!(result.is_err());
     }
 
     #[test]
     fn step_file_generation() {
-        let tmp = std::env::temp_dir().join("omega-planner-test");
-        let _ = std::fs::remove_dir_all(&tmp);
-        std::fs::create_dir_all(&tmp).unwrap();
-
+        let tmp = tempfile::tempdir().unwrap();
         let tracker = sample_tracker();
-        tracker.write_step_file("STEP-001", &tmp).unwrap();
-        assert!(tmp.join(".planner/STEP-001-create-schema.md").exists());
-
-        let _ = std::fs::remove_dir_all(&tmp);
+        tracker.write_step_file("STEP-001", tmp.path()).unwrap();
+        assert!(tmp
+            .path()
+            .join(".planner/STEP-001-create-schema.md")
+            .exists());
     }
 
     #[test]
     fn persistence() {
-        let tmp = std::env::temp_dir().join("omega-planner-persist");
-        let _ = std::fs::remove_dir_all(&tmp);
-        std::fs::create_dir_all(&tmp).unwrap();
-
+        let tmp = tempfile::tempdir().unwrap();
         let tracker = sample_tracker();
-        tracker.save(&tmp).unwrap();
+        tracker.save(tmp.path()).unwrap();
 
-        let loaded = PlanTracker::load(&tmp).unwrap();
+        let loaded = PlanTracker::load(tmp.path()).unwrap();
         assert_eq!(loaded.steps.len(), 3);
         assert_eq!(loaded.project, "TestProject");
-
-        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]
     fn wave_and_attempt_defaults() {
-        let s = step("STEP-001", 1).title("X").criteria("ok").verify("true").build();
+        let s = step("STEP-001", 1)
+            .title("X")
+            .criteria("ok")
+            .verify("true")
+            .build();
         assert_eq!(s.attempt, 0);
         assert!(s.wave.is_none());
     }
@@ -1067,10 +1758,41 @@ mod tests {
     fn ready_steps_parallel_disjoint_files() {
         let mut t = PlanTracker::new("P");
         let p = t.add_phase("F", "g");
-        t.add_step(p, step("A", p).title("a").files(&["a.rs"]).criteria("ok").verify("true").build()).unwrap();
-        t.add_step(p, step("B", p).title("b").files(&["b.rs"]).criteria("ok").verify("true").build()).unwrap();
-        t.add_step(p, step("C", p).title("c").files(&["a.rs"]).criteria("ok").verify("true").build()).unwrap();
-        let ready: Vec<_> = t.ready_steps(10).iter().map(|s| s.step_id.clone()).collect();
+        t.add_step(
+            p,
+            step("A", p)
+                .title("a")
+                .files(&["a.rs"])
+                .criteria("ok")
+                .verify("true")
+                .build(),
+        )
+        .unwrap();
+        t.add_step(
+            p,
+            step("B", p)
+                .title("b")
+                .files(&["b.rs"])
+                .criteria("ok")
+                .verify("true")
+                .build(),
+        )
+        .unwrap();
+        t.add_step(
+            p,
+            step("C", p)
+                .title("c")
+                .files(&["a.rs"])
+                .criteria("ok")
+                .verify("true")
+                .build(),
+        )
+        .unwrap();
+        let ready: Vec<_> = t
+            .ready_steps(10)
+            .iter()
+            .map(|s| s.step_id.clone())
+            .collect();
         assert_eq!(ready, vec!["A".to_string(), "B".to_string()]);
     }
 
@@ -1079,8 +1801,16 @@ mod tests {
         let mut t = PlanTracker::new("P");
         let p = t.add_phase("F", "g");
         for i in 0..5 {
-            t.add_step(p, step(&format!("S{i}"), p).title("x")
-                .files(&[&format!("f{i}.rs")]).criteria("ok").verify("true").build()).unwrap();
+            t.add_step(
+                p,
+                step(&format!("S{i}"), p)
+                    .title("x")
+                    .files(&[&format!("f{i}.rs")])
+                    .criteria("ok")
+                    .verify("true")
+                    .build(),
+            )
+            .unwrap();
         }
         assert_eq!(t.ready_steps(2).len(), 2);
     }
@@ -1089,13 +1819,40 @@ mod tests {
     fn ready_steps_holds_audit_until_impl_done() {
         let mut t = PlanTracker::new("P");
         let p = t.add_phase("F", "g");
-        t.add_step(p, step("IMPL", p).title("impl").files(&["x.rs"]).criteria("ok").verify("true").build()).unwrap();
-        t.add_step(p, step("AUD", p).title("audit").files(&["y.rs"]).criteria("ok").verify("true").wave(Wave::Audit).build()).unwrap();
-        let ready: Vec<_> = t.ready_steps(10).iter().map(|s| s.step_id.clone()).collect();
+        t.add_step(
+            p,
+            step("IMPL", p)
+                .title("impl")
+                .files(&["x.rs"])
+                .criteria("ok")
+                .verify("true")
+                .build(),
+        )
+        .unwrap();
+        t.add_step(
+            p,
+            step("AUD", p)
+                .title("audit")
+                .files(&["y.rs"])
+                .criteria("ok")
+                .verify("true")
+                .wave(Wave::Audit)
+                .build(),
+        )
+        .unwrap();
+        let ready: Vec<_> = t
+            .ready_steps(10)
+            .iter()
+            .map(|s| s.step_id.clone())
+            .collect();
         assert_eq!(ready, vec!["IMPL".to_string()]);
         t.start_step("IMPL").unwrap();
         t.mark_done("IMPL").unwrap();
-        let ready2: Vec<_> = t.ready_steps(10).iter().map(|s| s.step_id.clone()).collect();
+        let ready2: Vec<_> = t
+            .ready_steps(10)
+            .iter()
+            .map(|s| s.step_id.clone())
+            .collect();
         assert_eq!(ready2, vec!["AUD".to_string()]);
     }
 

@@ -1,0 +1,181 @@
+{
+  "schema_version": "2.0.0",
+  "id": "sales-os",
+  "num": 35,
+  "name": "Sales {OS}",
+  "version": "0.1.0",
+  "status": "scaffold",
+  "group": {
+    "key": "grow",
+    "label": "04 · GROW",
+    "purpose": "Turn value into distribution and revenue"
+  },
+  "tagline": "Pipeline, conversations and the close, without manipulation.",
+  "inherits_from": null,
+  "commands": [
+    {
+      "name": "/sales",
+      "does": "Opens the OS and reports what needs attention today",
+      "returns": "opportunities with a next action, and those that have gone quiet"
+    },
+    {
+      "name": "/sales-pipeline",
+      "does": "Shows pipeline state by stage, grounded in buyer actions",
+      "returns": "every open opportunity with stage, owner, next action and last buyer action"
+    },
+    {
+      "name": "/qualify",
+      "does": "Qualifies a lead on fit, need, authority, timing and budget",
+      "returns": "a qualification verdict with every unknown marked unknown"
+    },
+    {
+      "name": "/disqualify",
+      "does": "Records a disqualification and the reason given to the prospect",
+      "returns": "a disqualification record and the message to send"
+    },
+    {
+      "name": "/sales-call",
+      "does": "Prepares one specific conversation",
+      "returns": "an agenda, the permitted claim set, and the questions to ask"
+    },
+    {
+      "name": "/sales-discovery",
+      "does": "Runs discovery and captures the need in the buyer's words",
+      "returns": "a need record, quoted, with the decision process named"
+    },
+    {
+      "name": "/sales-objection",
+      "does": "Answers an objection using only sourced claims",
+      "returns": "a response with a source per claim, or an explicit abstention"
+    },
+    {
+      "name": "/sales-proposal",
+      "does": "Drafts a proposal against a live offer and price book version",
+      "returns": "a proposal naming offer version, price book version and claim sources"
+    },
+    {
+      "name": "/sales-negotiate",
+      "does": "Settles price and terms inside the discount policy",
+      "returns": "a settled position, or an escalation to the Pricing floor owner"
+    },
+    {
+      "name": "/sales-close",
+      "does": "Runs the close and records the signed commitment",
+      "returns": "a signed commitment with the exact approved contract text"
+    },
+    {
+      "name": "/closed-won",
+      "does": "Produces the handoff carrying every promise made",
+      "returns": "the closed won handoff, emitted to Revenue and Delivery"
+    },
+    {
+      "name": "/loss-review",
+      "does": "Records why a deal was really lost",
+      "returns": "a loss review with the stated reason and the believed reason"
+    },
+    {
+      "name": "/sales-review",
+      "does": "Audits pipeline hygiene and claim discipline",
+      "returns": "findings: stale stages, unsourced claims, unrecorded promises"
+    }
+  ],
+  "dependencies": {
+    "requires": [
+      "offer-os",
+      "pricing-os"
+    ],
+    "consumes_from": [
+      "offer-os",
+      "pricing-os",
+      "positioning-os",
+      "storyteller-os",
+      "network-os",
+      "content-os"
+    ],
+    "emits_to": [
+      "growth-os",
+      "revenue-os",
+      "delivery-cs-os"
+    ],
+    "handoffs": [
+      {
+        "to": "offer-os",
+        "artifact": "scope and guarantee"
+      },
+      {
+        "to": "pricing-os",
+        "artifact": "price book and discount policy"
+      },
+      {
+        "to": "positioning-os",
+        "artifact": "the claim"
+      },
+      {
+        "to": "storyteller-os",
+        "artifact": "proof stories"
+      },
+      {
+        "to": "network-os",
+        "artifact": "consented warm introductions"
+      },
+      {
+        "to": "content-os",
+        "artifact": "inbound signal"
+      },
+      {
+        "to": "growth-os",
+        "artifact": "pipeline state"
+      },
+      {
+        "to": "revenue-os",
+        "artifact": "pipeline state"
+      },
+      {
+        "to": "revenue-os",
+        "artifact": "closed won commitment and agreed scope"
+      },
+      {
+        "to": "delivery-cs-os",
+        "artifact": "closed won commitment and agreed scope"
+      }
+    ]
+  },
+  "targets": {
+    "claude": {
+      "supported": true
+    },
+    "chatgpt": {
+      "supported": true
+    },
+    "gemini": {
+      "supported": true
+    },
+    "codex": {
+      "supported": true
+    }
+  },
+  "entrypoints": {
+    "spec": "OS.md",
+    "system": "SYSTEM.md",
+    "skill": "SKILL.md",
+    "setup": "SETUP.md",
+    "workflows": "WORKFLOWS/",
+    "commands": "COMMANDS/",
+    "prompts": "PROMPTS/",
+    "references": "REFERENCES/",
+    "memory": "MEMORY/",
+    "tools": "TOOLS/",
+    "evals": "EVALS/",
+    "examples": "EXAMPLES/",
+    "interfaces": "INTERFACES/",
+    "adapters": "ADAPTERS/"
+  },
+  "requires_human_approval_for": [
+    "sending any proposal, quote or contract",
+    "committing to any scope, deliverable or date not already in the offer",
+    "quoting any price outside the price book, including any discount below the policy floor",
+    "naming a customer, a logo or a result in a conversation or a document",
+    "issuing a closed won handoff to Revenue {OS} and Delivery & Customer Success {OS}",
+    "the exact text of any customer-facing message, proposal or contract"
+  ]
+}

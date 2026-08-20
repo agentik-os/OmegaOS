@@ -34,21 +34,34 @@ pub fn trust_dir(dir: &Path) -> std::io::Result<bool> {
     let key = dir.to_string_lossy().to_string();
     let projects = root
         .as_object_mut()
-        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, "config root is not an object"))?
+        .ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "config root is not an object",
+            )
+        })?
         .entry("projects")
         .or_insert_with(|| serde_json::json!({}));
     let entry = projects
         .as_object_mut()
-        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, "projects is not an object"))?
+        .ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::InvalidData, "projects is not an object")
+        })?
         .entry(key)
         .or_insert_with(|| serde_json::json!({}));
-    let obj = entry
-        .as_object_mut()
-        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, "project entry is not an object"))?;
+    let obj = entry.as_object_mut().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "project entry is not an object",
+        )
+    })?;
     if obj.get("hasTrustDialogAccepted").and_then(|v| v.as_bool()) == Some(true) {
         return Ok(false);
     }
-    obj.insert("hasTrustDialogAccepted".into(), serde_json::Value::Bool(true));
+    obj.insert(
+        "hasTrustDialogAccepted".into(),
+        serde_json::Value::Bool(true),
+    );
     // Atomic write: temp file in the same dir + rename, so a concurrent reader
     // never sees a torn file (and a crash never truncates the real config).
     let tmp = cfg_path.with_extension(format!("json.trust-{}", std::process::id()));
@@ -74,7 +87,10 @@ mod tests {
             "topLevel": "kept"
         });
         let obj = root["projects"]["/x"].as_object_mut().unwrap();
-        obj.insert("hasTrustDialogAccepted".into(), serde_json::Value::Bool(true));
+        obj.insert(
+            "hasTrustDialogAccepted".into(),
+            serde_json::Value::Bool(true),
+        );
         assert_eq!(root["projects"]["/x"]["history"][1], 2);
         assert_eq!(root["topLevel"], "kept");
         assert_eq!(root["projects"]["/x"]["hasTrustDialogAccepted"], true);

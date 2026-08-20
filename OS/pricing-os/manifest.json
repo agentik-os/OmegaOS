@@ -1,0 +1,164 @@
+{
+  "schema_version": "2.0.0",
+  "id": "pricing-os",
+  "num": 33,
+  "name": "Pricing {OS}",
+  "version": "0.1.0",
+  "status": "scaffold",
+  "group": {
+    "key": "grow",
+    "label": "04 · GROW",
+    "purpose": "Turn value into distribution and revenue"
+  },
+  "tagline": "What to charge, how to package it and when to change it.",
+  "inherits_from": null,
+  "commands": [
+    {
+      "name": "/pricing",
+      "does": "Opens the OS and reports the live price book and policy state",
+      "returns": "the price book version, the floor, and any unevidenced line"
+    },
+    {
+      "name": "/pricing-model",
+      "does": "Chooses the pricing model and names the ones rejected",
+      "returns": "the model, the fit reason, the rejected alternatives"
+    },
+    {
+      "name": "/pricing-package",
+      "does": "Designs the tier structure and what separates the tiers",
+      "returns": "tiers, each with a named buyer and a reason to move up"
+    },
+    {
+      "name": "/price-evidence",
+      "does": "Records the willingness to pay evidence behind a number",
+      "returns": "an evidence record with source and date"
+    },
+    {
+      "name": "/price-test",
+      "does": "Designs and reads a willingness to pay test",
+      "returns": "a test design, then an observed result"
+    },
+    {
+      "name": "/price-book",
+      "does": "Assembles and versions the price book",
+      "returns": "a versioned price book, one line per sellable thing"
+    },
+    {
+      "name": "/discount-policy",
+      "does": "Sets the permitted range, the approval ladder and the floor",
+      "returns": "a discount policy with a floor and a named owner"
+    },
+    {
+      "name": "/discount-check",
+      "does": "Adjudicates a specific discount request against the policy",
+      "returns": "granted, escalated or refused, with the reason"
+    },
+    {
+      "name": "/price-change",
+      "does": "Plans a price move with its revenue impact",
+      "returns": "a change plan with effective date and impact estimate"
+    },
+    {
+      "name": "/grandfather",
+      "does": "Decides what happens to existing customers on a changed price",
+      "returns": "a grandfathering decision, per customer segment"
+    },
+    {
+      "name": "/pricing-review",
+      "does": "Reconciles realised discounts against the stated policy",
+      "returns": "a variance report per deal and per seller"
+    }
+  ],
+  "dependencies": {
+    "requires": [
+      "offer-os"
+    ],
+    "consumes_from": [
+      "offer-os",
+      "market-research-os",
+      "revenue-os",
+      "business-model-os"
+    ],
+    "emits_to": [
+      "sales-os",
+      "revenue-os",
+      "growth-os"
+    ],
+    "handoffs": [
+      {
+        "to": "offer-os",
+        "artifact": "what is being sold"
+      },
+      {
+        "to": "market-research-os",
+        "artifact": "willingness to pay evidence"
+      },
+      {
+        "to": "revenue-os",
+        "artifact": "realised revenue and discount history"
+      },
+      {
+        "to": "business-model-os",
+        "artifact": "unit economics"
+      },
+      {
+        "to": "sales-os",
+        "artifact": "price book"
+      },
+      {
+        "to": "revenue-os",
+        "artifact": "price book"
+      },
+      {
+        "to": "growth-os",
+        "artifact": "price book"
+      },
+      {
+        "to": "sales-os",
+        "artifact": "discount policy"
+      },
+      {
+        "to": "revenue-os",
+        "artifact": "discount policy"
+      }
+    ]
+  },
+  "targets": {
+    "claude": {
+      "supported": true
+    },
+    "chatgpt": {
+      "supported": true
+    },
+    "gemini": {
+      "supported": true
+    },
+    "codex": {
+      "supported": true
+    }
+  },
+  "entrypoints": {
+    "spec": "OS.md",
+    "system": "SYSTEM.md",
+    "skill": "SKILL.md",
+    "setup": "SETUP.md",
+    "workflows": "WORKFLOWS/",
+    "commands": "COMMANDS/",
+    "prompts": "PROMPTS/",
+    "references": "REFERENCES/",
+    "memory": "MEMORY/",
+    "tools": "TOOLS/",
+    "evals": "EVALS/",
+    "examples": "EXAMPLES/",
+    "interfaces": "INTERFACES/",
+    "adapters": "ADAPTERS/"
+  },
+  "requires_human_approval_for": [
+    "publishing any price change, on any line of the price book",
+    "approving any discount below the policy floor",
+    "the grandfathering decision for existing customers on a changed price",
+    "publishing or amending the discount policy or the floor itself",
+    "recording a price as a deliberate subsidy below unit economics",
+    "the exact text of any customer-facing price communication or published price list"
+  ]
+}

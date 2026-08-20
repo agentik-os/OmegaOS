@@ -1,0 +1,311 @@
+{
+  "schema_version": "2.0.0",
+  "id": "os-builder-os",
+  "num": 0,
+  "name": "OS Builder {OS}",
+  "version": "4.1.0",
+  "status": "authored",
+  "group": {
+    "key": "runtime",
+    "label": "00 · RUNTIME",
+    "purpose": "Build and run the entire Agentik ecosystem"
+  },
+  "tagline": "Research-first OS build factory: corpus 360, deep book analysis, claim synthesis, compile, red team, release.",
+  "inherits_from": null,
+  "commands": [
+    {
+      "name": "/os-synthesize <slug>",
+      "surface": "session",
+      "does": "Compile the synthesis map: robust, promising, conditional, disputed, outdated"
+    },
+    {
+      "name": "/os-contradictions <slug>",
+      "surface": "session",
+      "does": "Map the schools that disagree and classify the conflict"
+    },
+    {
+      "name": "/os-claims-normalize <slug>",
+      "surface": "session",
+      "does": "Normalize concepts and claims into the claim ledger with provenance"
+    },
+    {
+      "name": "/os-book-deep <slug> --book <id>",
+      "surface": "session",
+      "does": "Commission one deep book analysis from Librarian {OS} against the book-analysis schema"
+    },
+    {
+      "name": "/os-corpus-curate <slug> [--target-saturation <0-1>]",
+      "surface": "session",
+      "does": "Cut the candidate list to a coverage portfolio and log every rejection"
+    },
+    {
+      "name": "/os-corpus-discover <domain> [--global] [--languages <langs>]",
+      "surface": "session",
+      "does": "Bestseller and corpus discovery across the seven lenses (delegates to Librarian {OS})"
+    },
+    {
+      "name": "/os-research-plan <slug> [--rebuild]",
+      "surface": "session",
+      "does": "Write RESEARCH_PROTOCOL.yaml: questions, source classes, inclusion and stop rules"
+    },
+    {
+      "name": "/os-build-explain <slug> --rule|--command|--workflow <id>",
+      "surface": "session",
+      "does": "Trace any shipped rule back to the claims and sources that produced it"
+    },
+    {
+      "name": "/os-build-resume <slug> [--from <milestone>]",
+      "surface": "session",
+      "does": "Resume an interrupted build from the build ledger, never from memory"
+    },
+    {
+      "name": "/os-build-status <slug> [--verbose]",
+      "surface": "session",
+      "does": "Where the build stands: stage, gate, blocking artifact"
+    },
+    {
+      "name": "/os-build <Name> {OS} [--mode ultimate|systematic|current|field|technical|regulated]",
+      "surface": "session",
+      "does": "Run the full 20-stage research-first build for a new OS"
+    },
+    {
+      "name": "/os-builder-os",
+      "surface": "session",
+      "does": "Open the builder and detect the mode from what the operator brought"
+    },
+    {
+      "name": "/os-intake <capability>",
+      "surface": "session",
+      "does": "Normalise a request and rule BUILD, SPLIT, REUSE or DO NOT BUILD"
+    },
+    {
+      "name": "/os-define",
+      "surface": "session",
+      "does": "Capability definition and value proposition, with scope and non-scope"
+    },
+    {
+      "name": "/os-research",
+      "surface": "session",
+      "does": "Build the source base and split source-derived knowledge from original synthesis"
+    },
+    {
+      "name": "/os-architect",
+      "surface": "session",
+      "does": "Write the OS spec: skill, workflow, gates, evidence rules, artifacts, package plan"
+    },
+    {
+      "name": "/os-build",
+      "surface": "session",
+      "does": "Author the contract files, wave 1 (CORE) first, then wave 2"
+    },
+    {
+      "name": "/os-test",
+      "surface": "session",
+      "does": "Run the suite past the happy path and record every real result"
+    },
+    {
+      "name": "/os-redteam",
+      "surface": "session",
+      "does": "Attack the package and return expected behaviour, actual behaviour, severity, repair"
+    },
+    {
+      "name": "/os-review",
+      "surface": "session",
+      "does": "Score the 16 dimensions with the evidence behind each number"
+    },
+    {
+      "name": "/os-repair",
+      "surface": "session",
+      "does": "Fix every mandatory dimension below 4 and every red grader check, then re-score"
+    },
+    {
+      "name": "/os-release",
+      "surface": "session",
+      "does": "Assemble the release record and the proposed registry line, then stop for approval"
+    },
+    {
+      "name": "/os-audit <slug>",
+      "surface": "session",
+      "does": "Grade an existing unit read-only, citing a file and a line per finding"
+    },
+    {
+      "name": "/os-status",
+      "surface": "session",
+      "does": "The build ledger: phase, gate, unresolved risk, next gate"
+    },
+    {
+      "name": "python3 OS/_tools/scaffold.py status",
+      "surface": "cli",
+      "does": "What exists on disk against what the 23 file contract needs"
+    },
+    {
+      "name": "python3 OS/_tools/scaffold.py build <slug>",
+      "surface": "cli",
+      "does": "Materialise every missing contract file, additive, overwrites nothing"
+    },
+    {
+      "name": "python3 OS/_tools/verify.py <slug>",
+      "surface": "cli",
+      "does": "Grade one unit at the CORE tier: the five defining files"
+    },
+    {
+      "name": "python3 OS/_tools/verify.py --full <slug>",
+      "surface": "cli",
+      "does": "Grade one unit across all 23 contract files"
+    },
+    {
+      "name": "python3 OS/_tools/verify.py --summary",
+      "surface": "cli",
+      "does": "One line per unit across the whole suite"
+    }
+  ],
+  "dependencies": {
+    "requires": [],
+    "consumes": [
+      "research.evidence.compiled",
+      "research.memo.published",
+      "blueprint.handoff.frozen",
+      "ailogic.arbitration.decided",
+      "evaluation.rubric.published",
+      "quality.verdict.issued",
+      "security.clearance.issued",
+      "release.gate.decided",
+      "memory.context.compiled",
+      "runtime.doctor.reported",
+      "runtime.eval.completed",
+      "librarian.corpus.discovered",
+      "librarian.book.analyzed",
+      "librarian.corpus.compared",
+      "research.claim.verified"
+    ],
+    "emits": [
+      "osbuilder.request.normalised",
+      "osbuilder.capability.declined",
+      "osbuilder.spec.approved",
+      "osbuilder.slug.reserved",
+      "osbuilder.package.scaffolded",
+      "osbuilder.package.built",
+      "osbuilder.contract.verified",
+      "osbuilder.contract.failed",
+      "osbuilder.tests.executed",
+      "osbuilder.redteam.completed",
+      "osbuilder.score.recorded",
+      "osbuilder.repair.required",
+      "osbuilder.release.requested",
+      "osbuilder.os.released",
+      "osbuilder.registry.entry.proposed",
+      "memory.record.staged",
+      "osbuilder.contract.opened",
+      "osbuilder.corpus.curated",
+      "osbuilder.bookdeep.requested",
+      "osbuilder.claims.normalised",
+      "osbuilder.contradictions.mapped",
+      "osbuilder.synthesis.compiled",
+      "osbuilder.ontology.built"
+    ],
+    "consumes_from": [
+      "research-os",
+      "blueprint-os",
+      "ai-logic-os",
+      "evaluation-os",
+      "quality-evaluation-os",
+      "security-os",
+      "release-os",
+      "context-memory-os",
+      "agentik-runtime",
+      "librarian-os",
+      "documentation-os",
+      "review-governance-os"
+    ],
+    "emits_to": [
+      "agentik-runtime",
+      "context-memory-os",
+      "quality-evaluation-os",
+      "security-os",
+      "release-os",
+      "librarian-os"
+    ],
+    "handoffs": [
+      {
+        "to": "librarian-os",
+        "artifact": "the corpus brief: domain, seven-lens targets, saturation goal and the book-analysis schema every retained book must satisfy"
+      },
+      {
+        "to": "research-os",
+        "artifact": "the research protocol: search questions, source classes, inclusion rules, recency and stop rules"
+      },
+      {
+        "to": "agentik-runtime",
+        "artifact": "a contract-complete OS package: the 23 files plus a manifest whose every declared edge resolves"
+      },
+      {
+        "to": "agentik-runtime",
+        "artifact": "the new unit's declared permission boundary, dependency list and target support, for the Runtime to enforce and never author"
+      },
+      {
+        "to": "agentik-runtime",
+        "artifact": "the release record: version, score sheet, open risks, named unknowns, changelog entry"
+      },
+      {
+        "to": "context-memory-os",
+        "artifact": "the approved OS spec and the build ledger, as durable records"
+      },
+      {
+        "to": "quality-evaluation-os",
+        "artifact": "the generated OS's evaluation suites, output contracts and traceability, for independent certification"
+      },
+      {
+        "to": "security-os",
+        "artifact": "the sensitivity classification and the controls the generated OS declares"
+      },
+      {
+        "to": "release-os",
+        "artifact": "the release candidate and its gate evidence, when the package ships beyond this machine"
+      }
+    ]
+  },
+  "targets": {
+    "claude": {
+      "supported": true,
+      "notes": "full build: writes files directly and runs scaffold.py and verify.py itself"
+    },
+    "codex": {
+      "supported": true,
+      "notes": "full build: writes files directly and runs scaffold.py and verify.py itself"
+    },
+    "chatgpt": {
+      "supported": true,
+      "notes": "design and author only: the operator runs scaffold.py and verify.py and pastes the output back"
+    },
+    "gemini": {
+      "supported": true,
+      "notes": "design and author only: the operator runs scaffold.py and verify.py and pastes the output back"
+    }
+  },
+  "entrypoints": {
+    "spec": "OS.md",
+    "system": "SYSTEM.md",
+    "skill": "SKILL.md",
+    "setup": "SETUP.md",
+    "workflows": "WORKFLOWS/",
+    "commands": "COMMANDS/",
+    "prompts": "PROMPTS/",
+    "references": "REFERENCES/",
+    "memory": "MEMORY/",
+    "tools": "TOOLS/",
+    "evals": "EVALS/",
+    "examples": "EXAMPLES/",
+    "interfaces": "INTERFACES/",
+    "adapters": "ADAPTERS/",
+    "pack": "pack/v4.1.0/"
+  },
+  "requires_human_approval_for": [
+    "registering a slug or a number in the suite: editing OS/_tools/suite.py and regenerating _registry.json, crates/omega-core/src/os_products.rs and OS/README.md",
+    "releasing a generated OS, cutting its version, or presenting it as installable",
+    "writing into an existing unit's directory, including any rebuild that would overwrite or delete authored content",
+    "waiving or overriding a gate: the release threshold, a mandatory dimension below 4, a red verify.py check, or an open red-team finding",
+    "changing a neighbour unit's declared boundary, dependency list, permission set or manifest",
+    "publishing a package off this machine, to a repository, an archive, an install script or a package registry",
+    "building an OS for money, legal rights, health, employment, regulated data or production systems before a human reviews its domain controls"
+  ]
+}

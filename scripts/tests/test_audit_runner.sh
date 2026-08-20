@@ -9,6 +9,23 @@ PROJECT="$TEST_ROOT/project"
 mkdir -p "$OMEGA_DIR/skills/audits" "$OMEGA_DIR/lib/audit-gather" "$PROJECT"
 cp "$ROOT/skills/audits/registry.toml" "$OMEGA_DIR/skills/audits/registry.toml"
 
+python3 - "$ROOT/skills/audits/registry.toml" \
+    "$ROOT/skills/audits/audit-orchestrator/SKILL.md" <<'PY'
+import re
+import sys
+import tomllib
+
+with open(sys.argv[1], "rb") as handle:
+    registry = tomllib.load(handle)
+ids = [entry["id"] for entry in registry["audits"]]
+assert registry["meta"]["total_audits"] == len(ids) == 23
+text = open(sys.argv[2], encoding="utf-8").read()
+full_mode = text.split("## Full Audit Mode", 1)[1].split("## State Tracking", 1)[0]
+for audit_id in ids:
+    assert len(re.findall(rf"(?<![a-z]){re.escape(audit_id)}(?![a-z])", full_mode)) == 1, audit_id
+assert "Skip Plan + Fix" not in text
+PY
+
 cleanup() {
     rm -rf "$TEST_ROOT"
 }
@@ -55,7 +72,11 @@ chmod +x "$OMEGA_DIR/lib/audit-gather/code.sh"
 assert_exit 0 "$RUNNER" code "$PROJECT" \
     --user-need="reliable audits" --hinge="runtime behavior"
 
-python3 - "$PROJECT/.code/evidence-summary.json" <<'PY'
+[ -d "$PROJECT/audits/.codeaudit/raw" ] || \
+    fail "runner did not use the canonical registry-id output root"
+[ ! -e "$PROJECT/.code" ] || fail "legacy root-level audit directory was created"
+
+python3 - "$PROJECT/audits/.codeaudit/evidence-summary.json" <<'PY'
 import json
 import sys
 
@@ -72,7 +93,7 @@ PY
 assert_exit 2 "$RUNNER" code "$PROJECT" \
     --user-need="reliable audits" --hinge="runtime behavior" --finalize
 
-python3 - "$PROJECT/.code/verdict.json" <<'PY'
+python3 - "$PROJECT/audits/.codeaudit/verdict.json" <<'PY'
 import json
 import sys
 
@@ -103,7 +124,7 @@ PY
 assert_exit 1 "$RUNNER" code "$PROJECT" \
     --user-need="reliable audits" --hinge="runtime behavior" --finalize
 
-python3 - "$PROJECT/.code/verdict.json" <<'PY'
+python3 - "$PROJECT/audits/.codeaudit/verdict.json" <<'PY'
 import json
 import sys
 

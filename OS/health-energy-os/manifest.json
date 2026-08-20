@@ -1,0 +1,84 @@
+{
+  "schema_version": "2.0.0",
+  "id": "health-energy-os",
+  "num": 7,
+  "name": "Health & Energy {OS}",
+  "version": "0.1.0",
+  "status": "scaffold",
+  "group": {
+    "key": "personal",
+    "label": "01 · PERSONAL",
+    "purpose": "Operate yourself"
+  },
+  "tagline": "Physical and cognitive capacity: sleep, movement, fuel, recovery, stress.",
+  "inherits_from": "health-energy-os",
+  "commands": [
+    "health",
+    "readiness",
+    "health-audit",
+    "sleep",
+    "training",
+    "nutrition",
+    "recovery",
+    "travel-health",
+    "health-experiment",
+    "wearable",
+    "os_runtime:info",
+    "os_runtime:route",
+    "os_runtime:event",
+    "os_runtime:validate"
+  ],
+  "dependencies": {
+    "requires": [
+      "context-memory-os"
+    ],
+    "consumes_from": [
+      "habit-tracker-os",
+      "journal-os"
+    ],
+    "emits_to": [
+      "habit-tracker-os",
+      "goal-life-strategy-os",
+      "execution-os",
+      "decision-os"
+    ]
+  },
+  "targets": {
+    "claude": {
+      "supported": true
+    },
+    "chatgpt": {
+      "supported": true
+    },
+    "gemini": {
+      "supported": true
+    },
+    "codex": {
+      "supported": true
+    }
+  },
+  "entrypoints": {
+    "spec": "OS.md",
+    "system": "SYSTEM.md",
+    "skill": "SKILL.md",
+    "setup": "SETUP.md",
+    "workflows": "WORKFLOWS/",
+    "commands": "COMMANDS/",
+    "prompts": "PROMPTS/",
+    "references": "REFERENCES/",
+    "memory": "MEMORY/",
+    "tools": "TOOLS/",
+    "evals": "EVALS/",
+    "examples": "EXAMPLES/",
+    "interfaces": "INTERFACES/",
+    "adapters": "ADAPTERS/"
+  },
+  "requires_human_approval_for": [
+    "recording or acting on any change to medication, dosage or treatment",
+    "starting a fast, a restriction protocol, an aggressive cut or a rapid build",
+    "writing data extracted from a medical document to canonical memory",
+    "raising training volume or intensity beyond the current capacity envelope",
+    "lifting a recovery directive this OS previously issued",
+    "sharing a health observation, wearable series, lab value or professional question pack outside the local machine"
+  ]
+}

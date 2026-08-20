@@ -1,0 +1,35 @@
+build_id: ""
+os_name: ""
+os_slug: ""
+mode: ultimate
+language: en
+purpose: ""
+primary_users: []
+jobs_to_be_done: []
+target_outcomes: []
+success_metrics: []
+non_goals: []
+domain_boundaries: []
+risk_classification: low
+jurisdictions: []
+currentness:
+  required: false
+  cutoff_or_window: null
+evidence_requirements:
+  books_required: true
+  bestseller_discovery_required: true
+  per_retained_book_deep_analysis_required: true
+  primary_or_official_sources_required: true
+  contradiction_map_required: true
+assumptions: []
+inter_os_handoffs: []
+deliverables:
+  - complete_os_package
+  - source_and_claim_ledgers
+  - synthesis_and_ontology
+  - commands_and_workflows
+  - tests_and_reports
+  - how_to_use
+  - complete_presentation
+  - versioned_zip
+completion_gates: []

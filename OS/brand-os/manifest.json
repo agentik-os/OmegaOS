@@ -1,0 +1,178 @@
+{
+  "schema_version": "2.0.0",
+  "id": "brand-os",
+  "num": 30,
+  "name": "Brand {OS}",
+  "version": "0.1.0",
+  "status": "scaffold",
+  "group": {
+    "key": "grow",
+    "label": "04 · GROW",
+    "purpose": "Turn value into distribution and revenue"
+  },
+  "tagline": "Identity, voice and the visual system that carries them.",
+  "inherits_from": null,
+  "commands": [
+    {
+      "name": "/brand",
+      "does": "Orients: reports system version, coverage and the next decision.",
+      "returns": "System state, open audit failures and one named next action."
+    },
+    {
+      "name": "/brand-core",
+      "does": "Establishes the identity core from the claim and the audience register.",
+      "returns": "Register, archetype, promise and naming conventions, each traced to its source."
+    },
+    {
+      "name": "/brand-name",
+      "does": "Names a company, product or feature and tests the name.",
+      "returns": "Candidates with a verdict against claim, category and audience register."
+    },
+    {
+      "name": "/brand-voice",
+      "does": "Writes voice rules as accept and refuse pairs.",
+      "returns": "Rules with one sentence accepted and one refused, plus the rules dropped as unfalsifiable."
+    },
+    {
+      "name": "/brand-visual",
+      "does": "Builds the visual system: type, colour, spacing, imagery, logo usage.",
+      "returns": "The system with a rationale per decision and the environments it was tested against."
+    },
+    {
+      "name": "/brand-tokens",
+      "does": "Emits the visual system as machine readable tokens.",
+      "returns": "Tokens with contrast and size constraints checked, failures with replacements."
+    },
+    {
+      "name": "/brand-audit",
+      "does": "Audits one artifact rule by rule against the system.",
+      "returns": "Pass or fail per rule with the offending sentence, value or crop cited."
+    },
+    {
+      "name": "/brand-asset",
+      "does": "Registers an asset with usage rules, or prepares a third party release.",
+      "returns": "A library entry with allowed and forbidden surfaces, or a release pending approval."
+    },
+    {
+      "name": "/brand-system",
+      "does": "Renders identity, naming, voice and visual system as one versioned artifact.",
+      "returns": "The system document with version, date and diff since the previous version."
+    },
+    {
+      "name": "/brand-evolve",
+      "does": "Versions a change and produces the migration list of affected surfaces.",
+      "returns": "The version diff, the migration list and the surfaces blocking closure."
+    },
+    {
+      "name": "/brand-handoff",
+      "does": "Packages the system subset one downstream unit consumes.",
+      "returns": "The unit specific package and what that unit may extend versus not reinterpret."
+    },
+    {
+      "name": "/brand-review",
+      "does": "Audits a sample of live surfaces and reports drift.",
+      "returns": "Drift by surface, the rules most often broken and candidate rule changes."
+    }
+  ],
+  "dependencies": {
+    "requires": [
+      "positioning-os"
+    ],
+    "consumes_from": [
+      "positioning-os",
+      "customer-discovery-os"
+    ],
+    "emits_to": [
+      "content-os",
+      "storyteller-os",
+      "sales-os",
+      "offer-os",
+      "design-os",
+      "affiliate-os"
+    ],
+    "handoffs": [
+      {
+        "to": "positioning-os",
+        "artifact": "category and claim"
+      },
+      {
+        "to": "customer-discovery-os",
+        "artifact": "audience register"
+      },
+      {
+        "to": "content-os",
+        "artifact": "brand system"
+      },
+      {
+        "to": "storyteller-os",
+        "artifact": "brand system"
+      },
+      {
+        "to": "sales-os",
+        "artifact": "brand system"
+      },
+      {
+        "to": "offer-os",
+        "artifact": "brand system"
+      },
+      {
+        "to": "design-os",
+        "artifact": "brand system"
+      },
+      {
+        "to": "affiliate-os",
+        "artifact": "brand system"
+      },
+      {
+        "to": "content-os",
+        "artifact": "voice rules"
+      },
+      {
+        "to": "storyteller-os",
+        "artifact": "voice rules"
+      },
+      {
+        "to": "sales-os",
+        "artifact": "voice rules"
+      }
+    ]
+  },
+  "targets": {
+    "claude": {
+      "supported": true
+    },
+    "chatgpt": {
+      "supported": true
+    },
+    "gemini": {
+      "supported": true
+    },
+    "codex": {
+      "supported": true
+    }
+  },
+  "entrypoints": {
+    "spec": "OS.md",
+    "system": "SYSTEM.md",
+    "skill": "SKILL.md",
+    "setup": "SETUP.md",
+    "workflows": "WORKFLOWS/",
+    "commands": "COMMANDS/",
+    "prompts": "PROMPTS/",
+    "references": "REFERENCES/",
+    "memory": "MEMORY/",
+    "tools": "TOOLS/",
+    "evals": "EVALS/",
+    "examples": "EXAMPLES/",
+    "interfaces": "INTERFACES/",
+    "adapters": "ADAPTERS/"
+  },
+  "requires_human_approval_for": [
+    "any rebrand, or any change to the identity core",
+    "any name change of the company, a product or a feature",
+    "releasing brand assets to a third party, agency, partner or affiliate",
+    "publishing anything under the identity, on any surface",
+    "shipping an artifact that failed audit, with a named approver and reason",
+    "retiring or replacing a token that live surfaces already consume"
+  ]
+}

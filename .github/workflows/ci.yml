@@ -23,6 +23,12 @@ jobs:
       - name: Cache cargo registry + target
         uses: Swatinem/rust-cache@v2
 
+      - name: Format check
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
       # Hard gate: shipped code (lib + bins) must build with zero warnings.
       # rmux is fetched from its public git remote; no token needed.
       - name: Build (warnings are errors)
@@ -32,15 +38,30 @@ jobs:
 
       # Hard gate: the test suite must pass.
       - name: Test
-        run: cargo test --workspace
+        run: cargo test --workspace --locked
 
-      # Advisory: clippy and fmt are not yet clean across the tree, so they
-      # report but don't fail the build. Tighten these to hard gates once the
-      # backlog is cleared.
-      - name: Clippy (advisory)
-        run: cargo clippy --all-targets
-        continue-on-error: true
+      - name: Shell syntax
+        run: find . -type f -name '*.sh' -not -path './target/*' -print0 | xargs -0 -n1 bash -n
 
-      - name: Format check (advisory)
-        run: cargo fmt --all -- --check
-        continue-on-error: true
+      - name: Workflow graph contracts
+        run: bash scripts/check-workflows.sh
+
+      - name: Audit runner contracts
+        run: bash scripts/tests/test_audit_runner.sh
+
+      - name: Python contracts
+        run: |
+          python3 scripts/tests/test_hook_plan_state.py
+          python3 scripts/tests/test_skill_catalog_scripts.py
+          python3 scripts/tests/test_release_contract.py
+
+      - name: Canonical skill catalog
+        run: cargo run --locked --bin omega -- skills validate --root skills
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Installer contracts
+        working-directory: installer
+        run: npm test

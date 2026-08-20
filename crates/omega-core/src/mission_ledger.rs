@@ -9,19 +9,30 @@ use crate::mission::{
     InvalidTransition, Mission, MissionId, MissionState, PlanContract, TaskAttemptState,
 };
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
-use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
+use rusqlite::{
+    params, Connection, OpenFlags, OptionalExtension, Transaction, TransactionBehavior,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
-use std::path::Path;
+use std::fs::{self, OpenOptions};
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
 
-const SCHEMA_VERSION: u32 = 1;
+#[cfg(unix)]
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
+
+const LEGACY_SCHEMA_VERSION: u32 = 1;
+const SCHEMA_VERSION: u32 = 2;
+const LEGACY_ATTEMPT_PROVENANCE: &str = "legacy_unverified";
+const LEGACY_ATTEMPT_MIGRATION: &str = "archive_schema_v1_task_attempts";
 
 #[derive(Debug)]
 pub enum LedgerError {
+    Io(std::io::Error),
     Sqlite(rusqlite::Error),
     Json(serde_json::Error),
     Chrono(chrono::ParseError),
@@ -36,6 +47,37 @@ pub enum LedgerError {
         expected: u64,
         actual: u64,
     },
+    IdempotencyConflict {
+        mission_id: String,
+        key: String,
+        recorded_digest: String,
+        supplied_digest: String,
+    },
+    PlanRevisionNotActive {
+        mission_id: String,
+        supplied: u64,
+        active: Option<u64>,
+    },
+    TaskNotInPlan {
+        mission_id: String,
+        revision: u64,
+        task_id: String,
+    },
+    TaskNoLongerActive {
+        mission_id: String,
+        task_id: String,
+        attempt_revision: u64,
+        active_revision: u64,
+    },
+    ProjectionHashMismatch {
+        mission_id: String,
+        stored: String,
+        recomputed: String,
+    },
+    ReplayDivergence {
+        mission_id: String,
+        reason: String,
+    },
     InvalidTransition(InvalidTransition),
     InvalidTaskTransition(InvalidTransition),
     InvalidInput(String),
@@ -43,6 +85,10 @@ pub enum LedgerError {
         resource: String,
         owner: String,
         token: u64,
+    },
+    LeaseContextMismatch {
+        resource: String,
+        reason: String,
     },
     StaleFence {
         resource: String,
@@ -56,6 +102,7 @@ impl fmt::Display for LedgerError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         use LedgerError::*;
         match self {
+            Io(error) => write!(f, "ledger filesystem error: {error}"),
             Sqlite(error) => write!(f, "sqlite error: {error}"),
             Json(error) => write!(f, "json error: {error}"),
             Chrono(error) => write!(f, "timestamp error: {error}"),
@@ -75,6 +122,51 @@ impl fmt::Display for LedgerError {
                 f,
                 "task attempt {attempt_id} version conflict: expected {expected}, actual {actual}"
             ),
+            IdempotencyConflict {
+                mission_id,
+                key,
+                recorded_digest,
+                supplied_digest,
+            } => write!(
+                f,
+                "idempotency key {key} for mission {mission_id} was reused for a different command (recorded {recorded_digest}, supplied {supplied_digest})"
+            ),
+            PlanRevisionNotActive {
+                mission_id,
+                supplied,
+                active,
+            } => write!(
+                f,
+                "plan revision {supplied} is not active for mission {mission_id}; active revision is {active:?}"
+            ),
+            TaskNotInPlan {
+                mission_id,
+                revision,
+                task_id,
+            } => write!(
+                f,
+                "task {task_id} does not exist in mission {mission_id} plan revision {revision}"
+            ),
+            TaskNoLongerActive {
+                mission_id,
+                task_id,
+                attempt_revision,
+                active_revision,
+            } => write!(
+                f,
+                "task {task_id} from mission {mission_id} plan revision {attempt_revision} is not unchanged in active revision {active_revision}"
+            ),
+            ProjectionHashMismatch {
+                mission_id,
+                stored,
+                recomputed,
+            } => write!(
+                f,
+                "mission {mission_id} projection hash mismatch: stored {stored}, recomputed {recomputed}"
+            ),
+            ReplayDivergence { mission_id, reason } => {
+                write!(f, "mission {mission_id} materialized projection diverges from replay: {reason}")
+            }
             InvalidTransition(error) | InvalidTaskTransition(error) => error.fmt(f),
             InvalidInput(message) => write!(f, "invalid ledger input: {message}"),
             LeaseHeld {
@@ -85,6 +177,9 @@ impl fmt::Display for LedgerError {
                 f,
                 "lease {resource} is held by {owner} with fencing token {token}"
             ),
+            LeaseContextMismatch { resource, reason } => {
+                write!(f, "lease {resource} context mismatch: {reason}")
+            }
             StaleFence {
                 resource,
                 expected,
@@ -102,6 +197,12 @@ impl fmt::Display for LedgerError {
 }
 
 impl std::error::Error for LedgerError {}
+
+impl From<std::io::Error> for LedgerError {
+    fn from(value: std::io::Error) -> Self {
+        Self::Io(value)
+    }
+}
 
 impl From<rusqlite::Error> for LedgerError {
     fn from(value: rusqlite::Error) -> Self {
@@ -131,6 +232,8 @@ pub struct MissionEvent {
     pub expected_version: u64,
     pub schema_version: u32,
     pub idempotency_key: String,
+    #[serde(default)]
+    pub command_digest: String,
     pub actor: String,
     pub provider: Option<String>,
     pub causation_id: Option<String>,
@@ -138,6 +241,22 @@ pub struct MissionEvent {
     pub fencing_token: Option<u64>,
     #[serde(default)]
     pub plan_revision: Option<u64>,
+    /// Set only when this event activates a newly persisted plan. Task attempt
+    /// events use `plan_revision` without changing the mission's active plan.
+    #[serde(default)]
+    pub activated_plan_revision: Option<u64>,
+    /// Complete task-attempt command recorded by the append-only authority.
+    ///
+    /// Schema-v1 events did not persist this value. A legacy event without a
+    /// task binding remains replayable, while a legacy task-attempt event is
+    /// rejected because its materialized row cannot be promoted to authority.
+    #[serde(default)]
+    pub task_attempt_mutation: Option<TaskAttemptMutation>,
+    /// Exact materialized attempt produced by `task_attempt_mutation`.
+    /// Replay derives every task-attempt projection from this immutable value
+    /// and validates it against the command, aliases, transition and timestamp.
+    #[serde(default)]
+    pub resulting_task_attempt: Option<TaskAttemptProjection>,
     pub recorded_at: DateTime<Utc>,
     pub kind: String,
     pub payload: Value,
@@ -164,6 +283,26 @@ pub struct TaskAttemptProjection {
     pub version: u64,
     pub fencing_token: Option<u64>,
     pub updated_at: DateTime<Utc>,
+}
+
+/// Auditable, non-authoritative copy of a schema-v1 materialized attempt.
+///
+/// These records are intentionally a distinct type. In particular, they
+/// cannot be passed to code expecting an authoritative
+/// [`TaskAttemptProjection`] and therefore cannot satisfy delivery gates.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LegacyTaskAttemptRecord {
+    pub mission_id: MissionId,
+    pub task_id: String,
+    pub attempt_id: String,
+    pub plan_revision: u64,
+    pub historical_state: TaskAttemptState,
+    pub historical_version: u64,
+    pub historical_fencing_token: Option<u64>,
+    pub historical_updated_at: DateTime<Utc>,
+    pub imported_at: DateTime<Utc>,
+    pub provenance: String,
+    pub source: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -197,8 +336,18 @@ pub struct AppendEvent {
     pub next_mission_state: Option<MissionState>,
     pub task_attempt: Option<TaskAttemptMutation>,
     pub plan: Option<PlanContract>,
+    /// Plan revision explicitly bound to a non-task observation event.
+    /// Task mutations derive this value from their typed mutation instead.
+    pub observation_plan_revision: Option<u64>,
     pub lease_resource: Option<String>,
     pub fencing_token: Option<u64>,
+    /// Complete lease authority presented by this command.
+    ///
+    /// `lease_resource`/`fencing_token` remain as a single-lease compatibility
+    /// surface. New callers must present every active lease held by the task
+    /// attempt here. The full set is authenticated by `command_digest` and is
+    /// checked under the same IMMEDIATE transaction as the attempt mutation.
+    pub lease_assertions: Vec<LeaseAssertion>,
     pub outbox: Vec<NewOutboxEffect>,
 }
 
@@ -224,10 +373,93 @@ impl AppendEvent {
             next_mission_state: None,
             task_attempt: None,
             plan: None,
+            observation_plan_revision: None,
             lease_resource: None,
             fencing_token: None,
+            lease_assertions: Vec::new(),
             outbox: Vec::new(),
         }
+    }
+}
+
+#[derive(Serialize)]
+struct AppendCommandDigest<'a> {
+    mission_id: &'a MissionId,
+    expected_version: u64,
+    actor: &'a str,
+    provider: &'a Option<String>,
+    causation_id: &'a Option<String>,
+    correlation_id: &'a Option<String>,
+    kind: &'a str,
+    payload: &'a Value,
+    next_mission_state: &'a Option<MissionState>,
+    task_attempt: &'a Option<TaskAttemptMutation>,
+    plan: &'a Option<PlanContract>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    observation_plan_revision: &'a Option<u64>,
+    lease_resource: &'a Option<String>,
+    fencing_token: &'a Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    lease_assertions: Option<&'a [LeaseAssertion]>,
+    outbox: &'a [NewOutboxEffect],
+}
+
+fn append_command_digest(request: &AppendEvent) -> Result<String, LedgerError> {
+    canonical_digest(&AppendCommandDigest {
+        mission_id: &request.mission_id,
+        expected_version: request.expected_version,
+        actor: &request.actor,
+        provider: &request.provider,
+        causation_id: &request.causation_id,
+        correlation_id: &request.correlation_id,
+        kind: &request.kind,
+        payload: &request.payload,
+        next_mission_state: &request.next_mission_state,
+        task_attempt: &request.task_attempt,
+        plan: &request.plan,
+        observation_plan_revision: &request.observation_plan_revision,
+        lease_resource: &request.lease_resource,
+        fencing_token: &request.fencing_token,
+        // Preserve the historical digest for commands that do not use the new
+        // aggregate authority field. This keeps retries of already-recorded
+        // unleased and legacy single-fence commands idempotent across upgrade.
+        lease_assertions: (!request.lease_assertions.is_empty())
+            .then_some(request.lease_assertions.as_slice()),
+        outbox: &request.outbox,
+    })
+}
+
+fn create_mission_command_digest(mission: &Mission, actor: &str) -> Result<String, LedgerError> {
+    #[derive(Serialize)]
+    struct CreateMissionCommand<'a> {
+        mission: &'a Mission,
+        actor: &'a str,
+        kind: &'static str,
+    }
+    canonical_digest(&CreateMissionCommand {
+        mission,
+        actor,
+        kind: "mission_created",
+    })
+}
+
+fn canonical_digest(value: &impl Serialize) -> Result<String, LedgerError> {
+    let value = canonicalize_json(serde_json::to_value(value)?);
+    let bytes = serde_json::to_vec(&value)?;
+    Ok(blake3::hash(&bytes).to_hex().to_string())
+}
+
+fn canonicalize_json(value: Value) -> Value {
+    match value {
+        Value::Object(map) => {
+            let sorted: BTreeMap<String, Value> = map
+                .into_iter()
+                .map(|(key, value)| (key, canonicalize_json(value)))
+                .collect();
+            Value::Object(sorted.into_iter().collect())
+        }
+        Value::Array(values) => Value::Array(values.into_iter().map(canonicalize_json).collect()),
+        other => other,
     }
 }
 
@@ -257,6 +489,256 @@ pub struct LeaseRecord {
     pub status: LeaseStatus,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct LedgerScopeAuthorityReceipt {
+    schema_version: u32,
+    mission_id: MissionId,
+    task_id: String,
+    attempt_id: String,
+    plan_revision: u64,
+    owner: String,
+    claim: crate::scope::ScopeClaim,
+}
+
+/// One exact lease credential supplied with an attempt mutation.
+///
+/// The owner is explicit because an independent verifier may append the
+/// verdict while presenting the worker's still-current lease authority. The
+/// event actor therefore remains truthful (`omega-independent-verifier`)
+/// instead of impersonating the worker that owns the scope.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LeaseAssertion {
+    pub resource_key: String,
+    pub owner: String,
+    pub fencing_token: u64,
+}
+
+impl From<&LeaseRecord> for LeaseAssertion {
+    fn from(lease: &LeaseRecord) -> Self {
+        Self {
+            resource_key: lease.resource_key.clone(),
+            owner: lease.owner.clone(),
+            fencing_token: lease.fencing_token,
+        }
+    }
+}
+
+pub const ACCEPTANCE_OBSERVATION_SCHEMA_VERSION: u32 = 1;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VerifierObservation {
+    pub check_id: String,
+    pub passed: bool,
+    pub detail: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContractVerification {
+    pub passed: bool,
+    pub observations: Vec<VerifierObservation>,
+    pub failures: Vec<String>,
+}
+
+/// Immutable, plan-bound result of executing every verifier in one task
+/// contract. Mission acceptance consumes this exact payload, never an
+/// `Accepted` projection alone.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecordedContractVerification {
+    #[serde(default = "acceptance_observation_schema_version")]
+    pub schema_version: u32,
+    pub mission_id: String,
+    pub task_id: String,
+    pub attempt_id: String,
+    pub plan_revision: u64,
+    pub plan_digest: String,
+    pub worker_signal_digest: String,
+    pub verification: ContractVerification,
+}
+
+fn acceptance_observation_schema_version() -> u32 {
+    ACCEPTANCE_OBSERVATION_SCHEMA_VERSION
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PlanRequirementKind {
+    Gate,
+    Approval,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlanRequirementObservation {
+    #[serde(default = "acceptance_observation_schema_version")]
+    pub schema_version: u32,
+    pub mission_id: String,
+    pub plan_revision: u64,
+    pub plan_digest: String,
+    pub requirement: String,
+    pub kind: PlanRequirementKind,
+    pub passed: bool,
+    pub observed_by: String,
+    pub evidence_event_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MissionGateCheckObservation {
+    pub check_id: String,
+    pub fact_digest: String,
+    pub passed: bool,
+    pub evidence_event_id: String,
+    pub evidence_sequence: u64,
+    pub detail: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MissionGateLensObservation {
+    pub lens: String,
+    pub passed: bool,
+    pub fact_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MissionGateObservation {
+    #[serde(default = "acceptance_observation_schema_version")]
+    pub schema_version: u32,
+    pub mission_id: String,
+    pub plan_revision: u64,
+    pub plan_digest: String,
+    pub gate_result_digest: String,
+    pub overall_pass: bool,
+    pub checks: Vec<MissionGateCheckObservation>,
+    pub lenses: Vec<MissionGateLensObservation>,
+}
+
+/// Explicit closure of a mission-level invalidation or blocker. Historical
+/// issue events are never called "unresolved" merely because they exist: the
+/// resolution must name the exact immutable event and active plan it closes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MissionIssueResolution {
+    #[serde(default = "acceptance_observation_schema_version")]
+    pub schema_version: u32,
+    pub mission_id: String,
+    pub plan_revision: u64,
+    pub plan_digest: String,
+    pub issue_event_id: String,
+    pub resolved_by: String,
+    pub detail: String,
+}
+
+/// Immutable revocation of one concrete task acceptance candidate. The full
+/// identity is carried in the payload so a typo, stale attempt id or malformed
+/// observation cannot be interpreted as "no invalidation" during mission
+/// acceptance.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TaskAcceptanceInvalidation {
+    #[serde(default = "acceptance_observation_schema_version")]
+    pub schema_version: u32,
+    pub mission_id: String,
+    pub task_id: String,
+    pub attempt_id: String,
+    pub plan_revision: u64,
+    pub reason: String,
+}
+
+/// Immutable parent-to-child mission edge used for dynamically spawned
+/// workers. Parent plans remain frozen; each child owns its own plan revision,
+/// attempts, runtime manifest and acceptance lifecycle.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChildMissionLink {
+    #[serde(default = "acceptance_observation_schema_version")]
+    pub schema_version: u32,
+    pub parent_mission_id: String,
+    pub parent_plan_revision: u64,
+    pub parent_plan_digest: String,
+    pub child_mission_id: String,
+    pub child_plan_revision: u64,
+    pub child_plan_digest: String,
+    pub runtime_session: String,
+    pub runtime_manifest_digest: String,
+    pub project: String,
+    pub canonical_workspace_id: String,
+    pub runtime_owner: String,
+    pub runtime_task_id: String,
+    pub child_binding_event_id: String,
+    pub child_binding_event_sequence: u64,
+    pub child_binding_command_digest: String,
+    pub child_binding_projection_hash: String,
+    pub linked_by: String,
+}
+
+/// Reciprocal write-ahead binding stored in the child stream in the same
+/// SQLite transaction as [`ChildMissionLink`]. A child may not enter Running
+/// unless the exact parent acknowledgement referenced here is replayable.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChildMissionBinding {
+    #[serde(default = "acceptance_observation_schema_version")]
+    pub schema_version: u32,
+    pub parent_mission_id: String,
+    pub parent_plan_revision: u64,
+    pub parent_plan_digest: String,
+    pub child_mission_id: String,
+    pub child_plan_revision: u64,
+    pub child_plan_digest: String,
+    pub runtime_session: String,
+    pub runtime_manifest_digest: String,
+    pub project: String,
+    pub canonical_workspace_id: String,
+    pub runtime_owner: String,
+    pub runtime_task_id: String,
+    pub parent_ack_event_id: String,
+    pub linked_by: String,
+}
+
+/// Canonical runtime identity supplied by the persisted worker runtime layer.
+/// The ledger revalidates every field against immutable mission/plan records.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChildMissionRuntimeIdentity {
+    pub runtime_session: String,
+    pub runtime_manifest_digest: String,
+    pub project: String,
+    pub canonical_workspace_id: String,
+    pub runtime_owner: String,
+    pub runtime_task_id: String,
+}
+
+/// Deterministically bind one gate assertion to the immutable ledger event it
+/// cites. Recomputing this in the acceptance transaction prevents callers from
+/// supplying an arbitrary 64-character string as a fact digest.
+pub fn mission_gate_fact_digest(
+    check_id: &str,
+    passed: bool,
+    detail: &str,
+    evidence: &MissionEvent,
+) -> Result<String, LedgerError> {
+    let bytes = serde_json::to_vec(&(
+        "omega.mission-gate-fact.v1",
+        check_id,
+        passed,
+        detail,
+        evidence,
+    ))?;
+    Ok(blake3::hash(&bytes).to_hex().to_string())
+}
+
+/// Hash the complete plan-bound gate receipt while excluding the digest field
+/// itself. This is stable across serialization formatting and is recomputed at
+/// acceptance time.
+pub fn mission_gate_result_digest(
+    observation: &MissionGateObservation,
+) -> Result<String, LedgerError> {
+    let bytes = serde_json::to_vec(&(
+        "omega.mission-gate-result.v1",
+        observation.schema_version,
+        &observation.mission_id,
+        observation.plan_revision,
+        &observation.plan_digest,
+        observation.overall_pass,
+        &observation.checks,
+        &observation.lenses,
+    ))?;
+    Ok(blake3::hash(&bytes).to_hex().to_string())
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum OutboxStatus {
@@ -282,14 +764,376 @@ pub struct OutboxRecord {
     pub remote_ref: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct LedgerFileIdentity {
+    #[cfg(unix)]
+    device: u64,
+    #[cfg(unix)]
+    inode: u64,
+    #[cfg(not(unix))]
+    length: u64,
+}
+
+fn ledger_file_identity(metadata: &fs::Metadata) -> LedgerFileIdentity {
+    LedgerFileIdentity {
+        #[cfg(unix)]
+        device: metadata.dev(),
+        #[cfg(unix)]
+        inode: metadata.ino(),
+        #[cfg(not(unix))]
+        length: metadata.len(),
+    }
+}
+
+fn invalid_ledger_path(path: &Path, reason: impl fmt::Display) -> LedgerError {
+    LedgerError::InvalidInput(format!("unsafe ledger path {}: {reason}", path.display()))
+}
+
+fn validate_ledger_parent(path: &Path) -> Result<(), LedgerError> {
+    if path.file_name().is_none() {
+        return Err(invalid_ledger_path(path, "missing database file name"));
+    }
+    let parent = path
+        .parent()
+        .filter(|candidate| !candidate.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let metadata = fs::symlink_metadata(parent).map_err(|error| {
+        invalid_ledger_path(
+            path,
+            format!("parent {} is unavailable: {error}", parent.display()),
+        )
+    })?;
+    if metadata.file_type().is_symlink() {
+        return Err(invalid_ledger_path(
+            path,
+            format!("parent {} is a symlink", parent.display()),
+        ));
+    }
+    if !metadata.is_dir() {
+        return Err(invalid_ledger_path(
+            path,
+            format!("parent {} is not a directory", parent.display()),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_regular_ledger_file(path: &Path) -> Result<fs::Metadata, LedgerError> {
+    let metadata = fs::symlink_metadata(path)?;
+    if metadata.file_type().is_symlink() {
+        return Err(invalid_ledger_path(path, "database file is a symlink"));
+    }
+    if !metadata.is_file() {
+        return Err(invalid_ledger_path(
+            path,
+            "database path is not a regular file",
+        ));
+    }
+    #[cfg(unix)]
+    {
+        if metadata.uid() != effective_uid() {
+            return Err(invalid_ledger_path(path, "file is owned by another uid"));
+        }
+        if metadata.nlink() != 1 {
+            return Err(invalid_ledger_path(
+                path,
+                format!("file has {} hard links", metadata.nlink()),
+            ));
+        }
+    }
+    Ok(metadata)
+}
+
+#[cfg(unix)]
+fn effective_uid() -> u32 {
+    unsafe extern "C" {
+        fn geteuid() -> u32;
+    }
+    // SAFETY: geteuid has no preconditions and reads process metadata only.
+    unsafe { geteuid() }
+}
+
+#[cfg(all(unix, any(target_os = "linux", target_os = "android")))]
+fn ledger_no_follow_flag() -> i32 {
+    0o400000
+}
+
+#[cfg(all(
+    unix,
+    any(
+        target_os = "macos",
+        target_os = "ios",
+        target_os = "freebsd",
+        target_os = "openbsd",
+        target_os = "netbsd"
+    )
+))]
+fn ledger_no_follow_flag() -> i32 {
+    0x100
+}
+
+#[cfg(all(
+    unix,
+    not(any(
+        target_os = "linux",
+        target_os = "android",
+        target_os = "macos",
+        target_os = "ios",
+        target_os = "freebsd",
+        target_os = "openbsd",
+        target_os = "netbsd"
+    ))
+))]
+fn ledger_no_follow_flag() -> i32 {
+    0
+}
+
+fn verify_private_ledger_descriptor(path: &Path) -> Result<fs::Metadata, LedgerError> {
+    let mut options = OpenOptions::new();
+    options.read(true).write(true);
+    #[cfg(unix)]
+    options.custom_flags(ledger_no_follow_flag());
+    let file = options.open(path)?;
+    let opened = file.metadata()?;
+    let path_metadata = validate_regular_ledger_file(path)?;
+    if ledger_file_identity(&opened) != ledger_file_identity(&path_metadata) {
+        return Err(invalid_ledger_path(
+            path,
+            "descriptor and path identities differ",
+        ));
+    }
+    #[cfg(unix)]
+    {
+        if opened.uid() != effective_uid() || opened.nlink() != 1 {
+            return Err(invalid_ledger_path(
+                path,
+                "opened file ownership or hard-link count is unsafe",
+            ));
+        }
+        if opened.permissions().mode() & 0o077 != 0 {
+            return Err(invalid_ledger_path(path, "file is not owner-only"));
+        }
+    }
+    Ok(opened)
+}
+
+fn sqlite_sidecar(path: &Path, suffix: &str) -> PathBuf {
+    let mut value = path.as_os_str().to_os_string();
+    value.push(suffix);
+    PathBuf::from(value)
+}
+
+#[cfg(unix)]
+fn set_owner_only(path: &Path) -> Result<(), LedgerError> {
+    fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn set_owner_only(_path: &Path) -> Result<(), LedgerError> {
+    Ok(())
+}
+
+fn secure_existing_sqlite_file(path: &Path) -> Result<(), LedgerError> {
+    match fs::symlink_metadata(path) {
+        Ok(_) => {
+            validate_regular_ledger_file(path)?;
+            set_owner_only(path)?;
+            verify_private_ledger_descriptor(path)?;
+            Ok(())
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn prepare_ledger_path(path: &Path) -> Result<LedgerFileIdentity, LedgerError> {
+    validate_ledger_parent(path)?;
+    match fs::symlink_metadata(path) {
+        Ok(_) => {
+            validate_regular_ledger_file(path)?;
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            let mut options = OpenOptions::new();
+            options.read(true).write(true).create_new(true);
+            #[cfg(unix)]
+            options.mode(0o600);
+            options.open(path)?;
+            validate_regular_ledger_file(path)?;
+        }
+        Err(error) => return Err(error.into()),
+    }
+    set_owner_only(path)?;
+    let metadata = verify_private_ledger_descriptor(path)?;
+    for suffix in ["-wal", "-shm"] {
+        secure_existing_sqlite_file(&sqlite_sidecar(path, suffix))?;
+    }
+    validate_ledger_parent(path)?;
+    Ok(ledger_file_identity(&metadata))
+}
+
+fn verify_ledger_identity(path: &Path, expected: LedgerFileIdentity) -> Result<(), LedgerError> {
+    validate_ledger_parent(path)?;
+    let actual = ledger_file_identity(&validate_regular_ledger_file(path)?);
+    if actual != expected {
+        return Err(invalid_ledger_path(
+            path,
+            "database file changed while it was being opened",
+        ));
+    }
+    Ok(())
+}
+
+fn secure_sqlite_files(path: &Path) -> Result<(), LedgerError> {
+    validate_ledger_parent(path)?;
+    validate_regular_ledger_file(path)?;
+    set_owner_only(path)?;
+    verify_private_ledger_descriptor(path)?;
+    for suffix in ["-wal", "-shm"] {
+        secure_existing_sqlite_file(&sqlite_sidecar(path, suffix))?;
+    }
+    Ok(())
+}
+
+fn archive_unverified_legacy_attempts(connection: &Connection) -> Result<(), LedgerError> {
+    let imported_at = Utc::now().to_rfc3339();
+    connection.execute(
+        "INSERT INTO legacy_task_attempts (
+            attempt_id, mission_id, task_id, plan_revision, state_json,
+            version, fencing_token, updated_at, imported_at, provenance, source
+         )
+         SELECT attempts.attempt_id, attempts.mission_id, attempts.task_id,
+                attempts.plan_revision, attempts.state_json, attempts.version,
+                attempts.fencing_token, attempts.updated_at, ?1,
+                'legacy_unverified',
+                CASE WHEN EXISTS (
+                    SELECT 1 FROM events AS legacy_events
+                    WHERE legacy_events.schema_version = 1
+                      AND legacy_events.mission_id = attempts.mission_id
+                      AND legacy_events.task_id = attempts.task_id
+                      AND legacy_events.attempt_id = attempts.attempt_id
+                ) THEN 'schema_v1_event_projection'
+                  ELSE 'unbound_projection'
+                END
+         FROM task_attempts AS attempts
+         WHERE NOT EXISTS (
+             SELECT 1 FROM events AS authoritative_events
+             WHERE authoritative_events.schema_version = 2
+               AND authoritative_events.mission_id = attempts.mission_id
+               AND authoritative_events.task_id = attempts.task_id
+               AND authoritative_events.attempt_id = attempts.attempt_id
+               AND authoritative_events.task_attempt_mutation_json IS NOT NULL
+               AND authoritative_events.task_attempt_projection_json IS NOT NULL
+         )
+         ON CONFLICT(attempt_id) DO NOTHING",
+        params![imported_at],
+    )?;
+
+    let mismatch: Option<String> = connection
+        .query_row(
+            "SELECT attempts.attempt_id
+             FROM task_attempts AS attempts
+             JOIN legacy_task_attempts AS archived
+               ON archived.attempt_id = attempts.attempt_id
+             WHERE NOT EXISTS (
+                 SELECT 1 FROM events AS authoritative_events
+                 WHERE authoritative_events.schema_version = 2
+                   AND authoritative_events.mission_id = attempts.mission_id
+                   AND authoritative_events.task_id = attempts.task_id
+                   AND authoritative_events.attempt_id = attempts.attempt_id
+                   AND authoritative_events.task_attempt_mutation_json IS NOT NULL
+                   AND authoritative_events.task_attempt_projection_json IS NOT NULL
+             )
+               AND (
+                   archived.mission_id != attempts.mission_id
+                   OR archived.task_id != attempts.task_id
+                   OR archived.plan_revision != attempts.plan_revision
+                   OR archived.state_json != attempts.state_json
+                   OR archived.version != attempts.version
+                   OR archived.fencing_token IS NOT attempts.fencing_token
+                   OR archived.updated_at != attempts.updated_at
+                   OR archived.provenance != 'legacy_unverified'
+                   OR archived.source != CASE WHEN EXISTS (
+                       SELECT 1 FROM events AS legacy_events
+                       WHERE legacy_events.schema_version = 1
+                         AND legacy_events.mission_id = attempts.mission_id
+                         AND legacy_events.task_id = attempts.task_id
+                         AND legacy_events.attempt_id = attempts.attempt_id
+                   ) THEN 'schema_v1_event_projection'
+                     ELSE 'unbound_projection'
+                   END
+               )
+             ORDER BY attempts.attempt_id LIMIT 1",
+            [],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if let Some(attempt_id) = mismatch {
+        return Err(LedgerError::InvalidInput(format!(
+            "legacy archive conflict for task attempt {attempt_id}"
+        )));
+    }
+
+    let unarchived: Option<String> = connection
+        .query_row(
+            "SELECT attempts.attempt_id
+             FROM task_attempts AS attempts
+             LEFT JOIN legacy_task_attempts AS archived
+               ON archived.attempt_id = attempts.attempt_id
+             WHERE archived.attempt_id IS NULL
+               AND NOT EXISTS (
+                   SELECT 1 FROM events AS authoritative_events
+                   WHERE authoritative_events.schema_version = 2
+                     AND authoritative_events.mission_id = attempts.mission_id
+                     AND authoritative_events.task_id = attempts.task_id
+                     AND authoritative_events.attempt_id = attempts.attempt_id
+                     AND authoritative_events.task_attempt_mutation_json IS NOT NULL
+                     AND authoritative_events.task_attempt_projection_json IS NOT NULL
+               )
+             ORDER BY attempts.attempt_id LIMIT 1",
+            [],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if let Some(attempt_id) = unarchived {
+        return Err(LedgerError::InvalidInput(format!(
+            "legacy task attempt {attempt_id} could not be archived"
+        )));
+    }
+
+    connection.execute(
+        "DELETE FROM task_attempts AS attempts
+         WHERE NOT EXISTS (
+             SELECT 1 FROM events AS authoritative_events
+             WHERE authoritative_events.schema_version = 2
+               AND authoritative_events.mission_id = attempts.mission_id
+               AND authoritative_events.task_id = attempts.task_id
+               AND authoritative_events.attempt_id = attempts.attempt_id
+               AND authoritative_events.task_attempt_mutation_json IS NOT NULL
+               AND authoritative_events.task_attempt_projection_json IS NOT NULL
+         )",
+        [],
+    )?;
+    Ok(())
+}
+
 pub struct MissionLedger {
     connection: Mutex<Connection>,
 }
 
 impl MissionLedger {
     pub fn open(path: impl AsRef<Path>) -> Result<Self, LedgerError> {
-        let connection = Connection::open(path)?;
-        Self::from_connection(connection)
+        let path = path.as_ref();
+        let identity = prepare_ledger_path(path)?;
+        let connection = Connection::open_with_flags(
+            path,
+            OpenFlags::default() | OpenFlags::SQLITE_OPEN_NOFOLLOW,
+        )?;
+        verify_ledger_identity(path, identity)?;
+        let ledger = Self::from_connection(connection)?;
+        verify_ledger_identity(path, identity)?;
+        secure_sqlite_files(path)?;
+        Ok(ledger)
     }
 
     pub fn open_in_memory() -> Result<Self, LedgerError> {
@@ -297,7 +1141,7 @@ impl MissionLedger {
         Self::from_connection(connection)
     }
 
-    fn from_connection(connection: Connection) -> Result<Self, LedgerError> {
+    fn from_connection(mut connection: Connection) -> Result<Self, LedgerError> {
         connection.busy_timeout(Duration::from_secs(5))?;
         connection.execute_batch(
             r#"
@@ -325,12 +1169,16 @@ impl MissionLedger {
                 expected_version INTEGER NOT NULL,
                 schema_version INTEGER NOT NULL,
                 idempotency_key TEXT NOT NULL,
+                command_digest TEXT NOT NULL DEFAULT '',
                 actor TEXT NOT NULL,
                 provider TEXT,
                 causation_id TEXT,
                 correlation_id TEXT,
                 fencing_token INTEGER,
                 plan_revision INTEGER,
+                activated_plan_revision INTEGER,
+                task_attempt_mutation_json TEXT,
+                task_attempt_projection_json TEXT,
                 recorded_at TEXT NOT NULL,
                 kind TEXT NOT NULL,
                 payload_json TEXT NOT NULL,
@@ -362,6 +1210,25 @@ impl MissionLedger {
                 updated_at TEXT NOT NULL,
                 UNIQUE(mission_id, task_id, attempt_id),
                 FOREIGN KEY(mission_id) REFERENCES missions(mission_id)
+            );
+
+            CREATE TABLE IF NOT EXISTS legacy_task_attempts (
+                attempt_id TEXT PRIMARY KEY,
+                mission_id TEXT NOT NULL,
+                task_id TEXT NOT NULL,
+                plan_revision INTEGER NOT NULL,
+                state_json TEXT NOT NULL,
+                version INTEGER NOT NULL,
+                fencing_token INTEGER,
+                updated_at TEXT NOT NULL,
+                imported_at TEXT NOT NULL,
+                provenance TEXT NOT NULL CHECK (provenance = 'legacy_unverified'),
+                source TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS ledger_migrations (
+                name TEXT PRIMARY KEY,
+                applied_at TEXT NOT NULL
             );
 
             CREATE TABLE IF NOT EXISTS leases (
@@ -397,6 +1264,8 @@ impl MissionLedger {
                 ON events(mission_id, sequence);
             CREATE INDEX IF NOT EXISTS idx_outbox_delivery
                 ON outbox(status, available_at);
+            CREATE INDEX IF NOT EXISTS idx_legacy_attempts_mission
+                ON legacy_task_attempts(mission_id, task_id, attempt_id);
             "#,
         )?;
         // Forward-compatible migration for ledgers created by the first V3
@@ -416,6 +1285,123 @@ impl MissionLedger {
         if !has_plan_revision {
             connection.execute("ALTER TABLE events ADD COLUMN plan_revision INTEGER", [])?;
         }
+        let has_activated_plan_revision = {
+            let mut statement = connection.prepare("PRAGMA table_info(events)")?;
+            let columns = statement.query_map([], |row| row.get::<_, String>(1))?;
+            let mut found = false;
+            for column in columns {
+                if column? == "activated_plan_revision" {
+                    found = true;
+                    break;
+                }
+            }
+            found
+        };
+        if !has_activated_plan_revision {
+            connection.execute(
+                "ALTER TABLE events ADD COLUMN activated_plan_revision INTEGER",
+                [],
+            )?;
+        }
+        // Safely distinguish legacy plan activations from task-attempt bindings.
+        // A plan activation has no attempt identity and its immutable plan was
+        // created from the event's expected mission version.
+        connection.execute(
+            "UPDATE events
+             SET activated_plan_revision = plan_revision
+             WHERE activated_plan_revision IS NULL
+               AND plan_revision IS NOT NULL
+               AND task_id IS NULL
+               AND attempt_id IS NULL
+               AND EXISTS (
+                 SELECT 1 FROM plans
+                 WHERE plans.mission_id = events.mission_id
+                   AND plans.revision = events.plan_revision
+                   AND json_extract(plans.contract_json, '$.created_from_version') = events.expected_version
+               )",
+            [],
+        )?;
+        // The digest binds an idempotency key to the full semantic command.
+        // Existing rows intentionally migrate to an empty digest: a retry against
+        // one of them cannot be proven equivalent and therefore fails closed.
+        let has_command_digest = {
+            let mut statement = connection.prepare("PRAGMA table_info(events)")?;
+            let columns = statement.query_map([], |row| row.get::<_, String>(1))?;
+            let mut found = false;
+            for column in columns {
+                if column? == "command_digest" {
+                    found = true;
+                    break;
+                }
+            }
+            found
+        };
+        if !has_command_digest {
+            connection.execute(
+                "ALTER TABLE events ADD COLUMN command_digest TEXT NOT NULL DEFAULT ''",
+                [],
+            )?;
+        }
+        let has_task_attempt_mutation = {
+            let mut statement = connection.prepare("PRAGMA table_info(events)")?;
+            let columns = statement.query_map([], |row| row.get::<_, String>(1))?;
+            let mut found = false;
+            for column in columns {
+                if column? == "task_attempt_mutation_json" {
+                    found = true;
+                    break;
+                }
+            }
+            found
+        };
+        if !has_task_attempt_mutation {
+            connection.execute(
+                "ALTER TABLE events ADD COLUMN task_attempt_mutation_json TEXT",
+                [],
+            )?;
+        }
+        let has_task_attempt_projection = {
+            let mut statement = connection.prepare("PRAGMA table_info(events)")?;
+            let columns = statement.query_map([], |row| row.get::<_, String>(1))?;
+            let mut found = false;
+            for column in columns {
+                if column? == "task_attempt_projection_json" {
+                    found = true;
+                    break;
+                }
+            }
+            found
+        };
+        if !has_task_attempt_projection {
+            connection.execute(
+                "ALTER TABLE events ADD COLUMN task_attempt_projection_json TEXT",
+                [],
+            )?;
+        }
+        // Opening a ledger is both the legacy quarantine boundary and an
+        // integrity boundary. Archive + delete + verification share one
+        // immediate transaction: no legacy row can remain authoritative and a
+        // failed verification cannot leave a half-migrated ledger behind.
+        {
+            let transaction =
+                connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let migration_applied: bool = transaction.query_row(
+                "SELECT EXISTS(SELECT 1 FROM ledger_migrations WHERE name = ?1)",
+                params![LEGACY_ATTEMPT_MIGRATION],
+                |row| row.get(0),
+            )?;
+            if !migration_applied {
+                archive_unverified_legacy_attempts(&transaction)?;
+            }
+            verify_all_projection_coherence(&transaction)?;
+            if !migration_applied {
+                transaction.execute(
+                    "INSERT INTO ledger_migrations (name, applied_at) VALUES (?1, ?2)",
+                    params![LEGACY_ATTEMPT_MIGRATION, Utc::now().to_rfc3339()],
+                )?;
+            }
+            transaction.commit()?;
+        }
         Ok(Self {
             connection: Mutex::new(connection),
         })
@@ -428,6 +1414,7 @@ impl MissionLedger {
         actor: &str,
     ) -> Result<AppendOutcome, LedgerError> {
         validate_key(idempotency_key, "idempotency_key")?;
+        let command_digest = create_mission_command_digest(mission, actor)?;
         let mut connection = self
             .connection
             .lock()
@@ -437,8 +1424,10 @@ impl MissionLedger {
         if let Some(event) =
             read_event_by_idempotency(&transaction, mission.id.as_str(), idempotency_key)?
         {
+            ensure_idempotent_match(&event, &command_digest)?;
             let projection = read_projection(&transaction, mission.id.as_str())?
                 .ok_or_else(|| LedgerError::MissionNotFound(mission.id.0.clone()))?;
+            verify_projection_coherence(&transaction, &projection)?;
             transaction.commit()?;
             return Ok(AppendOutcome {
                 event,
@@ -481,12 +1470,16 @@ impl MissionLedger {
             expected_version: 0,
             schema_version: SCHEMA_VERSION,
             idempotency_key: idempotency_key.to_string(),
+            command_digest,
             actor: actor.to_string(),
             provider: None,
             causation_id: None,
             correlation_id: None,
             fencing_token: None,
             plan_revision: None,
+            activated_plan_revision: None,
+            task_attempt_mutation: None,
+            resulting_task_attempt: None,
             recorded_at: now,
             kind: "mission_created".to_string(),
             payload: serde_json::to_value(mission)?,
@@ -495,6 +1488,7 @@ impl MissionLedger {
         insert_event(&transaction, &event)?;
         let projection = read_projection(&transaction, mission.id.as_str())?
             .ok_or_else(|| LedgerError::MissionNotFound(mission.id.0.clone()))?;
+        verify_projection_coherence(&transaction, &projection)?;
         transaction.commit()?;
         Ok(AppendOutcome {
             event,
@@ -508,6 +1502,15 @@ impl MissionLedger {
     pub fn append(&self, request: AppendEvent) -> Result<AppendOutcome, LedgerError> {
         validate_key(&request.idempotency_key, "idempotency_key")?;
         validate_key(&request.event_id, "event_id")?;
+        if matches!(
+            request.kind.as_str(),
+            "child_parent_binding_prepared" | "child_mission_linked"
+        ) {
+            return Err(LedgerError::InvalidInput(
+                "reciprocal child edges must use link_child_mission_atomic".to_string(),
+            ));
+        }
+        let command_digest = append_command_digest(&request)?;
         if let Some(plan) = &request.plan {
             plan.verify_integrity()
                 .map_err(|error| LedgerError::InvalidInput(error.to_string()))?;
@@ -535,8 +1538,10 @@ impl MissionLedger {
             request.mission_id.as_str(),
             &request.idempotency_key,
         )? {
+            ensure_idempotent_match(&event, &command_digest)?;
             let projection = read_projection(&transaction, request.mission_id.as_str())?
                 .ok_or_else(|| LedgerError::MissionNotFound(request.mission_id.0.clone()))?;
+            verify_projection_coherence(&transaction, &projection)?;
             transaction.commit()?;
             return Ok(AppendOutcome {
                 event,
@@ -547,23 +1552,72 @@ impl MissionLedger {
 
         let current = read_projection(&transaction, request.mission_id.as_str())?
             .ok_or_else(|| LedgerError::MissionNotFound(request.mission_id.0.clone()))?;
+        verify_projection_coherence(&transaction, &current)?;
         if current.version != request.expected_version {
             return Err(LedgerError::VersionConflict {
                 expected: request.expected_version,
                 actual: current.version,
             });
         }
-        if let Some(resource) = &request.lease_resource {
-            let actual_fencing_token = current_lease_token(&transaction, resource)?;
-            let supplied = request
-                .fencing_token
-                .ok_or_else(|| LedgerError::StaleFence {
-                    resource: resource.clone(),
-                    expected: 0,
-                    actual: actual_fencing_token,
-                })?;
-            assert_fence_tx(&transaction, resource, supplied)?;
+        if let Some(plan) = &request.plan {
+            validate_plan_activation(&transaction, &current, plan)?;
         }
+        if let Some(revision) = request.observation_plan_revision {
+            if request.task_attempt.is_some() || request.plan.is_some() {
+                return Err(LedgerError::InvalidInput(
+                    "observation_plan_revision is only valid for non-task observations".to_string(),
+                ));
+            }
+            if current.active_plan_revision != Some(revision) {
+                return Err(LedgerError::PlanRevisionNotActive {
+                    mission_id: request.mission_id.0.clone(),
+                    supplied: revision,
+                    active: current.active_plan_revision,
+                });
+            }
+        }
+        if request.next_mission_state == Some(MissionState::Running)
+            || request
+                .task_attempt
+                .as_ref()
+                .is_some_and(|mutation| mutation.next_state == TaskAttemptState::Running)
+        {
+            validate_child_parent_ack_connection(&transaction, &request.mission_id)?;
+        }
+        if let Some(mutation) = request.task_attempt.as_ref() {
+            if let Some(existing) = read_task_attempt(&transaction, &mutation.attempt_id)? {
+                if existing.version == mutation.expected_version
+                    && !existing.state.can_transition_to(mutation.next_state)
+                {
+                    existing
+                        .state
+                        .transition(mutation.next_state)
+                        .map_err(LedgerError::InvalidTaskTransition)?;
+                }
+            }
+        }
+        let supplied_leases = supplied_lease_assertions(&request)?;
+        let projection_fence = if let Some(mutation) = request.task_attempt.as_ref() {
+            assert_complete_attempt_lease_authority_tx(
+                &transaction,
+                &request.mission_id,
+                mutation,
+                &supplied_leases,
+                &request.actor,
+            )?;
+            if supplied_leases.len() == 1 {
+                Some(supplied_leases[0].fencing_token)
+            } else {
+                None
+            }
+        } else {
+            if !supplied_leases.is_empty() {
+                return Err(LedgerError::InvalidInput(
+                    "lease authority requires a task-attempt mutation".to_string(),
+                ));
+            }
+            None
+        };
 
         let next_state = match request.next_mission_state {
             Some(next) => current
@@ -572,14 +1626,22 @@ impl MissionLedger {
                 .map_err(LedgerError::InvalidTransition)?,
             None => current.state,
         };
+        if matches!(
+            request.next_mission_state,
+            Some(MissionState::Accepted | MissionState::Reporting | MissionState::Delivered)
+        ) {
+            validate_mission_acceptance_connection(&transaction, &request.mission_id)?;
+        }
         let now = Utc::now();
-        let next_version = current.version.saturating_add(1);
+        let next_version = current.version.checked_add(1).ok_or_else(|| {
+            LedgerError::InvalidInput("mission projection version overflow".to_string())
+        })?;
         let task_projection = if let Some(mutation) = &request.task_attempt {
             Some(apply_task_mutation(
                 &transaction,
                 &request.mission_id,
                 mutation,
-                request.fencing_token,
+                projection_fence,
                 now,
             )?)
         } else {
@@ -623,21 +1685,24 @@ impl MissionLedger {
             expected_version: request.expected_version,
             schema_version: SCHEMA_VERSION,
             idempotency_key: request.idempotency_key,
+            command_digest,
             actor: request.actor,
             provider: request.provider,
             causation_id: request.causation_id,
             correlation_id: request.correlation_id,
-            fencing_token: request.fencing_token,
+            // The materialized/replayed projection retains a token only when
+            // authority consisted of exactly one lease. Multi-lease commands
+            // are authenticated as a set in the command digest instead of
+            // pretending one token represents the whole scope.
+            fencing_token: projection_fence,
             plan_revision: request
-                .plan
+                .task_attempt
                 .as_ref()
-                .map(|plan| plan.revision)
-                .or_else(|| {
-                    request
-                        .task_attempt
-                        .as_ref()
-                        .map(|attempt| attempt.plan_revision)
-                }),
+                .map(|attempt| attempt.plan_revision)
+                .or(request.observation_plan_revision),
+            activated_plan_revision: request.plan.as_ref().map(|plan| plan.revision),
+            task_attempt_mutation: request.task_attempt,
+            resulting_task_attempt: task_projection,
             recorded_at: now,
             kind: request.kind,
             payload: request.payload,
@@ -649,12 +1714,280 @@ impl MissionLedger {
         }
         let projection = read_projection(&transaction, request.mission_id.as_str())?
             .ok_or_else(|| LedgerError::MissionNotFound(request.mission_id.0.clone()))?;
+        verify_projection_coherence(&transaction, &projection)?;
         transaction.commit()?;
         Ok(AppendOutcome {
             event,
             projection,
             idempotent_replay: false,
         })
+    }
+
+    /// Atomically persist the reciprocal child pre-effect binding and its
+    /// parent acknowledgement. Both mission streams advance in one immediate
+    /// SQLite transaction, so a crash exposes either the complete edge or no
+    /// edge. The runtime session is globally unique across child generations.
+    pub fn link_child_mission_atomic(
+        &self,
+        parent_mission_id: &MissionId,
+        child_mission_id: &MissionId,
+        runtime: &ChildMissionRuntimeIdentity,
+        linked_by: &str,
+    ) -> Result<ChildMissionLink, LedgerError> {
+        if parent_mission_id == child_mission_id {
+            return Err(LedgerError::InvalidInput(
+                "a mission cannot link itself as a child".to_string(),
+            ));
+        }
+        validate_key(parent_mission_id.as_str(), "parent_mission_id")?;
+        validate_key(child_mission_id.as_str(), "child_mission_id")?;
+        validate_key(&runtime.runtime_session, "runtime_session")?;
+        validate_key(&runtime.runtime_owner, "runtime_owner")?;
+        validate_key(&runtime.runtime_task_id, "runtime_task_id")?;
+        validate_key(linked_by, "linked_by")?;
+        crate::scope::validate_session_identity(&runtime.runtime_session)
+            .map_err(|error| LedgerError::InvalidInput(error.to_string()))?;
+        crate::scope::validate_session_identity(&runtime.runtime_owner)
+            .map_err(|error| LedgerError::InvalidInput(error.to_string()))?;
+        if runtime.runtime_owner != runtime.runtime_session {
+            return Err(LedgerError::InvalidInput(
+                "child runtime owner must equal its canonical runtime session".to_string(),
+            ));
+        }
+        if runtime.runtime_manifest_digest.len() != 64
+            || !runtime
+                .runtime_manifest_digest
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit())
+            || runtime.project.trim().is_empty()
+            || runtime.canonical_workspace_id.trim().is_empty()
+        {
+            return Err(LedgerError::InvalidInput(
+                "child runtime digest/project/workspace identity is invalid".to_string(),
+            ));
+        }
+
+        let mut connection = self
+            .connection
+            .lock()
+            .expect("mission ledger mutex poisoned");
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let parent = read_projection(&transaction, parent_mission_id.as_str())?
+            .ok_or_else(|| LedgerError::MissionNotFound(parent_mission_id.0.clone()))?;
+        let child = read_projection(&transaction, child_mission_id.as_str())?
+            .ok_or_else(|| LedgerError::MissionNotFound(child_mission_id.0.clone()))?;
+        verify_projection_coherence(&transaction, &parent)?;
+        verify_projection_coherence(&transaction, &child)?;
+        let parent_revision = parent.active_plan_revision.ok_or_else(|| {
+            LedgerError::InvalidInput("parent mission has no active plan".to_string())
+        })?;
+        let child_revision = child.active_plan_revision.ok_or_else(|| {
+            LedgerError::InvalidInput("child mission has no active plan".to_string())
+        })?;
+        let parent_plan = read_plan_contract(&transaction, parent_mission_id, parent_revision)?
+            .ok_or_else(|| {
+                LedgerError::InvalidInput("parent active plan is missing".to_string())
+            })?;
+        let child_plan = read_plan_contract(&transaction, child_mission_id, child_revision)?
+            .ok_or_else(|| LedgerError::InvalidInput("child active plan is missing".to_string()))?;
+        let parent_record = read_mission_record_connection(&transaction, parent_mission_id)?;
+        let child_record = read_mission_record_connection(&transaction, child_mission_id)?;
+        if parent_record.project != runtime.project || child_record.project != runtime.project {
+            return Err(LedgerError::InvalidInput(
+                "child runtime project/workspace differs from immutable parent or child mission"
+                    .to_string(),
+            ));
+        }
+        let workspace_id = crate::scope::canonical_workspace_identity(&child_record.working_dir)
+            .map_err(|error| LedgerError::InvalidInput(error.to_string()))?;
+        let parent_workspace_id =
+            crate::scope::canonical_workspace_identity(&parent_record.working_dir)
+                .map_err(|error| LedgerError::InvalidInput(error.to_string()))?;
+        if workspace_id != runtime.canonical_workspace_id || parent_workspace_id != workspace_id {
+            return Err(LedgerError::InvalidInput(
+                "child runtime canonical workspace identity differs from the immutable mission"
+                    .to_string(),
+            ));
+        }
+        if child_plan.tasks.len() != 1
+            || child_plan.tasks[0].task_id.as_str() != runtime.runtime_task_id
+        {
+            return Err(LedgerError::InvalidInput(
+                "child runtime must bind the sole immutable child task".to_string(),
+            ));
+        }
+
+        let child_key = format!(
+            "child-mission-binding:{}:{}",
+            child_mission_id.as_str(),
+            parent_mission_id.as_str()
+        );
+        let parent_key = format!(
+            "child-mission:{}:{}",
+            parent_mission_id.as_str(),
+            child_mission_id.as_str()
+        );
+        let existing_child =
+            read_event_by_idempotency(&transaction, child_mission_id.as_str(), &child_key)?;
+        let existing_parent =
+            read_event_by_idempotency(&transaction, parent_mission_id.as_str(), &parent_key)?;
+        let child_graph = load_validated_child_graph(&transaction)?;
+        match (existing_child, existing_parent) {
+            (Some(child_event), Some(parent_event)) => {
+                let link: ChildMissionLink = serde_json::from_value(parent_event.payload.clone())?;
+                validate_reciprocal_child_edge(&transaction, &parent_event, &child_event, &link)?;
+                if child_graph
+                    .parent_by_child
+                    .get(child_mission_id.as_str())
+                    .map(String::as_str)
+                    != Some(parent_mission_id.as_str())
+                {
+                    return Err(LedgerError::ReplayDivergence {
+                        mission_id: child_mission_id.0.clone(),
+                        reason: "idempotent child edge differs from the globally unique parent"
+                            .to_string(),
+                    });
+                }
+                if link.runtime_session != runtime.runtime_session
+                    || link.runtime_manifest_digest != runtime.runtime_manifest_digest
+                    || link.project != runtime.project
+                    || link.canonical_workspace_id != runtime.canonical_workspace_id
+                    || link.runtime_owner != runtime.runtime_owner
+                    || link.runtime_task_id != runtime.runtime_task_id
+                    || link.linked_by != linked_by
+                {
+                    return Err(LedgerError::IdempotencyConflict {
+                        mission_id: parent_mission_id.0.clone(),
+                        key: parent_key,
+                        recorded_digest: link.runtime_manifest_digest,
+                        supplied_digest: runtime.runtime_manifest_digest.clone(),
+                    });
+                }
+                transaction.commit()?;
+                return Ok(link);
+            }
+            (Some(_), None) | (None, Some(_)) => {
+                return Err(LedgerError::ReplayDivergence {
+                    mission_id: child_mission_id.0.clone(),
+                    reason: "partial reciprocal child edge exists".to_string(),
+                });
+            }
+            (None, None) => {}
+        }
+        if let Some(existing_parent) = child_graph.parent_by_child.get(child_mission_id.as_str()) {
+            return Err(LedgerError::InvalidInput(format!(
+                "child mission {} is already bound to parent {}; exactly one parent is permitted",
+                child_mission_id.as_str(),
+                existing_parent
+            )));
+        }
+        if child_graph.reaches(child_mission_id.as_str(), parent_mission_id.as_str()) {
+            return Err(LedgerError::InvalidInput(format!(
+                "child edge {} -> {} would create a mission ancestry cycle",
+                parent_mission_id.as_str(),
+                child_mission_id.as_str()
+            )));
+        }
+        if !matches!(parent.state, MissionState::Planned | MissionState::Running)
+            || child.state != MissionState::Planned
+        {
+            return Err(LedgerError::InvalidInput(format!(
+                "child edge requires parent Planned/Running and child Planned, found {:?}/{:?}",
+                parent.state, child.state
+            )));
+        }
+
+        {
+            let mut statement = transaction.prepare(
+                "SELECT payload_json FROM events
+                 WHERE kind IN ('child_mission_linked', 'child_parent_binding_prepared')",
+            )?;
+            let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+            for row in rows {
+                let payload: Value = serde_json::from_str(&row?)?;
+                if payload.get("runtime_session").and_then(Value::as_str)
+                    == Some(runtime.runtime_session.as_str())
+                {
+                    return Err(LedgerError::InvalidInput(format!(
+                        "runtime session {} is already bound to another child generation",
+                        runtime.runtime_session
+                    )));
+                }
+            }
+        }
+
+        let parent_event_id = stable_id("event");
+        let child_event_id = stable_id("event");
+        let binding = ChildMissionBinding {
+            schema_version: ACCEPTANCE_OBSERVATION_SCHEMA_VERSION,
+            parent_mission_id: parent_mission_id.as_str().to_string(),
+            parent_plan_revision: parent_plan.revision,
+            parent_plan_digest: parent_plan.content_digest.clone(),
+            child_mission_id: child_mission_id.as_str().to_string(),
+            child_plan_revision: child_plan.revision,
+            child_plan_digest: child_plan.content_digest.clone(),
+            runtime_session: runtime.runtime_session.clone(),
+            runtime_manifest_digest: runtime.runtime_manifest_digest.clone(),
+            project: runtime.project.clone(),
+            canonical_workspace_id: runtime.canonical_workspace_id.clone(),
+            runtime_owner: runtime.runtime_owner.clone(),
+            runtime_task_id: runtime.runtime_task_id.clone(),
+            parent_ack_event_id: parent_event_id.clone(),
+            linked_by: linked_by.to_string(),
+        };
+        let mut child_event = AppendEvent::new(
+            child_mission_id.clone(),
+            child.version,
+            child_key,
+            "omega-child-mission-linker",
+            "child_parent_binding_prepared",
+        );
+        child_event.event_id = child_event_id;
+        child_event.correlation_id = Some(runtime.runtime_session.clone());
+        child_event.observation_plan_revision = Some(child_plan.revision);
+        child_event.payload = serde_json::to_value(&binding)?;
+        let child_outcome = append_plan_observation_tx(&transaction, child_event)?;
+
+        let link = ChildMissionLink {
+            schema_version: ACCEPTANCE_OBSERVATION_SCHEMA_VERSION,
+            parent_mission_id: parent_mission_id.as_str().to_string(),
+            parent_plan_revision: parent_plan.revision,
+            parent_plan_digest: parent_plan.content_digest.clone(),
+            child_mission_id: child_mission_id.as_str().to_string(),
+            child_plan_revision: child_plan.revision,
+            child_plan_digest: child_plan.content_digest.clone(),
+            runtime_session: runtime.runtime_session.clone(),
+            runtime_manifest_digest: runtime.runtime_manifest_digest.clone(),
+            project: runtime.project.clone(),
+            canonical_workspace_id: runtime.canonical_workspace_id.clone(),
+            runtime_owner: runtime.runtime_owner.clone(),
+            runtime_task_id: runtime.runtime_task_id.clone(),
+            child_binding_event_id: child_outcome.event.event_id.clone(),
+            child_binding_event_sequence: child_outcome.event.sequence,
+            child_binding_command_digest: child_outcome.event.command_digest.clone(),
+            child_binding_projection_hash: child_outcome.projection.projection_hash.clone(),
+            linked_by: linked_by.to_string(),
+        };
+        let mut parent_event = AppendEvent::new(
+            parent_mission_id.clone(),
+            parent.version,
+            parent_key,
+            "omega-child-mission-linker",
+            "child_mission_linked",
+        );
+        parent_event.event_id = parent_event_id;
+        parent_event.correlation_id = Some(runtime.runtime_session.clone());
+        parent_event.observation_plan_revision = Some(parent_plan.revision);
+        parent_event.payload = serde_json::to_value(&link)?;
+        let parent_outcome = append_plan_observation_tx(&transaction, parent_event)?;
+        validate_reciprocal_child_edge(
+            &transaction,
+            &parent_outcome.event,
+            &child_outcome.event,
+            &link,
+        )?;
+        transaction.commit()?;
+        Ok(link)
     }
 
     pub fn mission(
@@ -665,41 +1998,191 @@ impl MissionLedger {
             .connection
             .lock()
             .expect("mission ledger mutex poisoned");
-        read_projection(&connection, mission_id.as_str())
+        let projection = read_projection(&connection, mission_id.as_str())?;
+        if let Some(projection) = &projection {
+            verify_projection_coherence(&connection, projection)?;
+        }
+        Ok(projection)
+    }
+
+    /// Resolve one child's reciprocal parent edge. Historical ambiguity or a
+    /// missing acknowledgement is corruption, never an absent relationship.
+    pub fn parent_link_for_child(
+        &self,
+        child_mission_id: &MissionId,
+    ) -> Result<Option<ChildMissionLink>, LedgerError> {
+        validate_key(child_mission_id.as_str(), "child_mission_id")?;
+        let connection = self
+            .connection
+            .lock()
+            .expect("mission ledger mutex poisoned");
+        let bindings = read_events(&connection, child_mission_id)?
+            .into_iter()
+            .filter(|event| event.kind == "child_parent_binding_prepared")
+            .collect::<Vec<_>>();
+        if bindings.is_empty() {
+            return Ok(None);
+        }
+        if bindings.len() != 1 {
+            return Err(LedgerError::ReplayDivergence {
+                mission_id: child_mission_id.0.clone(),
+                reason: "child has multiple reciprocal parent bindings".to_string(),
+            });
+        }
+        let child_event = &bindings[0];
+        let binding: ChildMissionBinding = serde_json::from_value(child_event.payload.clone())?;
+        let parent_event = read_event_by_id(&connection, &binding.parent_ack_event_id)?
+            .ok_or_else(|| LedgerError::ReplayDivergence {
+                mission_id: child_mission_id.0.clone(),
+                reason: "child parent acknowledgement is missing".to_string(),
+            })?;
+        let link: ChildMissionLink = serde_json::from_value(parent_event.payload.clone())?;
+        validate_reciprocal_child_edge(&connection, &parent_event, child_event, &link)?;
+        Ok(Some(link))
+    }
+
+    /// Re-evaluate the complete mission-acceptance predicate against the
+    /// current immutable stream without appending a transition. Delivery and
+    /// status readers use this after acceptance so a late contradiction cannot
+    /// remain truthfully green merely because the projection is terminal.
+    pub fn validate_mission_acceptance(&self, mission_id: &MissionId) -> Result<(), LedgerError> {
+        validate_key(mission_id.as_str(), "mission_id")?;
+        let connection = self
+            .connection
+            .lock()
+            .expect("mission ledger mutex poisoned");
+        validate_mission_acceptance_connection(&connection, mission_id)
+    }
+
+    /// Return the immutable mission contract stored when the ledger authority
+    /// was created. Unlike [`MissionLedger::mission`], this exposes the frozen
+    /// project, text and working directory rather than only their lifecycle
+    /// projection. The row and creation event must agree exactly before the
+    /// value is returned.
+    pub fn mission_record(&self, mission_id: &MissionId) -> Result<Option<Mission>, LedgerError> {
+        validate_key(mission_id.as_str(), "mission_id")?;
+        let connection = self
+            .connection
+            .lock()
+            .expect("mission ledger mutex poisoned");
+        let Some((mission_json, projection)) = connection
+            .query_row(
+                "SELECT mission_json, state_json, version, active_plan_revision,
+                        projection_hash, updated_at
+                 FROM missions WHERE mission_id = ?1",
+                params![mission_id.as_str()],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        MissionProjection {
+                            mission_id: mission_id.clone(),
+                            state: serde_json::from_str::<MissionState>(&row.get::<_, String>(1)?)
+                                .map_err(|error| {
+                                    rusqlite::Error::FromSqlConversionFailure(
+                                        1,
+                                        rusqlite::types::Type::Text,
+                                        Box::new(error),
+                                    )
+                                })?,
+                            version: as_u64(row.get::<_, i64>(2)?).map_err(|error| {
+                                rusqlite::Error::FromSqlConversionFailure(
+                                    2,
+                                    rusqlite::types::Type::Integer,
+                                    Box::new(error),
+                                )
+                            })?,
+                            active_plan_revision: row
+                                .get::<_, Option<i64>>(3)?
+                                .map(as_u64)
+                                .transpose()
+                                .map_err(|error| {
+                                    rusqlite::Error::FromSqlConversionFailure(
+                                        3,
+                                        rusqlite::types::Type::Integer,
+                                        Box::new(error),
+                                    )
+                                })?,
+                            projection_hash: row.get(4)?,
+                            updated_at: DateTime::parse_from_rfc3339(&row.get::<_, String>(5)?)
+                                .map_err(|error| {
+                                    rusqlite::Error::FromSqlConversionFailure(
+                                        5,
+                                        rusqlite::types::Type::Text,
+                                        Box::new(error),
+                                    )
+                                })?
+                                .with_timezone(&Utc),
+                        },
+                    ))
+                },
+            )
+            .optional()?
+        else {
+            return Ok(None);
+        };
+        verify_projection_coherence(&connection, &projection)?;
+        let mission: Mission = serde_json::from_str(&mission_json)?;
+        if mission.id != *mission_id {
+            return Err(LedgerError::ReplayDivergence {
+                mission_id: mission_id.0.clone(),
+                reason: format!("immutable mission row belongs to {}", mission.id.as_str()),
+            });
+        }
+        let created = read_events(&connection, mission_id)?
+            .into_iter()
+            .find(|event| event.kind == "mission_created")
+            .ok_or_else(|| LedgerError::ReplayDivergence {
+                mission_id: mission_id.0.clone(),
+                reason: "immutable mission has no creation event".to_string(),
+            })?;
+        let event_mission: Mission = serde_json::from_value(created.payload)?;
+        if serde_json::to_value(&event_mission)? != serde_json::to_value(&mission)? {
+            return Err(LedgerError::ReplayDivergence {
+                mission_id: mission_id.0.clone(),
+                reason: "immutable mission row differs from its creation event".to_string(),
+            });
+        }
+        Ok(Some(mission))
     }
 
     /// Return the immutable plan revision currently selected by the mission
     /// projection. Compatibility readers use this to verify a legacy
     /// done.json against the checks that existed before the worker ran.
-    pub fn active_plan(
+    pub fn active_plan(&self, mission_id: &MissionId) -> Result<Option<PlanContract>, LedgerError> {
+        let connection = self
+            .connection
+            .lock()
+            .expect("mission ledger mutex poisoned");
+        let Some(projection) = read_projection(&connection, mission_id.as_str())? else {
+            return Ok(None);
+        };
+        verify_projection_coherence(&connection, &projection)?;
+        let Some(revision) = projection.active_plan_revision else {
+            return Ok(None);
+        };
+        let contract = read_plan_contract(&connection, mission_id, revision)?.ok_or_else(|| {
+            LedgerError::InvalidInput(format!(
+                "active plan revision {revision} is missing for mission {}",
+                mission_id.as_str()
+            ))
+        })?;
+        Ok(Some(contract))
+    }
+
+    /// Read one exact immutable plan revision. Callers that recover an
+    /// in-flight attempt after an amendment must compare its original task
+    /// contract with the active revision rather than assuming revision-number
+    /// equality.
+    pub fn plan_revision(
         &self,
         mission_id: &MissionId,
+        revision: u64,
     ) -> Result<Option<PlanContract>, LedgerError> {
         let connection = self
             .connection
             .lock()
             .expect("mission ledger mutex poisoned");
-        let revision: Option<i64> = connection
-            .query_row(
-                "SELECT active_plan_revision FROM missions WHERE mission_id = ?1",
-                params![mission_id.as_str()],
-                |row| row.get(0),
-            )
-            .optional()?
-            .flatten();
-        let Some(revision) = revision else {
-            return Ok(None);
-        };
-        let contract: Option<String> = connection
-            .query_row(
-                "SELECT contract_json FROM plans WHERE mission_id = ?1 AND revision = ?2",
-                params![mission_id.as_str(), revision],
-                |row| row.get(0),
-            )
-            .optional()?;
-        contract
-            .map(|json| serde_json::from_str(&json).map_err(LedgerError::from))
-            .transpose()
+        read_plan_contract(&connection, mission_id, revision)
     }
 
     pub fn task_attempt(
@@ -710,7 +2193,34 @@ impl MissionLedger {
             .connection
             .lock()
             .expect("mission ledger mutex poisoned");
-        read_task_attempt(&connection, attempt_id)
+        let attempt = read_task_attempt(&connection, attempt_id)?;
+        let mission_id = match &attempt {
+            Some(attempt) => Some(attempt.mission_id.clone()),
+            None => connection
+                .query_row(
+                    "SELECT mission_id FROM events
+                     WHERE attempt_id = ?1
+                        OR json_extract(task_attempt_mutation_json, '$.attempt_id') = ?1
+                     LIMIT 1",
+                    params![attempt_id],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?
+                .map(MissionId),
+        };
+        if let Some(mission_id) = mission_id {
+            let projection =
+                read_projection(&connection, mission_id.as_str())?.ok_or_else(|| {
+                    LedgerError::ReplayDivergence {
+                        mission_id: mission_id.0.clone(),
+                        reason: format!(
+                            "task attempt {attempt_id} refers to a missing mission projection"
+                        ),
+                    }
+                })?;
+            verify_projection_coherence(&connection, &projection)?;
+        }
+        Ok(attempt)
     }
 
     pub fn task_attempts(
@@ -721,51 +2231,38 @@ impl MissionLedger {
             .connection
             .lock()
             .expect("mission ledger mutex poisoned");
-        let mut statement = connection.prepare(
-            "SELECT mission_id, task_id, attempt_id, plan_revision, state_json,
-                    version, fencing_token, updated_at
-             FROM task_attempts WHERE mission_id = ?1
-             ORDER BY task_id, attempt_id",
-        )?;
-        let rows = statement.query_map(params![mission_id.as_str()], |row| {
-            let mission_id: String = row.get(0)?;
-            let state_json: String = row.get(4)?;
-            let updated_at: String = row.get(7)?;
-            Ok((
-                mission_id,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-                row.get::<_, i64>(3)?,
-                state_json,
-                row.get::<_, i64>(5)?,
-                row.get::<_, Option<i64>>(6)?,
-                updated_at,
-            ))
-        })?;
-        let mut attempts = Vec::new();
-        for row in rows {
-            let (
-                mission_id,
-                task_id,
-                attempt_id,
-                plan_revision,
-                state_json,
-                version,
-                fencing_token,
-                updated_at,
-            ) = row?;
-            attempts.push(TaskAttemptProjection {
-                mission_id: MissionId(mission_id),
-                task_id,
-                attempt_id,
-                plan_revision: as_u64(plan_revision)?,
-                state: serde_json::from_str(&state_json)?,
-                version: as_u64(version)?,
-                fencing_token: fencing_token.map(as_u64).transpose()?,
-                updated_at: DateTime::parse_from_rfc3339(&updated_at)?.with_timezone(&Utc),
-            });
-        }
-        Ok(attempts)
+        let projection = read_projection(&connection, mission_id.as_str())?
+            .ok_or_else(|| LedgerError::MissionNotFound(mission_id.0.clone()))?;
+        verify_projection_coherence(&connection, &projection)?;
+        read_task_attempts_for_mission(&connection, mission_id)
+    }
+
+    /// Historical schema-v1 attempts quarantined during migration.
+    ///
+    /// This diagnostic surface is deliberately separate from `task_attempt*`:
+    /// callers can inspect old state, but cannot accidentally treat it as an
+    /// authoritative attempt accepted by the current event stream.
+    pub fn legacy_task_attempts(
+        &self,
+        mission_id: &MissionId,
+    ) -> Result<Vec<LegacyTaskAttemptRecord>, LedgerError> {
+        let connection = self
+            .connection
+            .lock()
+            .expect("mission ledger mutex poisoned");
+        read_legacy_task_attempts(&connection, mission_id)
+    }
+
+    pub fn legacy_task_attempt_count(&self) -> Result<u64, LedgerError> {
+        let connection = self
+            .connection
+            .lock()
+            .expect("mission ledger mutex poisoned");
+        let count: i64 =
+            connection.query_row("SELECT COUNT(*) FROM legacy_task_attempts", [], |row| {
+                row.get(0)
+            })?;
+        as_u64(count)
     }
 
     pub fn events(&self, mission_id: &MissionId) -> Result<Vec<MissionEvent>, LedgerError> {
@@ -773,69 +2270,111 @@ impl MissionLedger {
             .connection
             .lock()
             .expect("mission ledger mutex poisoned");
-        let mut statement = connection.prepare(
-            "SELECT event_id, mission_id, task_id, attempt_id, sequence,
-                    expected_version, schema_version, idempotency_key, actor,
-                    provider, causation_id, correlation_id, fencing_token,
-                    plan_revision, recorded_at, kind, payload_json, mission_state_json
-             FROM events WHERE mission_id = ?1 ORDER BY sequence ASC",
-        )?;
-        let rows = statement.query_map(params![mission_id.as_str()], event_row)?;
-        let mut events = Vec::new();
-        for row in rows {
-            events.push(row??);
-        }
-        Ok(events)
+        read_events(&connection, mission_id)
     }
 
     /// Replay only the append-only event sequence. Materialized mission rows are
     /// not consulted, so this is an independent corruption/drift check.
     pub fn replay(&self, mission_id: &MissionId) -> Result<MissionProjection, LedgerError> {
-        let events = self.events(mission_id)?;
-        if events.is_empty() {
+        let connection = self
+            .connection
+            .lock()
+            .expect("mission ledger mutex poisoned");
+        replay_from_connection(&connection, mission_id)
+    }
+
+    /// Reconstruct all task attempts from the immutable event stream without
+    /// consulting the materialized `task_attempts` table.
+    pub fn replay_task_attempts(
+        &self,
+        mission_id: &MissionId,
+    ) -> Result<Vec<TaskAttemptProjection>, LedgerError> {
+        let connection = self
+            .connection
+            .lock()
+            .expect("mission ledger mutex poisoned");
+        let mut attempts: Vec<_> = replay_all_from_connection(&connection, mission_id)?
+            .task_attempts
+            .into_values()
+            .collect();
+        attempts.sort_by(|left, right| {
+            (&left.task_id, &left.attempt_id).cmp(&(&right.task_id, &right.attempt_id))
+        });
+        Ok(attempts)
+    }
+
+    /// Restore mission and task-attempt projections from the append-only event
+    /// stream. Event and plan rows are never rewritten. The replacement is one
+    /// immediate transaction and is accepted only after coherence revalidation.
+    pub fn rebuild_projections(
+        &self,
+        mission_id: &MissionId,
+    ) -> Result<MissionProjection, LedgerError> {
+        let mut connection = self
+            .connection
+            .lock()
+            .expect("mission ledger mutex poisoned");
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let replayed = replay_all_from_connection(&transaction, mission_id)?;
+        let changed = transaction.execute(
+            "UPDATE missions
+             SET state_json = ?1, version = ?2, active_plan_revision = ?3,
+                 projection_hash = ?4, updated_at = ?5
+             WHERE mission_id = ?6",
+            params![
+                serde_json::to_string(&replayed.mission.state)?,
+                as_i64(replayed.mission.version)?,
+                replayed
+                    .mission
+                    .active_plan_revision
+                    .map(as_i64)
+                    .transpose()?,
+                replayed.mission.projection_hash,
+                replayed.mission.updated_at.to_rfc3339(),
+                mission_id.as_str(),
+            ],
+        )?;
+        if changed != 1 {
             return Err(LedgerError::MissionNotFound(mission_id.0.clone()));
         }
-        let mut state: Option<MissionState> = None;
-        let mut version = 0_u64;
-        let mut active_plan_revision = None;
-        let mut updated_at = events[0].recorded_at;
-        for event in events {
-            if event.sequence != version.saturating_add(1) {
-                return Err(LedgerError::InvalidInput(format!(
-                    "non-contiguous event sequence at {}",
-                    event.sequence
-                )));
-            }
-            if let Some(next) = event.resulting_mission_state {
-                state = Some(match state {
-                    None if next == MissionState::Created => next,
-                    Some(current) => current
-                        .transition(next)
-                        .map_err(LedgerError::InvalidTransition)?,
-                    _ => {
-                        return Err(LedgerError::InvalidInput(
-                            "first stateful event must create the mission".to_string(),
-                        ))
-                    }
-                });
-            }
-            if let Some(plan_revision) = event.plan_revision {
-                active_plan_revision = Some(plan_revision);
-            }
-            version = event.sequence;
-            updated_at = event.recorded_at;
+
+        transaction.execute(
+            "DELETE FROM task_attempts WHERE mission_id = ?1",
+            params![mission_id.as_str()],
+        )?;
+        for attempt in replayed.task_attempts.values() {
+            // Also remove a projection whose globally unique attempt id was
+            // maliciously rebound to another mission.
+            transaction.execute(
+                "DELETE FROM task_attempts WHERE attempt_id = ?1",
+                params![attempt.attempt_id],
+            )?;
+            insert_task_attempt_projection(&transaction, attempt)?;
         }
-        let state = state.ok_or_else(|| {
-            LedgerError::InvalidInput("event stream contains no mission state".to_string())
-        })?;
-        Ok(MissionProjection {
-            mission_id: mission_id.clone(),
-            state,
-            version,
-            active_plan_revision,
-            projection_hash: projection_hash(mission_id, state, version, active_plan_revision)?,
-            updated_at,
-        })
+        verify_projection_coherence(&transaction, &replayed.mission)?;
+        transaction.commit()?;
+        Ok(replayed.mission)
+    }
+
+    /// Rebuild the authoritative projection through exactly `sequence`.
+    ///
+    /// This is the trust boundary for stale compatibility views: callers can
+    /// compare their persisted source hash to the hash of the immutable event
+    /// prefix they cite. `None` means that exact sequence does not exist (and
+    /// includes sequence zero and an unknown mission).
+    pub fn projection_at(
+        &self,
+        mission_id: &MissionId,
+        sequence: u64,
+    ) -> Result<Option<MissionProjection>, LedgerError> {
+        if sequence == 0 {
+            return Ok(None);
+        }
+        let connection = self
+            .connection
+            .lock()
+            .expect("mission ledger mutex poisoned");
+        replay_at_from_connection(&connection, mission_id, sequence)
     }
 
     pub fn acquire_lease(
@@ -848,17 +2387,31 @@ impl MissionLedger {
         ttl: Duration,
     ) -> Result<LeaseRecord, LedgerError> {
         validate_key(resource_key, "resource_key")?;
+        validate_key(mission_id.as_str(), "mission_id")?;
+        validate_key(task_id, "task_id")?;
+        validate_key(attempt_id, "attempt_id")?;
+        validate_key(owner, "lease owner")?;
         let mut connection = self
             .connection
             .lock()
             .expect("mission ledger mutex poisoned");
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        validate_lease_lifecycle_tx(
+            &transaction,
+            mission_id,
+            task_id,
+            attempt_id,
+            owner,
+            resource_key,
+            false,
+        )?;
         let existing = read_lease(&transaction, resource_key)?;
         let now = Utc::now();
         if let Some(lease) = &existing {
             if lease.status == LeaseStatus::Active && lease.expires_at > now {
                 if lease.owner == owner
                     && lease.mission_id == *mission_id
+                    && lease.task_id == task_id
                     && lease.attempt_id == attempt_id
                 {
                     transaction.commit()?;
@@ -933,6 +2486,15 @@ impl MissionLedger {
                 expected: fencing_token,
                 actual: None,
             })?;
+        validate_lease_lifecycle_tx(
+            &transaction,
+            &lease.mission_id,
+            &lease.task_id,
+            &lease.attempt_id,
+            owner,
+            resource_key,
+            true,
+        )?;
         if lease.status != LeaseStatus::Active
             || lease.fencing_token != fencing_token
             || lease.owner != owner
@@ -988,6 +2550,28 @@ impl MissionLedger {
             .lock()
             .expect("mission ledger mutex poisoned");
         assert_fence_tx(&connection, resource_key, fencing_token)
+    }
+
+    /// Resolve every unexpired lease currently bound to one exact attempt.
+    ///
+    /// The deterministic resource order lets callers persist/retry the exact
+    /// credential set. Mutation authority is still checked again atomically by
+    /// [`MissionLedger::append`]; this read API is discovery, never a TOCTOU
+    /// substitute for the transactional check.
+    pub fn active_leases_for_attempt(
+        &self,
+        mission_id: &MissionId,
+        task_id: &str,
+        attempt_id: &str,
+    ) -> Result<Vec<LeaseRecord>, LedgerError> {
+        validate_key(mission_id.as_str(), "mission_id")?;
+        validate_key(task_id, "task_id")?;
+        validate_key(attempt_id, "attempt_id")?;
+        let connection = self
+            .connection
+            .lock()
+            .expect("mission ledger mutex poisoned");
+        read_active_leases_for_attempt(&connection, mission_id, task_id, attempt_id)
     }
 
     /// Claim pending effects for at-least-once delivery. A crash after a remote
@@ -1095,14 +2679,994 @@ impl MissionLedger {
     }
 }
 
+fn read_mission_record_connection(
+    connection: &Connection,
+    mission_id: &MissionId,
+) -> Result<Mission, LedgerError> {
+    let mission_json = connection
+        .query_row(
+            "SELECT mission_json FROM missions WHERE mission_id = ?1",
+            params![mission_id.as_str()],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?
+        .ok_or_else(|| LedgerError::MissionNotFound(mission_id.0.clone()))?;
+    let mission: Mission = serde_json::from_str(&mission_json)?;
+    if mission.id != *mission_id {
+        return Err(LedgerError::ReplayDivergence {
+            mission_id: mission_id.0.clone(),
+            reason: "immutable mission row identity differs from its key".to_string(),
+        });
+    }
+    Ok(mission)
+}
+
+/// Append one plan-bound observation inside a caller-owned transaction. This
+/// deliberately accepts no task, plan, lease, state, or outbox mutation.
+fn append_plan_observation_tx(
+    transaction: &Transaction<'_>,
+    request: AppendEvent,
+) -> Result<AppendOutcome, LedgerError> {
+    validate_key(&request.idempotency_key, "idempotency_key")?;
+    validate_key(&request.event_id, "event_id")?;
+    if request.next_mission_state.is_some()
+        || request.task_attempt.is_some()
+        || request.plan.is_some()
+        || request.lease_resource.is_some()
+        || request.fencing_token.is_some()
+        || !request.lease_assertions.is_empty()
+        || !request.outbox.is_empty()
+    {
+        return Err(LedgerError::InvalidInput(
+            "atomic child edge accepts observation-only events".to_string(),
+        ));
+    }
+    let revision = request.observation_plan_revision.ok_or_else(|| {
+        LedgerError::InvalidInput("atomic child edge observation lacks a plan revision".to_string())
+    })?;
+    let command_digest = append_command_digest(&request)?;
+    if let Some(event) = read_event_by_idempotency(
+        transaction,
+        request.mission_id.as_str(),
+        &request.idempotency_key,
+    )? {
+        ensure_idempotent_match(&event, &command_digest)?;
+        let projection = read_projection(transaction, request.mission_id.as_str())?
+            .ok_or_else(|| LedgerError::MissionNotFound(request.mission_id.0.clone()))?;
+        verify_projection_coherence(transaction, &projection)?;
+        return Ok(AppendOutcome {
+            event,
+            projection,
+            idempotent_replay: true,
+        });
+    }
+    let current = read_projection(transaction, request.mission_id.as_str())?
+        .ok_or_else(|| LedgerError::MissionNotFound(request.mission_id.0.clone()))?;
+    verify_projection_coherence(transaction, &current)?;
+    if current.version != request.expected_version {
+        return Err(LedgerError::VersionConflict {
+            expected: request.expected_version,
+            actual: current.version,
+        });
+    }
+    if current.active_plan_revision != Some(revision) {
+        return Err(LedgerError::PlanRevisionNotActive {
+            mission_id: request.mission_id.0.clone(),
+            supplied: revision,
+            active: current.active_plan_revision,
+        });
+    }
+    let next_version = current.version.checked_add(1).ok_or_else(|| {
+        LedgerError::InvalidInput("mission projection version overflow".to_string())
+    })?;
+    let now = Utc::now();
+    let hash = projection_hash(
+        &request.mission_id,
+        current.state,
+        next_version,
+        current.active_plan_revision,
+    )?;
+    let changed = transaction.execute(
+        "UPDATE missions
+         SET version = ?1, projection_hash = ?2, updated_at = ?3
+         WHERE mission_id = ?4 AND version = ?5",
+        params![
+            as_i64(next_version)?,
+            hash,
+            now.to_rfc3339(),
+            request.mission_id.as_str(),
+            as_i64(request.expected_version)?,
+        ],
+    )?;
+    if changed != 1 {
+        return Err(LedgerError::VersionConflict {
+            expected: request.expected_version,
+            actual: read_projection(transaction, request.mission_id.as_str())?
+                .map_or(0, |projection| projection.version),
+        });
+    }
+    let event = MissionEvent {
+        event_id: request.event_id,
+        mission_id: request.mission_id,
+        task_id: None,
+        attempt_id: None,
+        sequence: next_version,
+        expected_version: request.expected_version,
+        schema_version: SCHEMA_VERSION,
+        idempotency_key: request.idempotency_key,
+        command_digest,
+        actor: request.actor,
+        provider: request.provider,
+        causation_id: request.causation_id,
+        correlation_id: request.correlation_id,
+        fencing_token: None,
+        plan_revision: Some(revision),
+        activated_plan_revision: None,
+        task_attempt_mutation: None,
+        resulting_task_attempt: None,
+        recorded_at: now,
+        kind: request.kind,
+        payload: request.payload,
+        resulting_mission_state: None,
+    };
+    insert_event(transaction, &event)?;
+    let projection = read_projection(transaction, event.mission_id.as_str())?
+        .ok_or_else(|| LedgerError::MissionNotFound(event.mission_id.0.clone()))?;
+    verify_projection_coherence(transaction, &projection)?;
+    Ok(AppendOutcome {
+        event,
+        projection,
+        idempotent_replay: false,
+    })
+}
+
+fn read_event_by_id(
+    connection: &Connection,
+    event_id: &str,
+) -> Result<Option<MissionEvent>, LedgerError> {
+    connection
+        .query_row(
+            "SELECT event_id, mission_id, task_id, attempt_id, sequence,
+                    expected_version, schema_version, idempotency_key, command_digest, actor,
+                    provider, causation_id, correlation_id, fencing_token,
+                    plan_revision, activated_plan_revision, task_attempt_mutation_json,
+                    task_attempt_projection_json, recorded_at, kind, payload_json,
+                    mission_state_json
+             FROM events WHERE event_id = ?1",
+            params![event_id],
+            event_row,
+        )
+        .optional()?
+        .transpose()
+}
+
+#[derive(Debug, Default)]
+struct ValidatedChildGraph {
+    parent_by_child: BTreeMap<String, String>,
+    children_by_parent: BTreeMap<String, BTreeSet<String>>,
+}
+
+impl ValidatedChildGraph {
+    fn reaches(&self, start: &str, target: &str) -> bool {
+        let mut pending = vec![start.to_string()];
+        let mut visited = BTreeSet::new();
+        while let Some(current) = pending.pop() {
+            if current == target {
+                return true;
+            }
+            if !visited.insert(current.clone()) {
+                continue;
+            }
+            if let Some(children) = self.children_by_parent.get(&current) {
+                pending.extend(children.iter().cloned());
+            }
+        }
+        false
+    }
+}
+
+/// Reconstruct and validate the complete reciprocal child graph from the
+/// immutable event streams. This runs inside the caller's Immediate
+/// transaction before a new edge is inserted, so parent uniqueness and cycle
+/// checks cannot race another linker.
+fn load_validated_child_graph(connection: &Connection) -> Result<ValidatedChildGraph, LedgerError> {
+    let mut statement = connection.prepare(
+        "SELECT event_id, mission_id, task_id, attempt_id, sequence,
+                expected_version, schema_version, idempotency_key, command_digest, actor,
+                provider, causation_id, correlation_id, fencing_token,
+                plan_revision, activated_plan_revision, task_attempt_mutation_json,
+                task_attempt_projection_json, recorded_at, kind, payload_json,
+                mission_state_json
+         FROM events
+         WHERE kind IN ('child_mission_linked', 'child_parent_binding_prepared')
+         ORDER BY recorded_at ASC, event_id ASC",
+    )?;
+    let rows = statement.query_map([], event_row)?;
+    let mut parent_events = BTreeMap::new();
+    let mut child_events = BTreeMap::new();
+    for row in rows {
+        let event = row??;
+        let destination = if event.kind == "child_mission_linked" {
+            &mut parent_events
+        } else {
+            &mut child_events
+        };
+        destination.insert(event.event_id.clone(), event);
+    }
+
+    let mut graph = ValidatedChildGraph::default();
+    let mut referenced_child_events = BTreeSet::new();
+    for parent_event in parent_events.values() {
+        let link: ChildMissionLink = serde_json::from_value(parent_event.payload.clone())?;
+        let child_event = child_events
+            .get(&link.child_binding_event_id)
+            .ok_or_else(|| LedgerError::ReplayDivergence {
+                mission_id: link.child_mission_id.clone(),
+                reason: "parent child edge has no reciprocal child binding".to_string(),
+            })?;
+        validate_reciprocal_child_edge(connection, parent_event, child_event, &link)?;
+        if !referenced_child_events.insert(child_event.event_id.clone()) {
+            return Err(LedgerError::ReplayDivergence {
+                mission_id: link.child_mission_id.clone(),
+                reason: "one child binding is acknowledged by multiple parent events".to_string(),
+            });
+        }
+        if let Some(existing_parent) = graph.parent_by_child.insert(
+            link.child_mission_id.clone(),
+            link.parent_mission_id.clone(),
+        ) {
+            return Err(LedgerError::ReplayDivergence {
+                mission_id: link.child_mission_id.clone(),
+                reason: format!(
+                    "child has multiple parent acknowledgements: {existing_parent} and {}",
+                    link.parent_mission_id
+                ),
+            });
+        }
+        graph
+            .children_by_parent
+            .entry(link.parent_mission_id)
+            .or_default()
+            .insert(link.child_mission_id);
+    }
+    if referenced_child_events.len() != child_events.len() {
+        let orphan = child_events
+            .keys()
+            .find(|event_id| !referenced_child_events.contains(*event_id))
+            .cloned()
+            .unwrap_or_else(|| "unknown".to_string());
+        return Err(LedgerError::ReplayDivergence {
+            mission_id: "child-graph".to_string(),
+            reason: format!("reciprocal child binding {orphan} has no parent acknowledgement"),
+        });
+    }
+    for (parent, children) in &graph.children_by_parent {
+        for child in children {
+            if graph.reaches(child, parent) {
+                return Err(LedgerError::ReplayDivergence {
+                    mission_id: child.clone(),
+                    reason: format!(
+                        "persisted child graph contains an ancestry cycle through {parent}"
+                    ),
+                });
+            }
+        }
+    }
+    Ok(graph)
+}
+
+fn validate_reciprocal_child_edge(
+    connection: &Connection,
+    parent_event: &MissionEvent,
+    child_event: &MissionEvent,
+    link: &ChildMissionLink,
+) -> Result<ChildMissionBinding, LedgerError> {
+    let binding: ChildMissionBinding = serde_json::from_value(child_event.payload.clone())?;
+    let child_id = MissionId(link.child_mission_id.clone());
+    let expected_child_hash = projection_hash(
+        &child_id,
+        MissionState::Planned,
+        child_event.sequence,
+        Some(link.child_plan_revision),
+    )?;
+    if link.schema_version != ACCEPTANCE_OBSERVATION_SCHEMA_VERSION
+        || binding.schema_version != ACCEPTANCE_OBSERVATION_SCHEMA_VERSION
+        || parent_event.kind != "child_mission_linked"
+        || child_event.kind != "child_parent_binding_prepared"
+        || parent_event.actor != "omega-child-mission-linker"
+        || child_event.actor != "omega-child-mission-linker"
+        || parent_event.event_id != binding.parent_ack_event_id
+        || child_event.event_id != link.child_binding_event_id
+        || child_event.sequence != link.child_binding_event_sequence
+        || child_event.command_digest != link.child_binding_command_digest
+        || expected_child_hash != link.child_binding_projection_hash
+        || child_event.mission_id.as_str() != link.child_mission_id
+        || parent_event.mission_id.as_str() != link.parent_mission_id
+        || parent_event.plan_revision != Some(link.parent_plan_revision)
+        || child_event.plan_revision != Some(link.child_plan_revision)
+        || parent_event.correlation_id.as_deref() != Some(link.runtime_session.as_str())
+        || child_event.correlation_id.as_deref() != Some(link.runtime_session.as_str())
+        || binding.parent_mission_id != link.parent_mission_id
+        || binding.parent_plan_revision != link.parent_plan_revision
+        || binding.parent_plan_digest != link.parent_plan_digest
+        || binding.child_mission_id != link.child_mission_id
+        || binding.child_plan_revision != link.child_plan_revision
+        || binding.child_plan_digest != link.child_plan_digest
+        || binding.runtime_session != link.runtime_session
+        || binding.runtime_manifest_digest != link.runtime_manifest_digest
+        || binding.project != link.project
+        || binding.canonical_workspace_id != link.canonical_workspace_id
+        || binding.runtime_owner != link.runtime_owner
+        || binding.runtime_task_id != link.runtime_task_id
+        || binding.linked_by != link.linked_by
+    {
+        return Err(LedgerError::ReplayDivergence {
+            mission_id: link.child_mission_id.clone(),
+            reason: "reciprocal child mission edge has contradictory identity".to_string(),
+        });
+    }
+    let replayed_parent =
+        read_event_by_id(connection, &binding.parent_ack_event_id)?.ok_or_else(|| {
+            LedgerError::ReplayDivergence {
+                mission_id: link.child_mission_id.clone(),
+                reason: "parent acknowledgement event is missing".to_string(),
+            }
+        })?;
+    if replayed_parent != *parent_event {
+        return Err(LedgerError::ReplayDivergence {
+            mission_id: link.child_mission_id.clone(),
+            reason: "parent acknowledgement event changed during replay".to_string(),
+        });
+    }
+    Ok(binding)
+}
+
+fn validate_child_parent_ack_connection(
+    connection: &Connection,
+    child_mission_id: &MissionId,
+) -> Result<(), LedgerError> {
+    let bindings = read_events(connection, child_mission_id)?
+        .into_iter()
+        .filter(|event| event.kind == "child_parent_binding_prepared")
+        .collect::<Vec<_>>();
+    if bindings.is_empty() {
+        return Ok(());
+    }
+    if bindings.len() != 1 {
+        return Err(LedgerError::ReplayDivergence {
+            mission_id: child_mission_id.0.clone(),
+            reason: "child has multiple reciprocal parent bindings".to_string(),
+        });
+    }
+    let child_event = &bindings[0];
+    let binding: ChildMissionBinding = serde_json::from_value(child_event.payload.clone())?;
+    let parent_event =
+        read_event_by_id(connection, &binding.parent_ack_event_id)?.ok_or_else(|| {
+            LedgerError::ReplayDivergence {
+                mission_id: child_mission_id.0.clone(),
+                reason: "child cannot run without its exact parent acknowledgement".to_string(),
+            }
+        })?;
+    let link: ChildMissionLink = serde_json::from_value(parent_event.payload.clone())?;
+    validate_reciprocal_child_edge(connection, &parent_event, child_event, &link)?;
+    Ok(())
+}
+
+fn read_events(
+    connection: &Connection,
+    mission_id: &MissionId,
+) -> Result<Vec<MissionEvent>, LedgerError> {
+    let mut statement = connection.prepare(
+        "SELECT event_id, mission_id, task_id, attempt_id, sequence,
+                expected_version, schema_version, idempotency_key, command_digest, actor,
+                provider, causation_id, correlation_id, fencing_token,
+                plan_revision, activated_plan_revision, task_attempt_mutation_json,
+                task_attempt_projection_json, recorded_at, kind, payload_json,
+                mission_state_json
+         FROM events WHERE mission_id = ?1 ORDER BY sequence ASC",
+    )?;
+    let rows = statement.query_map(params![mission_id.as_str()], event_row)?;
+    let mut events = Vec::new();
+    for row in rows {
+        events.push(row??);
+    }
+    Ok(events)
+}
+
+fn replay_from_connection(
+    connection: &Connection,
+    mission_id: &MissionId,
+) -> Result<MissionProjection, LedgerError> {
+    Ok(replay_all_from_connection(connection, mission_id)?.mission)
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct ReplayedProjection {
+    mission: MissionProjection,
+    task_attempts: BTreeMap<String, TaskAttemptProjection>,
+}
+
+fn replay_all_from_connection(
+    connection: &Connection,
+    mission_id: &MissionId,
+) -> Result<ReplayedProjection, LedgerError> {
+    let events = read_events(connection, mission_id)?;
+    replay_events(connection, mission_id, events)
+}
+
+fn replay_at_from_connection(
+    connection: &Connection,
+    mission_id: &MissionId,
+    sequence: u64,
+) -> Result<Option<MissionProjection>, LedgerError> {
+    let events: Vec<MissionEvent> = read_events(connection, mission_id)?
+        .into_iter()
+        .take_while(|event| event.sequence <= sequence)
+        .collect();
+    if events.last().map(|event| event.sequence) != Some(sequence) {
+        return Ok(None);
+    }
+    replay_events(connection, mission_id, events)
+        .map(|replayed| replayed.mission)
+        .map(Some)
+}
+
+fn replay_events(
+    connection: &Connection,
+    mission_id: &MissionId,
+    events: Vec<MissionEvent>,
+) -> Result<ReplayedProjection, LedgerError> {
+    if events.is_empty() {
+        return Err(LedgerError::MissionNotFound(mission_id.0.clone()));
+    }
+    let mut state: Option<MissionState> = None;
+    let mut version = 0_u64;
+    let mut active_plan_revision: Option<u64> = None;
+    let mut task_attempts = BTreeMap::new();
+    let mut updated_at = events[0].recorded_at;
+    for event in events {
+        if event.mission_id != *mission_id {
+            return Err(LedgerError::ReplayDivergence {
+                mission_id: mission_id.0.clone(),
+                reason: format!("event {} belongs to another mission", event.event_id),
+            });
+        }
+        if event.schema_version != LEGACY_SCHEMA_VERSION && event.schema_version != SCHEMA_VERSION {
+            return Err(LedgerError::ReplayDivergence {
+                mission_id: mission_id.0.clone(),
+                reason: format!(
+                    "event {} uses unsupported schema {}",
+                    event.event_id, event.schema_version
+                ),
+            });
+        }
+        let expected_sequence =
+            version
+                .checked_add(1)
+                .ok_or_else(|| LedgerError::ReplayDivergence {
+                    mission_id: mission_id.0.clone(),
+                    reason: "event sequence overflow".to_string(),
+                })?;
+        if event.sequence != expected_sequence || event.expected_version != version {
+            return Err(LedgerError::ReplayDivergence {
+                mission_id: mission_id.0.clone(),
+                reason: format!(
+                    "event {} has sequence {} / expected_version {}; expected {} / {}",
+                    event.event_id,
+                    event.sequence,
+                    event.expected_version,
+                    expected_sequence,
+                    version
+                ),
+            });
+        }
+        if let Some(next) = event.resulting_mission_state {
+            state = Some(match state {
+                None if next == MissionState::Created => next,
+                Some(current) => current
+                    .transition(next)
+                    .map_err(LedgerError::InvalidTransition)?,
+                _ => {
+                    return Err(LedgerError::ReplayDivergence {
+                        mission_id: mission_id.0.clone(),
+                        reason: "first stateful event must create the mission".to_string(),
+                    })
+                }
+            });
+        }
+        replay_task_attempt_event(
+            connection,
+            mission_id,
+            &event,
+            active_plan_revision,
+            &mut task_attempts,
+        )?;
+        if let Some(revision) = event.activated_plan_revision {
+            let expected_revision = active_plan_revision
+                .unwrap_or(0)
+                .checked_add(1)
+                .ok_or_else(|| LedgerError::ReplayDivergence {
+                    mission_id: mission_id.0.clone(),
+                    reason: "active plan revision overflow".to_string(),
+                })?;
+            if revision != expected_revision {
+                return Err(LedgerError::ReplayDivergence {
+                    mission_id: mission_id.0.clone(),
+                    reason: format!(
+                        "event {} activates revision {revision}; expected {expected_revision}",
+                        event.event_id
+                    ),
+                });
+            }
+            let plan = read_plan_contract(connection, mission_id, revision)?.ok_or_else(|| {
+                LedgerError::ReplayDivergence {
+                    mission_id: mission_id.0.clone(),
+                    reason: format!(
+                        "event {} activates missing plan revision {revision}",
+                        event.event_id
+                    ),
+                }
+            })?;
+            if plan.created_from_version != event.expected_version {
+                return Err(LedgerError::ReplayDivergence {
+                    mission_id: mission_id.0.clone(),
+                    reason: format!(
+                        "plan revision {revision} was not created from activating event version {}",
+                        event.expected_version
+                    ),
+                });
+            }
+            active_plan_revision = Some(revision);
+        }
+        version = event.sequence;
+        updated_at = event.recorded_at;
+    }
+    let state = state.ok_or_else(|| LedgerError::ReplayDivergence {
+        mission_id: mission_id.0.clone(),
+        reason: "event stream contains no mission state".to_string(),
+    })?;
+    Ok(ReplayedProjection {
+        mission: MissionProjection {
+            mission_id: mission_id.clone(),
+            state,
+            version,
+            active_plan_revision,
+            projection_hash: projection_hash(mission_id, state, version, active_plan_revision)?,
+            updated_at,
+        },
+        task_attempts,
+    })
+}
+
+fn replay_task_attempt_event(
+    connection: &Connection,
+    mission_id: &MissionId,
+    event: &MissionEvent,
+    active_plan_revision: Option<u64>,
+    task_attempts: &mut BTreeMap<String, TaskAttemptProjection>,
+) -> Result<(), LedgerError> {
+    let has_any_task_identity = event.task_id.is_some() || event.attempt_id.is_some();
+    let has_complete_task_alias =
+        event.task_id.is_some() && event.attempt_id.is_some() && event.plan_revision.is_some();
+    let plan_bound_observation = event.schema_version == SCHEMA_VERSION
+        && !has_any_task_identity
+        && event.plan_revision.is_some()
+        && matches!(
+            event.kind.as_str(),
+            "scope_claim_authority_prepared"
+                | "child_mission_linked"
+                | "child_parent_binding_prepared"
+        );
+    let legacy_plan_revision_alias = event.schema_version == LEGACY_SCHEMA_VERSION
+        && !has_any_task_identity
+        && event.plan_revision.is_some()
+        && event.plan_revision == event.activated_plan_revision;
+    if (has_any_task_identity && !has_complete_task_alias)
+        || (!has_any_task_identity
+            && event.plan_revision.is_some()
+            && !legacy_plan_revision_alias
+            && !plan_bound_observation)
+    {
+        return Err(replay_divergence(
+            mission_id,
+            event,
+            "incomplete task_id/attempt_id/plan_revision aliases",
+        ));
+    }
+
+    let has_any_authoritative_binding =
+        event.task_attempt_mutation.is_some() || event.resulting_task_attempt.is_some();
+    let has_full_authoritative_binding =
+        event.task_attempt_mutation.is_some() && event.resulting_task_attempt.is_some();
+    if has_any_authoritative_binding != has_full_authoritative_binding {
+        return Err(replay_divergence(
+            mission_id,
+            event,
+            "incomplete task-attempt mutation/projection authority",
+        ));
+    }
+
+    if event.schema_version == LEGACY_SCHEMA_VERSION {
+        if has_any_authoritative_binding {
+            return Err(replay_divergence(
+                mission_id,
+                event,
+                "schema-v1 event unexpectedly carries schema-v2 task-attempt authority",
+            ));
+        }
+        if event.fencing_token.is_some() && !has_complete_task_alias {
+            return Err(replay_divergence(
+                mission_id,
+                event,
+                "legacy non-task event carries a fencing token",
+            ));
+        }
+        // Schema-v1 task aliases are retained only as historical audit data.
+        // They deliberately contribute no TaskAttemptProjection. The old
+        // materialized row has been quarantined in legacy_task_attempts and a
+        // new schema-v2 queued event is required before this id can influence
+        // orchestration or delivery again.
+        return Ok(());
+    }
+
+    let (mutation, resulting) = match (
+        event.task_attempt_mutation.as_ref(),
+        event.resulting_task_attempt.as_ref(),
+    ) {
+        (None, None) if plan_bound_observation => {
+            if event.plan_revision != active_plan_revision {
+                return Err(replay_divergence(
+                    mission_id,
+                    event,
+                    "scope observation is not bound to the active plan revision",
+                ));
+            }
+            if event.fencing_token.is_some() {
+                return Err(replay_divergence(
+                    mission_id,
+                    event,
+                    "scope observation carries a fencing token",
+                ));
+            }
+            return Ok(());
+        }
+        (None, None) if !has_any_task_identity && event.plan_revision.is_none() => {
+            if event.fencing_token.is_some() {
+                return Err(replay_divergence(
+                    mission_id,
+                    event,
+                    "non-task event carries a fencing token",
+                ));
+            }
+            return Ok(());
+        }
+        (Some(mutation), Some(resulting)) if has_complete_task_alias => (mutation, resulting),
+        (None, None) => {
+            return Err(replay_divergence(
+                mission_id,
+                event,
+                "task aliases are not backed by an authoritative mutation/projection",
+            ))
+        }
+        _ => {
+            return Err(replay_divergence(
+                mission_id,
+                event,
+                "task-attempt authority is not backed by complete aliases",
+            ))
+        }
+    };
+
+    if event.task_id.as_deref() != Some(mutation.task_id.as_str())
+        || event.attempt_id.as_deref() != Some(mutation.attempt_id.as_str())
+        || event.plan_revision != Some(mutation.plan_revision)
+    {
+        return Err(replay_divergence(
+            mission_id,
+            event,
+            "task-attempt aliases differ from the immutable mutation",
+        ));
+    }
+    if resulting.mission_id != *mission_id
+        || resulting.task_id != mutation.task_id
+        || resulting.attempt_id != mutation.attempt_id
+        || resulting.plan_revision != mutation.plan_revision
+    {
+        return Err(replay_divergence(
+            mission_id,
+            event,
+            "resulting task-attempt identity differs from its mutation",
+        ));
+    }
+
+    let current = task_attempts.get(&mutation.attempt_id);
+    validate_replayed_task_authorization(
+        connection,
+        mission_id,
+        mutation,
+        active_plan_revision,
+        current,
+        event,
+    )?;
+    let (next_state, next_version) = match current {
+        None => {
+            if mutation.expected_version != 0 || mutation.next_state != TaskAttemptState::Queued {
+                return Err(replay_divergence(
+                    mission_id,
+                    event,
+                    "new task attempt must bind expected_version 0 to queued/version 1",
+                ));
+            }
+            (TaskAttemptState::Queued, 1)
+        }
+        Some(current) => {
+            if current.version != mutation.expected_version {
+                return Err(replay_divergence(
+                    mission_id,
+                    event,
+                    format!(
+                        "task attempt {} expected version {}, replay has {}",
+                        mutation.attempt_id, mutation.expected_version, current.version
+                    ),
+                ));
+            }
+            if current.mission_id != *mission_id
+                || current.task_id != mutation.task_id
+                || current.plan_revision != mutation.plan_revision
+            {
+                return Err(replay_divergence(
+                    mission_id,
+                    event,
+                    "task attempt identity or plan revision changed during replay",
+                ));
+            }
+            let next_state = current
+                .state
+                .transition(mutation.next_state)
+                .map_err(|error| {
+                    replay_divergence(
+                        mission_id,
+                        event,
+                        format!("invalid task-attempt transition: {error}"),
+                    )
+                })?;
+            let next_version = current.version.checked_add(1).ok_or_else(|| {
+                replay_divergence(mission_id, event, "task-attempt version overflow")
+            })?;
+            (next_state, next_version)
+        }
+    };
+    let expected = TaskAttemptProjection {
+        mission_id: mission_id.clone(),
+        task_id: mutation.task_id.clone(),
+        attempt_id: mutation.attempt_id.clone(),
+        plan_revision: mutation.plan_revision,
+        state: next_state,
+        version: next_version,
+        fencing_token: event.fencing_token,
+        updated_at: event.recorded_at,
+    };
+    if *resulting != expected {
+        return Err(replay_divergence(
+            mission_id,
+            event,
+            format!(
+                "resulting task attempt {:?} differs from replay-derived {:?}",
+                resulting, expected
+            ),
+        ));
+    }
+    task_attempts.insert(mutation.attempt_id.clone(), expected);
+    Ok(())
+}
+
+fn validate_replayed_task_authorization(
+    connection: &Connection,
+    mission_id: &MissionId,
+    mutation: &TaskAttemptMutation,
+    active_plan_revision: Option<u64>,
+    existing: Option<&TaskAttemptProjection>,
+    event: &MissionEvent,
+) -> Result<(), LedgerError> {
+    let active_revision = active_plan_revision.ok_or_else(|| {
+        replay_divergence(
+            mission_id,
+            event,
+            "task attempt was recorded before an active plan existed",
+        )
+    })?;
+    let active_plan =
+        read_plan_contract(connection, mission_id, active_revision)?.ok_or_else(|| {
+            replay_divergence(
+                mission_id,
+                event,
+                format!("active plan revision {active_revision} is missing"),
+            )
+        })?;
+    let active_task = active_plan
+        .tasks
+        .iter()
+        .find(|task| task.task_id.as_str() == mutation.task_id);
+
+    if existing.is_none() {
+        if mutation.plan_revision != active_revision || active_task.is_none() {
+            return Err(replay_divergence(
+                mission_id,
+                event,
+                format!(
+                    "new task {} is not declared in active plan revision {active_revision}",
+                    mutation.task_id
+                ),
+            ));
+        }
+        return Ok(());
+    }
+
+    let attempt_plan = read_plan_contract(connection, mission_id, mutation.plan_revision)?
+        .ok_or_else(|| {
+            replay_divergence(
+                mission_id,
+                event,
+                format!(
+                    "attempt plan revision {} is missing",
+                    mutation.plan_revision
+                ),
+            )
+        })?;
+    let attempt_task = attempt_plan
+        .tasks
+        .iter()
+        .find(|task| task.task_id.as_str() == mutation.task_id)
+        .ok_or_else(|| {
+            replay_divergence(
+                mission_id,
+                event,
+                format!(
+                    "task {} is missing from attempt plan revision {}",
+                    mutation.task_id, mutation.plan_revision
+                ),
+            )
+        })?;
+    if active_task != Some(attempt_task) {
+        return Err(replay_divergence(
+            mission_id,
+            event,
+            format!(
+                "task {} is no longer unchanged in active plan revision {active_revision}",
+                mutation.task_id
+            ),
+        ));
+    }
+    Ok(())
+}
+
+fn replay_divergence(
+    mission_id: &MissionId,
+    event: &MissionEvent,
+    reason: impl fmt::Display,
+) -> LedgerError {
+    LedgerError::ReplayDivergence {
+        mission_id: mission_id.0.clone(),
+        reason: format!("event {}: {reason}", event.event_id),
+    }
+}
+
+fn verify_projection_coherence(
+    connection: &Connection,
+    projection: &MissionProjection,
+) -> Result<(), LedgerError> {
+    let replayed = replay_all_from_connection(connection, &projection.mission_id)?;
+    if projection.state != replayed.mission.state
+        || projection.version != replayed.mission.version
+        || projection.active_plan_revision != replayed.mission.active_plan_revision
+        || projection.projection_hash != replayed.mission.projection_hash
+        || projection.updated_at != replayed.mission.updated_at
+    {
+        return Err(LedgerError::ReplayDivergence {
+            mission_id: projection.mission_id.0.clone(),
+            reason: format!(
+                "stored state/version/plan/hash/time = {:?}/{}/{:?}/{}/{}; replay = {:?}/{}/{:?}/{}/{}",
+                projection.state,
+                projection.version,
+                projection.active_plan_revision,
+                projection.projection_hash,
+                projection.updated_at.to_rfc3339(),
+                replayed.mission.state,
+                replayed.mission.version,
+                replayed.mission.active_plan_revision,
+                replayed.mission.projection_hash,
+                replayed.mission.updated_at.to_rfc3339()
+            ),
+        });
+    }
+    let materialized = read_task_attempts_for_mission(connection, &projection.mission_id)?
+        .into_iter()
+        .map(|attempt| (attempt.attempt_id.clone(), attempt))
+        .collect::<BTreeMap<_, _>>();
+    if materialized != replayed.task_attempts {
+        return Err(LedgerError::ReplayDivergence {
+            mission_id: projection.mission_id.0.clone(),
+            reason: format!(
+                "materialized task attempts differ from event replay (stored {}, replayed {}, stored_digest {}, replayed_digest {})",
+                materialized.len(),
+                replayed.task_attempts.len(),
+                canonical_digest(&materialized)?,
+                canonical_digest(&replayed.task_attempts)?,
+            ),
+        });
+    }
+    Ok(())
+}
+
+fn verify_all_projection_coherence(connection: &Connection) -> Result<(), LedgerError> {
+    let mission_ids = {
+        let mut statement =
+            connection.prepare("SELECT mission_id FROM missions ORDER BY mission_id")?;
+        let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+        rows.collect::<Result<Vec<_>, _>>()?
+    };
+    for mission_id in mission_ids {
+        let projection = read_projection(connection, &mission_id)?
+            .ok_or_else(|| LedgerError::MissionNotFound(mission_id.clone()))?;
+        verify_projection_coherence(connection, &projection)?;
+    }
+
+    let orphan: Option<(String, String)> = connection
+        .query_row(
+            "SELECT attempts.attempt_id, attempts.mission_id
+             FROM task_attempts AS attempts
+             LEFT JOIN missions ON missions.mission_id = attempts.mission_id
+             WHERE missions.mission_id IS NULL
+             ORDER BY attempts.attempt_id LIMIT 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    if let Some((attempt_id, mission_id)) = orphan {
+        return Err(LedgerError::ReplayDivergence {
+            mission_id,
+            reason: format!(
+                "orphan materialized task attempt {attempt_id} has no mission projection"
+            ),
+        });
+    }
+    Ok(())
+}
+
+fn ensure_idempotent_match(
+    recorded: &MissionEvent,
+    supplied_digest: &str,
+) -> Result<(), LedgerError> {
+    if !recorded.command_digest.is_empty() && recorded.command_digest == supplied_digest {
+        return Ok(());
+    }
+    Err(LedgerError::IdempotencyConflict {
+        mission_id: recorded.mission_id.0.clone(),
+        key: recorded.idempotency_key.clone(),
+        recorded_digest: if recorded.command_digest.is_empty() {
+            "legacy-unbound".to_string()
+        } else {
+            recorded.command_digest.clone()
+        },
+        supplied_digest: supplied_digest.to_string(),
+    })
+}
+
 fn stable_id(prefix: &str) -> String {
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let counter = COUNTER.fetch_add(1, Ordering::Relaxed);
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    format!("{prefix}-{nanos:032x}-{counter:016x}")
+    let (wall_direction, wall_nanos) = crate::mission::wall_clock_nanos();
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"omega.ledger-id.v2");
+    hasher.update(&(prefix.len() as u64).to_le_bytes());
+    hasher.update(prefix.as_bytes());
+    hasher.update(crate::mission::process_discriminator());
+    hasher.update(&std::process::id().to_le_bytes());
+    hasher.update(&counter.to_le_bytes());
+    hasher.update(&[wall_direction]);
+    hasher.update(&wall_nanos.to_le_bytes());
+    let encoded = hasher.finalize().to_hex();
+    format!("{prefix}-{}", &encoded[..32])
 }
 
 fn validate_key(value: &str, name: &str) -> Result<(), LedgerError> {
@@ -1133,6 +3697,749 @@ fn projection_hash(
 ) -> Result<String, LedgerError> {
     let bytes = serde_json::to_vec(&(mission_id, state, version, plan_revision))?;
     Ok(blake3::hash(&bytes).to_hex().to_string())
+}
+
+fn validate_plan_activation(
+    transaction: &Transaction<'_>,
+    current: &MissionProjection,
+    plan: &PlanContract,
+) -> Result<(), LedgerError> {
+    let expected_revision = current
+        .active_plan_revision
+        .unwrap_or(0)
+        .checked_add(1)
+        .ok_or_else(|| LedgerError::InvalidInput("plan revision overflow".to_string()))?;
+    if plan.revision != expected_revision {
+        return Err(LedgerError::InvalidInput(format!(
+            "activated plan revision must advance from {:?} to {expected_revision}, got {}",
+            current.active_plan_revision, plan.revision
+        )));
+    }
+
+    // The ledger derives protection from durable attempts, independently of
+    // whichever helper the caller used to construct the new PlanContract.
+    let protected = {
+        let mut statement = transaction.prepare(
+            "SELECT DISTINCT task_id, plan_revision
+             FROM task_attempts WHERE mission_id = ?1
+             ORDER BY task_id, plan_revision",
+        )?;
+        let rows = statement.query_map(params![current.mission_id.as_str()], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+        })?;
+        rows.collect::<Result<Vec<_>, _>>()?
+    };
+    for (task_id, source_revision) in protected {
+        let source_revision = as_u64(source_revision)?;
+        let source_plan = read_plan_contract(transaction, &current.mission_id, source_revision)?
+            .ok_or_else(|| {
+                LedgerError::InvalidInput(format!(
+                    "protected task {task_id} refers to missing plan revision {source_revision}"
+                ))
+            })?;
+        let original = source_plan
+            .tasks
+            .iter()
+            .find(|task| task.task_id.as_str() == task_id)
+            .ok_or_else(|| {
+                LedgerError::InvalidInput(format!(
+                    "protected task {task_id} is missing from source plan revision {source_revision}"
+                ))
+            })?;
+        let replacement = plan
+            .tasks
+            .iter()
+            .find(|task| task.task_id.as_str() == task_id)
+            .ok_or_else(|| {
+                LedgerError::InvalidInput(format!("protected task removed: {task_id}"))
+            })?;
+        if replacement != original {
+            return Err(LedgerError::InvalidInput(format!(
+                "protected task changed: {task_id}"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn acceptance_error(message: impl Into<String>) -> LedgerError {
+    LedgerError::InvalidInput(format!("mission acceptance rejected: {}", message.into()))
+}
+
+fn looks_like_digest(value: &str) -> bool {
+    value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+fn validate_evidence_event_ids(
+    events: &[MissionEvent],
+    observation_sequence: u64,
+    evidence_event_ids: &[String],
+) -> Result<(), LedgerError> {
+    if evidence_event_ids.is_empty() {
+        return Err(acceptance_error(
+            "requirement observation has no evidence events",
+        ));
+    }
+    let unique: BTreeSet<_> = evidence_event_ids.iter().collect();
+    if unique.len() != evidence_event_ids.len() {
+        return Err(acceptance_error(
+            "requirement observation repeats an evidence event",
+        ));
+    }
+    for event_id in evidence_event_ids {
+        let evidence = events
+            .iter()
+            .find(|event| event.event_id == *event_id)
+            .ok_or_else(|| acceptance_error(format!("evidence event {event_id} is missing")))?;
+        if evidence.sequence >= observation_sequence {
+            return Err(acceptance_error(format!(
+                "evidence event {event_id} does not precede its observation"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn valid_verification_for_attempt(
+    events: &[MissionEvent],
+    plan: &PlanContract,
+    task: &crate::mission::TaskContract,
+    attempt: &TaskAttemptProjection,
+) -> Result<Option<u64>, LedgerError> {
+    let accepted_sequence = events
+        .iter()
+        .filter(|event| {
+            event.resulting_task_attempt.as_ref().is_some_and(|result| {
+                result.attempt_id == attempt.attempt_id
+                    && result.state == TaskAttemptState::Accepted
+            })
+        })
+        .map(|event| event.sequence)
+        .max();
+    let Some(accepted_sequence) = accepted_sequence else {
+        return Ok(None);
+    };
+    let candidate_sequence = events
+        .iter()
+        .filter(|event| {
+            event.resulting_task_attempt.as_ref().is_some_and(|result| {
+                result.attempt_id == attempt.attempt_id
+                    && result.state == TaskAttemptState::CandidateDone
+            })
+        })
+        .map(|event| event.sequence)
+        .max()
+        .ok_or_else(|| {
+            acceptance_error(format!(
+                "accepted attempt {} has no immutable CandidateDone event",
+                attempt.attempt_id
+            ))
+        })?;
+
+    let mut exact_records = 0_usize;
+    for event in events
+        .iter()
+        .filter(|event| event.kind == "task_verifier_observations_recorded")
+    {
+        let record: RecordedContractVerification = serde_json::from_value(event.payload.clone())
+            .map_err(|error| {
+                acceptance_error(format!(
+                    "corrupt task verifier observation {}: {error}",
+                    event.event_id
+                ))
+            })?;
+        if record.attempt_id != attempt.attempt_id {
+            continue;
+        }
+        if record.mission_id != plan.mission_id.as_str()
+            || record.task_id != task.task_id.as_str()
+            || record.plan_revision != plan.revision
+        {
+            return Err(acceptance_error(format!(
+                "verifier record {} contradicts attempt {} identity",
+                event.event_id, attempt.attempt_id
+            )));
+        }
+        let expected_checks: BTreeSet<_> = task
+            .verifier_checks
+            .iter()
+            .map(|check| check.check_id.as_str())
+            .collect();
+        let observed_checks: BTreeSet<_> = record
+            .verification
+            .observations
+            .iter()
+            .map(|observation| observation.check_id.as_str())
+            .collect();
+        let exact_checks = observed_checks.len() == record.verification.observations.len()
+            && observed_checks == expected_checks;
+        let valid = record.schema_version == ACCEPTANCE_OBSERVATION_SCHEMA_VERSION
+            && record.plan_digest == plan.content_digest
+            && looks_like_digest(&record.worker_signal_digest)
+            && record.verification.passed
+            && record.verification.failures.is_empty()
+            && exact_checks
+            && record
+                .verification
+                .observations
+                .iter()
+                .all(|observation| observation.passed && !observation.detail.trim().is_empty())
+            && event.actor == "omega-independent-verifier"
+            && event.sequence > candidate_sequence
+            && event.sequence < accepted_sequence
+            && event.plan_revision.is_none();
+        if !valid {
+            return Err(acceptance_error(format!(
+                "verifier record {} is contradictory, malformed, or out of lifecycle order",
+                event.event_id
+            )));
+        }
+        exact_records += 1;
+    }
+    let mut acceptance_invalidated = false;
+    for event in events
+        .iter()
+        .filter(|event| event.kind == "task_acceptance_invalidated")
+    {
+        let invalidation: TaskAcceptanceInvalidation =
+            serde_json::from_value(event.payload.clone()).map_err(|error| {
+                acceptance_error(format!(
+                    "corrupt task acceptance invalidation {}: {error}",
+                    event.event_id
+                ))
+            })?;
+        if invalidation.schema_version != ACCEPTANCE_OBSERVATION_SCHEMA_VERSION
+            || invalidation.mission_id != plan.mission_id.as_str()
+            || invalidation.plan_revision != plan.revision
+            || invalidation.reason.trim().is_empty()
+            || event.actor.trim().is_empty()
+        {
+            return Err(acceptance_error(format!(
+                "task acceptance invalidation {} has invalid plan-bound identity",
+                event.event_id
+            )));
+        }
+        let task_exists = plan
+            .tasks
+            .iter()
+            .any(|candidate| candidate.task_id.as_str() == invalidation.task_id.as_str());
+        let attempt_exists = events.iter().any(|candidate| {
+            candidate
+                .resulting_task_attempt
+                .as_ref()
+                .is_some_and(|result| {
+                    result.mission_id == plan.mission_id
+                        && result.task_id == invalidation.task_id
+                        && result.attempt_id == invalidation.attempt_id
+                        && result.plan_revision == invalidation.plan_revision
+                })
+        });
+        if !task_exists || !attempt_exists {
+            return Err(acceptance_error(format!(
+                "task acceptance invalidation {} targets an unknown task or attempt",
+                event.event_id
+            )));
+        }
+        if invalidation.attempt_id == attempt.attempt_id {
+            if invalidation.task_id != task.task_id.as_str() {
+                return Err(acceptance_error(format!(
+                    "task acceptance invalidation {} contradicts attempt/task identity",
+                    event.event_id
+                )));
+            }
+            acceptance_invalidated = true;
+        }
+    }
+    if acceptance_invalidated {
+        return Ok(None);
+    }
+    if exact_records != 1 {
+        return Err(acceptance_error(format!(
+            "attempt {} has {exact_records} exact verifier records; exactly one is required",
+            attempt.attempt_id
+        )));
+    }
+    Ok(Some(accepted_sequence))
+}
+
+fn validate_requirement_observation(
+    events: &[MissionEvent],
+    plan: &PlanContract,
+    requirement: &str,
+    kind: PlanRequirementKind,
+) -> Result<(), LedgerError> {
+    let expected_event_kind = match kind {
+        PlanRequirementKind::Gate => "plan_gate_observed",
+        PlanRequirementKind::Approval => "plan_approval_observed",
+    };
+    let mut latest = None;
+    for event in events
+        .iter()
+        .filter(|event| event.kind == expected_event_kind)
+    {
+        let observation: PlanRequirementObservation = serde_json::from_value(event.payload.clone())
+            .map_err(|error| {
+                acceptance_error(format!(
+                    "corrupt {expected_event_kind} event {}: {error}",
+                    event.event_id
+                ))
+            })?;
+        if observation.mission_id == plan.mission_id.as_str()
+            && observation.plan_revision == plan.revision
+            && observation.plan_digest == plan.content_digest
+            && observation.requirement == requirement
+            && observation.kind == kind
+        {
+            latest = Some((event, observation));
+        }
+    }
+    let Some((event, observation)) = latest else {
+        return Err(acceptance_error(format!(
+            "required {:?} `{requirement}` has no exact plan-bound observation",
+            kind
+        )));
+    };
+    if observation.schema_version != ACCEPTANCE_OBSERVATION_SCHEMA_VERSION
+        || !observation.passed
+        || observation.observed_by.trim().is_empty()
+    {
+        return Err(acceptance_error(format!(
+            "required {:?} `{requirement}` did not pass",
+            kind
+        )));
+    }
+    validate_evidence_event_ids(events, event.sequence, &observation.evidence_event_ids)
+}
+
+fn validate_mission_gate_observation(
+    events: &[MissionEvent],
+    plan: &PlanContract,
+) -> Result<u64, LedgerError> {
+    let mut latest = None;
+    for event in events
+        .iter()
+        .filter(|event| event.kind == "mission_gate_observed")
+    {
+        let observation: MissionGateObservation = serde_json::from_value(event.payload.clone())
+            .map_err(|error| {
+                acceptance_error(format!(
+                    "corrupt mission gate observation {}: {error}",
+                    event.event_id
+                ))
+            })?;
+        if observation.mission_id == plan.mission_id.as_str()
+            && observation.plan_revision == plan.revision
+            && observation.plan_digest == plan.content_digest
+        {
+            latest = Some((event, observation));
+        }
+    }
+    let Some((gate_event, observation)) = latest else {
+        return Err(acceptance_error(
+            "no exact plan-bound mission_gate_observed event",
+        ));
+    };
+    if observation.schema_version != ACCEPTANCE_OBSERVATION_SCHEMA_VERSION
+        || !observation.overall_pass
+        || !looks_like_digest(&observation.gate_result_digest)
+        || observation.checks.len() < 12
+    {
+        return Err(acceptance_error(
+            "mission gate is missing, failed, malformed, or has fewer than 12 checks",
+        ));
+    }
+    let check_ids: BTreeSet<_> = observation
+        .checks
+        .iter()
+        .map(|check| check.check_id.as_str())
+        .collect();
+    let fact_digests: BTreeSet<_> = observation
+        .checks
+        .iter()
+        .map(|check| check.fact_digest.as_str())
+        .collect();
+    if check_ids.len() != observation.checks.len()
+        || fact_digests.len() != observation.checks.len()
+        || observation
+            .checks
+            .iter()
+            .any(|check| !check.passed || !looks_like_digest(&check.fact_digest))
+    {
+        return Err(acceptance_error(
+            "mission gate checks are duplicated, unfalsifiable, or failing",
+        ));
+    }
+    let evidence_event_ids: BTreeSet<_> = observation
+        .checks
+        .iter()
+        .map(|check| check.evidence_event_id.as_str())
+        .collect();
+    if evidence_event_ids.len() != observation.checks.len() {
+        return Err(acceptance_error(
+            "mission gate checks do not cite distinct immutable evidence events",
+        ));
+    }
+    for check in &observation.checks {
+        let evidence = events
+            .iter()
+            .find(|event| event.event_id == check.evidence_event_id)
+            .ok_or_else(|| {
+                acceptance_error(format!(
+                    "mission gate evidence event {} is missing",
+                    check.evidence_event_id
+                ))
+            })?;
+        if evidence.sequence != check.evidence_sequence
+            || evidence.sequence >= gate_event.sequence
+            || check.detail.trim().is_empty()
+            || mission_gate_fact_digest(&check.check_id, check.passed, &check.detail, evidence)?
+                != check.fact_digest
+        {
+            return Err(acceptance_error(format!(
+                "mission gate check {} has invalid event evidence",
+                check.check_id
+            )));
+        }
+    }
+
+    let expected_lenses = ["code_reviewer", "debugger", "general_purpose"];
+    let lens_names: BTreeSet<_> = observation
+        .lenses
+        .iter()
+        .map(|lens| lens.lens.as_str())
+        .collect();
+    if observation.lenses.len() != expected_lenses.len()
+        || lens_names != expected_lenses.into_iter().collect()
+        || observation
+            .lenses
+            .iter()
+            .any(|lens| !lens.passed || lens.fact_ids.is_empty())
+    {
+        return Err(acceptance_error(
+            "mission gate does not contain three passing independent lenses",
+        ));
+    }
+    let mut lens_fact_sets = Vec::new();
+    for lens in &observation.lenses {
+        let facts: BTreeSet<_> = lens.fact_ids.iter().map(String::as_str).collect();
+        if facts.len() != lens.fact_ids.len() || !facts.iter().all(|fact| check_ids.contains(*fact))
+        {
+            return Err(acceptance_error(format!(
+                "mission gate lens {} cites unknown or duplicate facts",
+                lens.lens
+            )));
+        }
+        lens_fact_sets.push(facts);
+    }
+    if lens_fact_sets[0] == lens_fact_sets[1]
+        || lens_fact_sets[0] == lens_fact_sets[2]
+        || lens_fact_sets[1] == lens_fact_sets[2]
+    {
+        return Err(acceptance_error(
+            "mission gate lenses consume identical evidence sets",
+        ));
+    }
+    if mission_gate_result_digest(&observation)? != observation.gate_result_digest {
+        return Err(acceptance_error(
+            "mission gate result digest does not bind the exact checks and lenses",
+        ));
+    }
+    Ok(gate_event.sequence)
+}
+
+fn validate_mission_issue_resolution(
+    events: &[MissionEvent],
+    plan: &PlanContract,
+    gate_sequence: u64,
+) -> Result<(), LedgerError> {
+    for issue in events.iter().filter(|event| {
+        matches!(
+            event.kind.as_str(),
+            "mission_acceptance_invalidated" | "mission_blocker_recorded"
+        ) && event
+            .plan_revision
+            .is_none_or(|revision| revision == plan.revision)
+    }) {
+        let expected_kind = if issue.kind == "mission_acceptance_invalidated" {
+            "mission_acceptance_revalidated"
+        } else {
+            "mission_blocker_resolved"
+        };
+        let resolved = events.iter().any(|event| {
+            if event.kind != expected_kind
+                || event.sequence <= issue.sequence
+                || event.sequence >= gate_sequence
+            {
+                return false;
+            }
+            serde_json::from_value::<MissionIssueResolution>(event.payload.clone()).is_ok_and(
+                |resolution| {
+                    resolution.schema_version == ACCEPTANCE_OBSERVATION_SCHEMA_VERSION
+                        && resolution.mission_id == plan.mission_id.as_str()
+                        && resolution.plan_revision == plan.revision
+                        && resolution.plan_digest == plan.content_digest
+                        && resolution.issue_event_id == issue.event_id
+                        && !resolution.resolved_by.trim().is_empty()
+                        && !resolution.detail.trim().is_empty()
+                },
+            )
+        });
+        if !resolved {
+            return Err(acceptance_error(format!(
+                "mission issue {} ({}) has no exact plan-bound resolution before the current gate",
+                issue.event_id, issue.kind
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn validate_linked_child_missions(
+    transaction: &Connection,
+    events: &[MissionEvent],
+    plan: &PlanContract,
+    visiting: &mut BTreeSet<String>,
+) -> Result<(), LedgerError> {
+    let mut children = BTreeSet::new();
+    let mut runtime_sessions = BTreeSet::new();
+    for event in events
+        .iter()
+        .filter(|event| event.kind == "child_mission_linked")
+    {
+        let link: ChildMissionLink =
+            serde_json::from_value(event.payload.clone()).map_err(|error| {
+                acceptance_error(format!(
+                    "corrupt child mission link {}: {error}",
+                    event.event_id
+                ))
+            })?;
+        if link.schema_version != ACCEPTANCE_OBSERVATION_SCHEMA_VERSION
+            || link.parent_mission_id != plan.mission_id.as_str()
+            || link.parent_plan_revision != plan.revision
+            || link.parent_plan_digest != plan.content_digest
+            || event.actor != "omega-child-mission-linker"
+            || event.plan_revision != Some(plan.revision)
+            || link.linked_by.trim().is_empty()
+            || link.runtime_session.trim().is_empty()
+            || link.runtime_manifest_digest.len() != 64
+            || !link
+                .runtime_manifest_digest
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit())
+            || link.runtime_owner != link.runtime_session
+            || link.project.trim().is_empty()
+            || link.canonical_workspace_id.trim().is_empty()
+            || link.runtime_task_id.trim().is_empty()
+            || link.child_mission_id == link.parent_mission_id
+            || !children.insert(link.child_mission_id.clone())
+            || !runtime_sessions.insert(link.runtime_session.clone())
+        {
+            return Err(acceptance_error(format!(
+                "child mission link {} has duplicate or contradictory identity",
+                event.event_id
+            )));
+        }
+        let child_id = MissionId(link.child_mission_id.clone());
+        let child_event = read_event_by_id(transaction, &link.child_binding_event_id)?
+            .ok_or_else(|| acceptance_error("reciprocal child binding event is missing"))?;
+        validate_reciprocal_child_edge(transaction, event, &child_event, &link)
+            .map_err(|error| acceptance_error(format!("reciprocal child edge failed: {error}")))?;
+        let linked_count: i64 = transaction.query_row(
+            "SELECT COUNT(*) FROM events
+             WHERE kind = 'child_mission_linked'
+               AND json_extract(payload_json, '$.runtime_session') = ?1",
+            params![link.runtime_session],
+            |row| row.get(0),
+        )?;
+        let binding_count: i64 = transaction.query_row(
+            "SELECT COUNT(*) FROM events
+             WHERE kind = 'child_parent_binding_prepared'
+               AND json_extract(payload_json, '$.runtime_session') = ?1",
+            params![link.runtime_session],
+            |row| row.get(0),
+        )?;
+        if linked_count != 1 || binding_count != 1 {
+            return Err(acceptance_error(format!(
+                "runtime session {} is not globally unique across one reciprocal child edge",
+                link.runtime_session
+            )));
+        }
+        let child = read_projection(transaction, child_id.as_str())?
+            .ok_or_else(|| acceptance_error("linked child mission projection is missing"))?;
+        if child.state != MissionState::Delivered
+            || child.active_plan_revision != Some(link.child_plan_revision)
+        {
+            return Err(acceptance_error(format!(
+                "linked child mission {} is not exact Delivered revision {}",
+                child_id.as_str(),
+                link.child_plan_revision
+            )));
+        }
+        let child_plan = read_plan_contract(transaction, &child_id, link.child_plan_revision)?
+            .ok_or_else(|| acceptance_error("linked child plan is missing"))?;
+        if child_plan.content_digest != link.child_plan_digest {
+            return Err(acceptance_error(format!(
+                "linked child mission {} plan digest changed",
+                child_id.as_str()
+            )));
+        }
+        let child_record = read_mission_record_connection(transaction, &child_id)?;
+        if child_record.project != link.project
+            || child_plan.tasks.len() != 1
+            || child_plan.tasks[0].task_id.as_str() != link.runtime_task_id
+        {
+            return Err(acceptance_error(format!(
+                "linked child mission {} runtime project/task identity changed",
+                child_id.as_str()
+            )));
+        }
+        let workspace = crate::scope::canonical_workspace_identity(&child_record.working_dir)
+            .map_err(|error| acceptance_error(format!("linked child workspace failed: {error}")))?;
+        if workspace != link.canonical_workspace_id {
+            return Err(acceptance_error(format!(
+                "linked child mission {} canonical workspace identity changed",
+                child_id.as_str()
+            )));
+        }
+        validate_mission_acceptance_connection_inner(transaction, &child_id, visiting)?;
+    }
+    Ok(())
+}
+
+fn validate_mission_acceptance_connection_inner(
+    transaction: &Connection,
+    mission_id: &MissionId,
+    visiting: &mut BTreeSet<String>,
+) -> Result<(), LedgerError> {
+    if !visiting.insert(mission_id.as_str().to_string()) {
+        return Err(acceptance_error(format!(
+            "child mission graph contains a cycle at {}",
+            mission_id.as_str()
+        )));
+    }
+    let projection = read_projection(transaction, mission_id.as_str())?
+        .ok_or_else(|| LedgerError::MissionNotFound(mission_id.0.clone()))?;
+    let revision = projection
+        .active_plan_revision
+        .ok_or_else(|| acceptance_error("mission has no active immutable plan revision"))?;
+    let plan = read_plan_contract(transaction, mission_id, revision)?
+        .ok_or_else(|| acceptance_error("active immutable plan row is missing"))?;
+    plan.verify_integrity()
+        .map_err(|error| acceptance_error(format!("plan integrity failed: {error}")))?;
+    let attempts = read_task_attempts_for_mission(transaction, mission_id)?;
+    let events = read_events(transaction, mission_id)?;
+
+    let mut accepted_sequences = BTreeMap::new();
+    for task in &plan.tasks {
+        let task_attempts: Vec<_> = attempts
+            .iter()
+            .filter(|attempt| {
+                attempt.task_id == task.task_id.as_str() && attempt.plan_revision == plan.revision
+            })
+            .collect();
+        if task_attempts
+            .iter()
+            .any(|attempt| !attempt.state.is_terminal())
+        {
+            return Err(acceptance_error(format!(
+                "task {} still has a nonterminal attempt",
+                task.task_id.as_str()
+            )));
+        }
+        let latest_attempt = task_attempts
+            .iter()
+            .max_by_key(|attempt| {
+                events
+                    .iter()
+                    .filter(|event| {
+                        event
+                            .resulting_task_attempt
+                            .as_ref()
+                            .is_some_and(|result| result.attempt_id == attempt.attempt_id)
+                    })
+                    .map(|event| event.sequence)
+                    .max()
+                    .unwrap_or(0)
+            })
+            .copied()
+            .ok_or_else(|| {
+                acceptance_error(format!(
+                    "task {} has no attempt in the active plan",
+                    task.task_id.as_str()
+                ))
+            })?;
+        if latest_attempt.state != TaskAttemptState::Accepted {
+            return Err(acceptance_error(format!(
+                "task {} latest authoritative attempt {} is {:?}, not accepted",
+                task.task_id.as_str(),
+                latest_attempt.attempt_id,
+                latest_attempt.state
+            )));
+        }
+        let mut accepted = Vec::new();
+        for attempt in task_attempts
+            .into_iter()
+            .filter(|attempt| attempt.state == TaskAttemptState::Accepted)
+        {
+            if let Some(sequence) = valid_verification_for_attempt(&events, &plan, task, attempt)? {
+                accepted.push((attempt.attempt_id.as_str(), sequence));
+            }
+        }
+        if accepted.len() != 1 || accepted[0].0 != latest_attempt.attempt_id {
+            return Err(acceptance_error(format!(
+                "task {} does not have one unambiguous latest accepted attempt with a passing recorded verifier observation",
+                task.task_id.as_str()
+            )));
+        }
+        let sequence = accepted[0].1;
+        accepted_sequences.insert(task.task_id.as_str(), sequence);
+    }
+    for task in &plan.tasks {
+        let task_sequence = accepted_sequences[task.task_id.as_str()];
+        for dependency in &task.depends_on {
+            let dependency_sequence = accepted_sequences
+                .get(dependency.as_str())
+                .ok_or_else(|| acceptance_error("accepted dependency projection is missing"))?;
+            if *dependency_sequence >= task_sequence {
+                return Err(acceptance_error(format!(
+                    "task {} was accepted before dependency {}",
+                    task.task_id.as_str(),
+                    dependency.as_str()
+                )));
+            }
+        }
+    }
+
+    for gate in &plan.required_gates {
+        validate_requirement_observation(&events, &plan, gate, PlanRequirementKind::Gate)?;
+    }
+    for approval in &plan.required_approvals {
+        validate_requirement_observation(&events, &plan, approval, PlanRequirementKind::Approval)?;
+    }
+    let active_lease_count: i64 = transaction.query_row(
+        "SELECT COUNT(*) FROM leases
+         WHERE mission_id = ?1 AND status = 'active' AND expires_at > ?2",
+        params![mission_id.as_str(), Utc::now().to_rfc3339()],
+        |row| row.get(0),
+    )?;
+    if active_lease_count != 0 {
+        return Err(acceptance_error(format!(
+            "{active_lease_count} active task lease(s) remain"
+        )));
+    }
+
+    validate_linked_child_missions(transaction, &events, &plan, visiting)?;
+    let gate_sequence = validate_mission_gate_observation(&events, &plan)?;
+    validate_mission_issue_resolution(&events, &plan, gate_sequence)?;
+    visiting.remove(mission_id.as_str());
+    Ok(())
+}
+
+fn validate_mission_acceptance_connection(
+    transaction: &Connection,
+    mission_id: &MissionId,
+) -> Result<(), LedgerError> {
+    validate_mission_acceptance_connection_inner(transaction, mission_id, &mut BTreeSet::new())
 }
 
 fn persist_plan(transaction: &Transaction<'_>, plan: &PlanContract) -> Result<(), LedgerError> {
@@ -1173,6 +4480,126 @@ fn persist_plan(transaction: &Transaction<'_>, plan: &PlanContract) -> Result<()
     Ok(())
 }
 
+fn read_plan_contract(
+    connection: &Connection,
+    mission_id: &MissionId,
+    revision: u64,
+) -> Result<Option<PlanContract>, LedgerError> {
+    let stored: Option<(String, String)> = connection
+        .query_row(
+            "SELECT contract_json, content_digest
+             FROM plans WHERE mission_id = ?1 AND revision = ?2",
+            params![mission_id.as_str(), as_i64(revision)?],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    let Some((contract_json, stored_digest)) = stored else {
+        return Ok(None);
+    };
+    let contract: PlanContract = serde_json::from_str(&contract_json)?;
+    if contract.mission_id != *mission_id || contract.revision != revision {
+        return Err(LedgerError::InvalidInput(format!(
+            "plan row identity mismatch for mission {} revision {revision}",
+            mission_id.as_str()
+        )));
+    }
+    contract
+        .verify_integrity()
+        .map_err(|error| LedgerError::InvalidInput(error.to_string()))?;
+    if stored_digest != contract.content_digest {
+        return Err(LedgerError::InvalidInput(format!(
+            "stored digest differs from plan contract digest for mission {} revision {revision}",
+            mission_id.as_str()
+        )));
+    }
+    Ok(Some(contract))
+}
+
+fn active_plan_revision(
+    connection: &Connection,
+    mission_id: &MissionId,
+) -> Result<Option<u64>, LedgerError> {
+    let revision: Option<i64> = connection
+        .query_row(
+            "SELECT active_plan_revision FROM missions WHERE mission_id = ?1",
+            params![mission_id.as_str()],
+            |row| row.get(0),
+        )
+        .optional()?
+        .flatten();
+    revision.map(as_u64).transpose()
+}
+
+fn validate_task_authorization(
+    transaction: &Transaction<'_>,
+    mission_id: &MissionId,
+    mutation: &TaskAttemptMutation,
+    existing: Option<&TaskAttemptProjection>,
+) -> Result<(), LedgerError> {
+    let active_revision = active_plan_revision(transaction, mission_id)?;
+    let Some(active_revision) = active_revision else {
+        return Err(LedgerError::PlanRevisionNotActive {
+            mission_id: mission_id.0.clone(),
+            supplied: mutation.plan_revision,
+            active: None,
+        });
+    };
+    let active_plan =
+        read_plan_contract(transaction, mission_id, active_revision)?.ok_or_else(|| {
+            LedgerError::InvalidInput(format!(
+                "active plan revision {active_revision} is missing for mission {}",
+                mission_id.as_str()
+            ))
+        })?;
+    let active_task = active_plan
+        .tasks
+        .iter()
+        .find(|task| task.task_id.as_str() == mutation.task_id.as_str());
+
+    if existing.is_none() {
+        if mutation.plan_revision != active_revision {
+            return Err(LedgerError::PlanRevisionNotActive {
+                mission_id: mission_id.0.clone(),
+                supplied: mutation.plan_revision,
+                active: Some(active_revision),
+            });
+        }
+        if active_task.is_none() {
+            return Err(LedgerError::TaskNotInPlan {
+                mission_id: mission_id.0.clone(),
+                revision: active_revision,
+                task_id: mutation.task_id.clone(),
+            });
+        }
+        return Ok(());
+    }
+
+    let attempt_plan = read_plan_contract(transaction, mission_id, mutation.plan_revision)?
+        .ok_or_else(|| LedgerError::TaskNotInPlan {
+            mission_id: mission_id.0.clone(),
+            revision: mutation.plan_revision,
+            task_id: mutation.task_id.clone(),
+        })?;
+    let attempt_task = attempt_plan
+        .tasks
+        .iter()
+        .find(|task| task.task_id.as_str() == mutation.task_id.as_str())
+        .ok_or_else(|| LedgerError::TaskNotInPlan {
+            mission_id: mission_id.0.clone(),
+            revision: mutation.plan_revision,
+            task_id: mutation.task_id.clone(),
+        })?;
+    match active_task {
+        Some(task) if task == attempt_task => Ok(()),
+        _ => Err(LedgerError::TaskNoLongerActive {
+            mission_id: mission_id.0.clone(),
+            task_id: mutation.task_id.clone(),
+            attempt_revision: mutation.plan_revision,
+            active_revision,
+        }),
+    }
+}
+
 fn apply_task_mutation(
     transaction: &Transaction<'_>,
     mission_id: &MissionId,
@@ -1181,6 +4608,7 @@ fn apply_task_mutation(
     now: DateTime<Utc>,
 ) -> Result<TaskAttemptProjection, LedgerError> {
     let existing = read_task_attempt(transaction, &mutation.attempt_id)?;
+    validate_task_authorization(transaction, mission_id, mutation, existing.as_ref())?;
     let (next_state, next_version) = match existing {
         None => {
             if mutation.expected_version != 0 {
@@ -1218,7 +4646,9 @@ fn apply_task_mutation(
                     .state
                     .transition(mutation.next_state)
                     .map_err(LedgerError::InvalidTaskTransition)?,
-                current.version.saturating_add(1),
+                current.version.checked_add(1).ok_or_else(|| {
+                    LedgerError::InvalidInput("task-attempt version overflow".to_string())
+                })?,
             )
         }
     };
@@ -1260,12 +4690,15 @@ fn insert_event(transaction: &Transaction<'_>, event: &MissionEvent) -> Result<(
     transaction.execute(
         "INSERT INTO events (
             event_id, mission_id, task_id, attempt_id, sequence,
-            expected_version, schema_version, idempotency_key, actor,
+            expected_version, schema_version, idempotency_key, command_digest, actor,
             provider, causation_id, correlation_id, fencing_token,
-            plan_revision, recorded_at, kind, payload_json, mission_state_json
+            plan_revision, activated_plan_revision, task_attempt_mutation_json,
+            task_attempt_projection_json, recorded_at, kind, payload_json,
+            mission_state_json
          ) VALUES (
-            ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9,
-            ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18
+            ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10,
+            ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20,
+            ?21, ?22
          )",
         params![
             event.event_id,
@@ -1276,12 +4709,24 @@ fn insert_event(transaction: &Transaction<'_>, event: &MissionEvent) -> Result<(
             as_i64(event.expected_version)?,
             i64::from(event.schema_version),
             event.idempotency_key,
+            event.command_digest,
             event.actor,
             event.provider,
             event.causation_id,
             event.correlation_id,
             event.fencing_token.map(as_i64).transpose()?,
             event.plan_revision.map(as_i64).transpose()?,
+            event.activated_plan_revision.map(as_i64).transpose()?,
+            event
+                .task_attempt_mutation
+                .as_ref()
+                .map(serde_json::to_string)
+                .transpose()?,
+            event
+                .resulting_task_attempt
+                .as_ref()
+                .map(serde_json::to_string)
+                .transpose()?,
             event.recorded_at.to_rfc3339(),
             event.kind,
             serde_json::to_string(&event.payload)?,
@@ -1342,12 +4787,24 @@ fn read_projection(
         )
         .optional()?;
     row.map(|(state, version, plan_revision, hash, updated_at)| {
+        let mission_id = MissionId(mission_id.to_string());
+        let state = serde_json::from_str(&state)?;
+        let version = as_u64(version)?;
+        let active_plan_revision = plan_revision.map(as_u64).transpose()?;
+        let recomputed = projection_hash(&mission_id, state, version, active_plan_revision)?;
+        if hash != recomputed {
+            return Err(LedgerError::ProjectionHashMismatch {
+                mission_id: mission_id.0.clone(),
+                stored: hash,
+                recomputed,
+            });
+        }
         Ok(MissionProjection {
-            mission_id: MissionId(mission_id.to_string()),
-            state: serde_json::from_str(&state)?,
-            version: as_u64(version)?,
-            active_plan_revision: plan_revision.map(as_u64).transpose()?,
-            projection_hash: hash,
+            mission_id,
+            state,
+            version,
+            active_plan_revision,
+            projection_hash: recomputed,
             updated_at: DateTime::parse_from_rfc3339(&updated_at)?.with_timezone(&Utc),
         })
     })
@@ -1394,6 +4851,139 @@ fn read_task_attempt(
     .transpose()
 }
 
+fn read_task_attempts_for_mission(
+    connection: &Connection,
+    mission_id: &MissionId,
+) -> Result<Vec<TaskAttemptProjection>, LedgerError> {
+    let mut statement = connection.prepare(
+        "SELECT mission_id, task_id, attempt_id, plan_revision, state_json,
+                version, fencing_token, updated_at
+         FROM task_attempts WHERE mission_id = ?1
+         ORDER BY task_id, attempt_id",
+    )?;
+    let rows = statement.query_map(params![mission_id.as_str()], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, i64>(3)?,
+            row.get::<_, String>(4)?,
+            row.get::<_, i64>(5)?,
+            row.get::<_, Option<i64>>(6)?,
+            row.get::<_, String>(7)?,
+        ))
+    })?;
+    let mut attempts = Vec::new();
+    for row in rows {
+        let (
+            stored_mission_id,
+            task_id,
+            attempt_id,
+            plan_revision,
+            state_json,
+            version,
+            fencing_token,
+            updated_at,
+        ) = row?;
+        attempts.push(TaskAttemptProjection {
+            mission_id: MissionId(stored_mission_id),
+            task_id,
+            attempt_id,
+            plan_revision: as_u64(plan_revision)?,
+            state: serde_json::from_str(&state_json)?,
+            version: as_u64(version)?,
+            fencing_token: fencing_token.map(as_u64).transpose()?,
+            updated_at: DateTime::parse_from_rfc3339(&updated_at)?.with_timezone(&Utc),
+        });
+    }
+    Ok(attempts)
+}
+
+fn read_legacy_task_attempts(
+    connection: &Connection,
+    mission_id: &MissionId,
+) -> Result<Vec<LegacyTaskAttemptRecord>, LedgerError> {
+    let mut statement = connection.prepare(
+        "SELECT mission_id, task_id, attempt_id, plan_revision, state_json,
+                version, fencing_token, updated_at, imported_at, provenance, source
+         FROM legacy_task_attempts WHERE mission_id = ?1
+         ORDER BY task_id, attempt_id",
+    )?;
+    let rows = statement.query_map(params![mission_id.as_str()], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, i64>(3)?,
+            row.get::<_, String>(4)?,
+            row.get::<_, i64>(5)?,
+            row.get::<_, Option<i64>>(6)?,
+            row.get::<_, String>(7)?,
+            row.get::<_, String>(8)?,
+            row.get::<_, String>(9)?,
+            row.get::<_, String>(10)?,
+        ))
+    })?;
+    let mut attempts = Vec::new();
+    for row in rows {
+        let (
+            stored_mission_id,
+            task_id,
+            attempt_id,
+            plan_revision,
+            state_json,
+            version,
+            fencing_token,
+            updated_at,
+            imported_at,
+            provenance,
+            source,
+        ) = row?;
+        if provenance != LEGACY_ATTEMPT_PROVENANCE {
+            return Err(LedgerError::InvalidInput(format!(
+                "unknown legacy attempt provenance for {attempt_id}: {provenance}"
+            )));
+        }
+        attempts.push(LegacyTaskAttemptRecord {
+            mission_id: MissionId(stored_mission_id),
+            task_id,
+            attempt_id,
+            plan_revision: as_u64(plan_revision)?,
+            historical_state: serde_json::from_str(&state_json)?,
+            historical_version: as_u64(version)?,
+            historical_fencing_token: fencing_token.map(as_u64).transpose()?,
+            historical_updated_at: DateTime::parse_from_rfc3339(&updated_at)?.with_timezone(&Utc),
+            imported_at: DateTime::parse_from_rfc3339(&imported_at)?.with_timezone(&Utc),
+            provenance,
+            source,
+        });
+    }
+    Ok(attempts)
+}
+
+fn insert_task_attempt_projection(
+    connection: &Connection,
+    projection: &TaskAttemptProjection,
+) -> Result<(), LedgerError> {
+    connection.execute(
+        "INSERT INTO task_attempts (
+            attempt_id, mission_id, task_id, plan_revision, state_json,
+            version, fencing_token, updated_at
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        params![
+            projection.attempt_id,
+            projection.mission_id.as_str(),
+            projection.task_id,
+            as_i64(projection.plan_revision)?,
+            serde_json::to_string(&projection.state)?,
+            as_i64(projection.version)?,
+            projection.fencing_token.map(as_i64).transpose()?,
+            projection.updated_at.to_rfc3339(),
+        ],
+    )?;
+    Ok(())
+}
+
 fn read_event_by_idempotency(
     connection: &Connection,
     mission_id: &str,
@@ -1402,9 +4992,11 @@ fn read_event_by_idempotency(
     let row = connection
         .query_row(
             "SELECT event_id, mission_id, task_id, attempt_id, sequence,
-                    expected_version, schema_version, idempotency_key, actor,
+                    expected_version, schema_version, idempotency_key, command_digest, actor,
                     provider, causation_id, correlation_id, fencing_token,
-                    plan_revision, recorded_at, kind, payload_json, mission_state_json
+                    plan_revision, activated_plan_revision, task_attempt_mutation_json,
+                    task_attempt_projection_json, recorded_at, kind, payload_json,
+                    mission_state_json
              FROM events WHERE mission_id = ?1 AND idempotency_key = ?2",
             params![mission_id, idempotency_key],
             event_row,
@@ -1422,16 +5014,20 @@ fn event_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Result<MissionEvent, L
     let expected_version = row.get::<_, i64>(5)?;
     let schema_version = row.get::<_, i64>(6)?;
     let idempotency_key = row.get::<_, String>(7)?;
-    let actor = row.get::<_, String>(8)?;
-    let provider = row.get::<_, Option<String>>(9)?;
-    let causation_id = row.get::<_, Option<String>>(10)?;
-    let correlation_id = row.get::<_, Option<String>>(11)?;
-    let fencing_token = row.get::<_, Option<i64>>(12)?;
-    let plan_revision = row.get::<_, Option<i64>>(13)?;
-    let recorded_at = row.get::<_, String>(14)?;
-    let kind = row.get::<_, String>(15)?;
-    let payload = row.get::<_, String>(16)?;
-    let state = row.get::<_, Option<String>>(17)?;
+    let command_digest = row.get::<_, String>(8)?;
+    let actor = row.get::<_, String>(9)?;
+    let provider = row.get::<_, Option<String>>(10)?;
+    let causation_id = row.get::<_, Option<String>>(11)?;
+    let correlation_id = row.get::<_, Option<String>>(12)?;
+    let fencing_token = row.get::<_, Option<i64>>(13)?;
+    let plan_revision = row.get::<_, Option<i64>>(14)?;
+    let activated_plan_revision = row.get::<_, Option<i64>>(15)?;
+    let task_attempt_mutation = row.get::<_, Option<String>>(16)?;
+    let task_attempt_projection = row.get::<_, Option<String>>(17)?;
+    let recorded_at = row.get::<_, String>(18)?;
+    let kind = row.get::<_, String>(19)?;
+    let payload = row.get::<_, String>(20)?;
+    let state = row.get::<_, Option<String>>(21)?;
     Ok((|| {
         Ok(MissionEvent {
             event_id,
@@ -1444,12 +5040,20 @@ fn event_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Result<MissionEvent, L
                 LedgerError::InvalidInput(format!("invalid schema version: {schema_version}"))
             })?,
             idempotency_key,
+            command_digest,
             actor,
             provider,
             causation_id,
             correlation_id,
             fencing_token: fencing_token.map(as_u64).transpose()?,
             plan_revision: plan_revision.map(as_u64).transpose()?,
+            activated_plan_revision: activated_plan_revision.map(as_u64).transpose()?,
+            task_attempt_mutation: task_attempt_mutation
+                .map(|value| serde_json::from_str(&value))
+                .transpose()?,
+            resulting_task_attempt: task_attempt_projection
+                .map(|value| serde_json::from_str(&value))
+                .transpose()?,
             recorded_at: DateTime::parse_from_rfc3339(&recorded_at)?.with_timezone(&Utc),
             kind,
             payload: serde_json::from_str(&payload)?,
@@ -1508,11 +5112,481 @@ fn read_lease(
     .transpose()
 }
 
-fn current_lease_token(
+fn supplied_lease_assertions(request: &AppendEvent) -> Result<Vec<LeaseAssertion>, LedgerError> {
+    let mut supplied = request.lease_assertions.clone();
+    match (&request.lease_resource, request.fencing_token) {
+        (Some(resource), Some(token)) => {
+            let legacy = LeaseAssertion {
+                resource_key: resource.clone(),
+                owner: request.actor.clone(),
+                fencing_token: token,
+            };
+            match supplied
+                .iter()
+                .find(|assertion| assertion.resource_key == *resource)
+            {
+                Some(existing) if existing != &legacy => {
+                    return Err(LedgerError::LeaseContextMismatch {
+                        resource: resource.clone(),
+                        reason: "legacy and aggregate lease credentials disagree".to_string(),
+                    });
+                }
+                Some(_) => {}
+                None => supplied.push(legacy),
+            }
+        }
+        (Some(resource), None) => {
+            return Err(LedgerError::StaleFence {
+                resource: resource.clone(),
+                expected: 0,
+                actual: None,
+            });
+        }
+        (None, Some(_)) => {
+            return Err(LedgerError::InvalidInput(
+                "fencing_token requires lease_resource".to_string(),
+            ));
+        }
+        (None, None) => {}
+    }
+    supplied.sort_by(|left, right| left.resource_key.cmp(&right.resource_key));
+    for assertion in &supplied {
+        validate_key(&assertion.resource_key, "lease assertion resource")?;
+        validate_key(&assertion.owner, "lease assertion owner")?;
+        if assertion.fencing_token == 0 {
+            return Err(LedgerError::InvalidInput(format!(
+                "lease assertion {} has zero fencing token",
+                assertion.resource_key
+            )));
+        }
+    }
+    if supplied
+        .windows(2)
+        .any(|pair| pair[0].resource_key == pair[1].resource_key)
+    {
+        return Err(LedgerError::InvalidInput(
+            "duplicate lease assertion resource".to_string(),
+        ));
+    }
+    Ok(supplied)
+}
+
+#[derive(Debug)]
+struct ExpectedScopeAuthority {
+    owner: Option<String>,
+    resources: Vec<String>,
+}
+
+fn expected_attempt_scope_authority_tx(
     connection: &Connection,
+    mission_id: &MissionId,
+    task_id: &str,
+    attempt_id: &str,
+    require_active_revision: bool,
+) -> Result<ExpectedScopeAuthority, LedgerError> {
+    let mission = read_projection(connection, mission_id.as_str())?
+        .ok_or_else(|| LedgerError::MissionNotFound(mission_id.0.clone()))?;
+    verify_projection_coherence(connection, &mission)?;
+    let attempt = read_task_attempt(connection, attempt_id)?.ok_or_else(|| {
+        LedgerError::InvalidInput(format!("task attempt not found: {attempt_id}"))
+    })?;
+    if attempt.mission_id != *mission_id || attempt.task_id != task_id {
+        return Err(LedgerError::LeaseContextMismatch {
+            resource: format!("attempt:{attempt_id}"),
+            reason: "attempt mission/task identity mismatch".to_string(),
+        });
+    }
+    let active_revision =
+        mission
+            .active_plan_revision
+            .ok_or_else(|| LedgerError::PlanRevisionNotActive {
+                mission_id: mission_id.0.clone(),
+                supplied: attempt.plan_revision,
+                active: None,
+            })?;
+    if require_active_revision && attempt.plan_revision != active_revision {
+        return Err(LedgerError::PlanRevisionNotActive {
+            mission_id: mission_id.0.clone(),
+            supplied: attempt.plan_revision,
+            active: Some(active_revision),
+        });
+    }
+    let active_plan =
+        read_plan_contract(connection, mission_id, active_revision)?.ok_or_else(|| {
+            LedgerError::InvalidInput(format!(
+                "active plan revision {active_revision} is missing for mission {}",
+                mission_id.as_str()
+            ))
+        })?;
+    let attempt_plan = read_plan_contract(connection, mission_id, attempt.plan_revision)?
+        .ok_or_else(|| LedgerError::TaskNotInPlan {
+            mission_id: mission_id.0.clone(),
+            revision: attempt.plan_revision,
+            task_id: task_id.to_string(),
+        })?;
+    let task = attempt_plan
+        .tasks
+        .iter()
+        .find(|task| task.task_id.as_str() == task_id)
+        .ok_or_else(|| LedgerError::TaskNotInPlan {
+            mission_id: mission_id.0.clone(),
+            revision: attempt.plan_revision,
+            task_id: task_id.to_string(),
+        })?;
+    let active_task = active_plan
+        .tasks
+        .iter()
+        .find(|candidate| candidate.task_id.as_str() == task_id);
+    if active_task != Some(task) {
+        return Err(LedgerError::TaskNoLongerActive {
+            mission_id: mission_id.0.clone(),
+            task_id: task_id.to_string(),
+            attempt_revision: attempt.plan_revision,
+            active_revision,
+        });
+    }
+    let scope = crate::scope::validate_scope_selectors(task.scope.clone())
+        .map_err(|error| LedgerError::InvalidInput(error.to_string()))?;
+
+    let mut receipts = Vec::new();
+    for event in read_events(connection, mission_id)?
+        .into_iter()
+        .filter(|event| event.kind == "scope_claim_authority_prepared")
+    {
+        let receipt: LedgerScopeAuthorityReceipt = serde_json::from_value(event.payload.clone())
+            .map_err(|error| {
+                LedgerError::InvalidInput(format!(
+                    "corrupt scope authority event {}: {error}",
+                    event.event_id
+                ))
+            })?;
+        if receipt.schema_version != 1
+            || event.actor != "omega-scope-authority"
+            || event.plan_revision != Some(receipt.plan_revision)
+            || event.idempotency_key
+                != format!("orchestration:{}:scope-authority", receipt.attempt_id)
+            || receipt.mission_id != *mission_id
+        {
+            return Err(LedgerError::InvalidInput(format!(
+                "scope authority event {} has contradictory immutable identity",
+                event.event_id
+            )));
+        }
+        if receipt.attempt_id == attempt_id {
+            receipts.push(receipt);
+        }
+    }
+    if scope.is_empty() {
+        if !receipts.is_empty() {
+            return Err(LedgerError::LeaseContextMismatch {
+                resource: format!("attempt:{attempt_id}"),
+                reason: "read-only task has writable scope authority".to_string(),
+            });
+        }
+        return Ok(ExpectedScopeAuthority {
+            owner: None,
+            resources: Vec::new(),
+        });
+    }
+    if receipts.len() != 1 {
+        return Err(LedgerError::LeaseContextMismatch {
+            resource: format!("attempt:{attempt_id}"),
+            reason: format!(
+                "writable task requires exactly one prepared scope receipt, found {}",
+                receipts.len()
+            ),
+        });
+    }
+    let receipt = receipts.pop().expect("length checked");
+    receipt
+        .claim
+        .validate_authority()
+        .map_err(|error| LedgerError::InvalidInput(error.to_string()))?;
+    if receipt.task_id != task_id
+        || receipt.plan_revision != attempt.plan_revision
+        || receipt.owner != receipt.claim.session
+        || receipt.claim.files_owned != scope
+    {
+        return Err(LedgerError::LeaseContextMismatch {
+            resource: format!("attempt:{attempt_id}"),
+            reason: "scope receipt differs from active task/owner/selectors".to_string(),
+        });
+    }
+    let workspace_id =
+        receipt
+            .claim
+            .workspace_id
+            .as_deref()
+            .ok_or_else(|| LedgerError::LeaseContextMismatch {
+                resource: format!("attempt:{attempt_id}"),
+                reason: "scope receipt has no canonical workspace identity".to_string(),
+            })?;
+    let mut resources = scope
+        .iter()
+        .map(|selector| crate::scope::lease_resource_key(workspace_id, selector))
+        .collect::<Vec<_>>();
+    resources.sort();
+    resources.dedup();
+    if resources.len() != scope.len() {
+        return Err(LedgerError::LeaseContextMismatch {
+            resource: format!("attempt:{attempt_id}"),
+            reason: "scope selectors collapsed to duplicate lease resources".to_string(),
+        });
+    }
+    Ok(ExpectedScopeAuthority {
+        owner: Some(receipt.owner),
+        resources,
+    })
+}
+
+fn validate_lease_lifecycle_tx(
+    connection: &Connection,
+    mission_id: &MissionId,
+    task_id: &str,
+    attempt_id: &str,
+    owner: &str,
     resource_key: &str,
-) -> Result<Option<u64>, LedgerError> {
-    read_lease(connection, resource_key).map(|lease| lease.map(|lease| lease.fencing_token))
+    renewal: bool,
+) -> Result<(), LedgerError> {
+    let mission = read_projection(connection, mission_id.as_str())?
+        .ok_or_else(|| LedgerError::MissionNotFound(mission_id.0.clone()))?;
+    let mission_allowed = if renewal {
+        matches!(
+            mission.state,
+            MissionState::Running
+                | MissionState::Verifying
+                | MissionState::CorrectionRequired
+                | MissionState::Blocked
+        )
+    } else {
+        mission.state == MissionState::Running
+    };
+    if !mission_allowed {
+        return Err(LedgerError::InvalidInput(format!(
+            "mission {} in {:?} cannot {} a lease",
+            mission_id.as_str(),
+            mission.state,
+            if renewal { "renew" } else { "acquire" }
+        )));
+    }
+    let attempt = read_task_attempt(connection, attempt_id)?.ok_or_else(|| {
+        LedgerError::InvalidInput(format!("task attempt not found: {attempt_id}"))
+    })?;
+    let attempt_allowed = if renewal {
+        matches!(
+            attempt.state,
+            TaskAttemptState::Queued
+                | TaskAttemptState::Running
+                | TaskAttemptState::CandidateDone
+                | TaskAttemptState::Verifying
+                | TaskAttemptState::CorrectionRequired
+                | TaskAttemptState::Blocked
+        )
+    } else {
+        matches!(
+            attempt.state,
+            TaskAttemptState::Queued
+                | TaskAttemptState::CorrectionRequired
+                | TaskAttemptState::Blocked
+        )
+    };
+    if !attempt_allowed {
+        return Err(LedgerError::InvalidInput(format!(
+            "attempt {attempt_id} in {:?} cannot {} a lease",
+            attempt.state,
+            if renewal { "renew" } else { "acquire" }
+        )));
+    }
+    let expected =
+        expected_attempt_scope_authority_tx(connection, mission_id, task_id, attempt_id, true)?;
+    if expected.owner.as_deref() != Some(owner)
+        || expected
+            .resources
+            .binary_search_by(|candidate| candidate.as_str().cmp(resource_key))
+            .is_err()
+    {
+        return Err(LedgerError::LeaseContextMismatch {
+            resource: resource_key.to_string(),
+            reason: "lease owner/resource is absent from exact prepared scope authority"
+                .to_string(),
+        });
+    }
+    Ok(())
+}
+
+fn read_active_leases_for_attempt(
+    connection: &Connection,
+    mission_id: &MissionId,
+    task_id: &str,
+    attempt_id: &str,
+) -> Result<Vec<LeaseRecord>, LedgerError> {
+    let mut statement = connection.prepare(
+        "SELECT resource_key, mission_id, task_id, attempt_id, owner,
+                fencing_token, expires_at, status
+         FROM leases
+         WHERE mission_id = ?1 AND task_id = ?2 AND attempt_id = ?3
+           AND status = 'active' AND expires_at > ?4
+         ORDER BY resource_key",
+    )?;
+    let rows = statement.query_map(
+        params![
+            mission_id.as_str(),
+            task_id,
+            attempt_id,
+            Utc::now().to_rfc3339()
+        ],
+        |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, i64>(5)?,
+                row.get::<_, String>(6)?,
+                row.get::<_, String>(7)?,
+            ))
+        },
+    )?;
+    let mut leases = Vec::new();
+    for row in rows {
+        let (
+            resource_key,
+            stored_mission,
+            stored_task,
+            stored_attempt,
+            owner,
+            token,
+            expires,
+            status,
+        ) = row?;
+        let status = match status.as_str() {
+            "active" => LeaseStatus::Active,
+            "released" => LeaseStatus::Released,
+            other => {
+                return Err(LedgerError::InvalidInput(format!(
+                    "unknown lease status: {other}"
+                )))
+            }
+        };
+        leases.push(LeaseRecord {
+            resource_key,
+            mission_id: MissionId(stored_mission),
+            task_id: stored_task,
+            attempt_id: stored_attempt,
+            owner,
+            fencing_token: as_u64(token)?,
+            expires_at: DateTime::parse_from_rfc3339(&expires)?.with_timezone(&Utc),
+            status,
+        });
+    }
+    Ok(leases)
+}
+
+fn assert_complete_attempt_lease_authority_tx(
+    connection: &Connection,
+    mission_id: &MissionId,
+    mutation: &TaskAttemptMutation,
+    supplied: &[LeaseAssertion],
+    actor: &str,
+) -> Result<(), LedgerError> {
+    // Diagnose a supplied credential against its own durable row first. This
+    // preserves precise mission/task/attempt/owner errors and also rejects an
+    // extra stale credential before comparing the aggregate set.
+    for assertion in supplied {
+        assert_fence_context_tx(
+            connection,
+            &assertion.resource_key,
+            assertion.fencing_token,
+            mission_id,
+            mutation,
+            &assertion.owner,
+        )?;
+    }
+    let active = read_active_leases_for_attempt(
+        connection,
+        mission_id,
+        &mutation.task_id,
+        &mutation.attempt_id,
+    )?;
+    let scope_required = matches!(
+        mutation.next_state,
+        TaskAttemptState::Running
+            | TaskAttemptState::CandidateDone
+            | TaskAttemptState::Verifying
+            | TaskAttemptState::Accepted
+    );
+    if scope_required {
+        let expected = expected_attempt_scope_authority_tx(
+            connection,
+            mission_id,
+            &mutation.task_id,
+            &mutation.attempt_id,
+            false,
+        )?;
+        let active_resources = active
+            .iter()
+            .map(|lease| lease.resource_key.clone())
+            .collect::<Vec<_>>();
+        if active_resources != expected.resources {
+            return Err(LedgerError::LeaseContextMismatch {
+                resource: format!("attempt:{}", mutation.attempt_id),
+                reason: format!(
+                    "active lease resources differ from immutable task scope: expected {:?}, found {:?}",
+                    expected.resources, active_resources
+                ),
+            });
+        }
+        if let Some(owner) = expected.owner.as_deref() {
+            if active.iter().any(|lease| lease.owner != owner)
+                || supplied.iter().any(|assertion| assertion.owner != owner)
+            {
+                return Err(LedgerError::LeaseContextMismatch {
+                    resource: format!("attempt:{}", mutation.attempt_id),
+                    reason: "lease owner differs from prepared scope authority".to_string(),
+                });
+            }
+            if matches!(
+                mutation.next_state,
+                TaskAttemptState::Running | TaskAttemptState::CandidateDone
+            ) && actor != owner
+            {
+                return Err(LedgerError::LeaseContextMismatch {
+                    resource: format!("attempt:{}", mutation.attempt_id),
+                    reason: format!(
+                        "{} transition actor differs from prepared scope owner",
+                        if mutation.next_state == TaskAttemptState::Running {
+                            "Running"
+                        } else {
+                            "CandidateDone"
+                        }
+                    ),
+                });
+            }
+        }
+    }
+    if active.len() != supplied.len() {
+        return Err(LedgerError::LeaseContextMismatch {
+            resource: format!("attempt:{}", mutation.attempt_id),
+            reason: format!(
+                "complete active lease set required: ledger has {}, command supplied {}",
+                active.len(),
+                supplied.len()
+            ),
+        });
+    }
+    for (lease, assertion) in active.iter().zip(supplied) {
+        if lease.resource_key != assertion.resource_key {
+            return Err(LedgerError::LeaseContextMismatch {
+                resource: assertion.resource_key.clone(),
+                reason: format!(
+                    "lease resource set differs; expected {}",
+                    lease.resource_key
+                ),
+            });
+        }
+    }
+    Ok(())
 }
 
 fn assert_fence_tx(
@@ -1535,6 +5609,52 @@ fn assert_fence_tx(
             actual: other.map(|lease| lease.fencing_token),
         }),
     }
+}
+
+fn assert_fence_context_tx(
+    connection: &Connection,
+    resource_key: &str,
+    fencing_token: u64,
+    mission_id: &MissionId,
+    mutation: &TaskAttemptMutation,
+    owner: &str,
+) -> Result<(), LedgerError> {
+    let lease = read_lease(connection, resource_key)?;
+    let Some(lease) = lease else {
+        return Err(LedgerError::StaleFence {
+            resource: resource_key.to_string(),
+            expected: fencing_token,
+            actual: None,
+        });
+    };
+    if lease.status != LeaseStatus::Active
+        || lease.fencing_token != fencing_token
+        || lease.expires_at <= Utc::now()
+    {
+        return Err(LedgerError::StaleFence {
+            resource: resource_key.to_string(),
+            expected: fencing_token,
+            actual: Some(lease.fencing_token),
+        });
+    }
+    let mismatch = if lease.mission_id != *mission_id {
+        Some("mission_id")
+    } else if lease.task_id != mutation.task_id {
+        Some("task_id")
+    } else if lease.attempt_id != mutation.attempt_id {
+        Some("attempt_id")
+    } else if lease.owner != owner {
+        Some("owner")
+    } else {
+        None
+    };
+    if let Some(field) = mismatch {
+        return Err(LedgerError::LeaseContextMismatch {
+            resource: resource_key.to_string(),
+            reason: format!("{field} does not match the append command"),
+        });
+    }
+    Ok(())
 }
 
 fn read_outbox(
@@ -1619,9 +5739,17 @@ fn read_outbox(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::mission::{
+        RetryPolicy, TaskContract, TaskId, VerifierCheck, VerifierCheckKind,
+        CONTRACT_SCHEMA_VERSION,
+    };
+    use crate::routing::RiskLevel;
     use std::path::PathBuf;
     use std::sync::{Arc, Barrier};
     use std::thread;
+
+    #[cfg(unix)]
+    use std::os::unix::fs::symlink;
 
     fn mission(id: &str) -> Mission {
         let mut mission = Mission::new("OmegaOS", "test mission", PathBuf::from("/tmp"));
@@ -1644,6 +5772,687 @@ mod tests {
         );
         request.next_mission_state = Some(next);
         request
+    }
+
+    fn task(id: &str) -> TaskContract {
+        TaskContract {
+            schema_version: CONTRACT_SCHEMA_VERSION,
+            task_id: TaskId::new(id),
+            name: id.to_string(),
+            prompt: format!("implement {id}"),
+            acceptance_criteria: vec![format!("{id} is verified")],
+            verifier_checks: vec![VerifierCheck {
+                schema_version: CONTRACT_SCHEMA_VERSION,
+                check_id: format!("verify-{id}"),
+                kind: VerifierCheckKind::FileExists {
+                    path: format!("src/{id}.rs"),
+                },
+                timeout_secs: 10,
+            }],
+            required_capabilities: vec![],
+            scope: vec![format!("src/{id}.rs")],
+            risk: RiskLevel::Medium,
+            retry_policy: RetryPolicy::default(),
+            depends_on: vec![],
+        }
+    }
+
+    fn persist_first_plan(ledger: &MissionLedger, mission: &Mission, tasks: Vec<TaskContract>) {
+        let plan = PlanContract::new(mission.id.clone(), 1, 1, tasks, vec![], vec![]).unwrap();
+        let mut event = transition(&mission.id, 1, "persist-plan", MissionState::Classified);
+        event.plan = Some(plan);
+        ledger.append(event).unwrap();
+    }
+
+    fn advance_test_mission_to_running(
+        ledger: &MissionLedger,
+        mission: &Mission,
+        expected_version: u64,
+    ) -> u64 {
+        ledger
+            .append(transition(
+                &mission.id,
+                expected_version,
+                &format!("{}-planned", mission.id.as_str()),
+                MissionState::Planned,
+            ))
+            .unwrap();
+        ledger
+            .append(transition(
+                &mission.id,
+                expected_version + 1,
+                &format!("{}-running", mission.id.as_str()),
+                MissionState::Running,
+            ))
+            .unwrap();
+        expected_version + 2
+    }
+
+    fn append_test_scope_authority(
+        ledger: &MissionLedger,
+        mission: &Mission,
+        task_id: &str,
+        attempt_id: &str,
+        owner: &str,
+        selectors: Vec<String>,
+        expected_version: u64,
+        workspace_serial: u64,
+    ) -> (u64, Vec<String>) {
+        let claim = crate::scope::ScopeClaim {
+            session: owner.to_string(),
+            files_owned: selectors.clone(),
+            claimed_at: Utc::now(),
+            workspace_id: Some(format!("workspace-v1:1:{workspace_serial}")),
+            claim_id: Some(format!("{:064x}", workspace_serial.max(1))),
+        };
+        claim.validate_authority().unwrap();
+        let receipt = LedgerScopeAuthorityReceipt {
+            schema_version: 1,
+            mission_id: mission.id.clone(),
+            task_id: task_id.to_string(),
+            attempt_id: attempt_id.to_string(),
+            plan_revision: 1,
+            owner: owner.to_string(),
+            claim: claim.clone(),
+        };
+        let mut event = AppendEvent::new(
+            mission.id.clone(),
+            expected_version,
+            format!("orchestration:{attempt_id}:scope-authority"),
+            "omega-scope-authority",
+            "scope_claim_authority_prepared",
+        );
+        event.observation_plan_revision = Some(1);
+        event.payload = serde_json::to_value(receipt).unwrap();
+        ledger.append(event).unwrap();
+        let workspace = claim.workspace_id.as_deref().unwrap();
+        let mut resources = selectors
+            .iter()
+            .map(|selector| crate::scope::lease_resource_key(workspace, selector))
+            .collect::<Vec<_>>();
+        resources.sort();
+        (expected_version + 1, resources)
+    }
+
+    #[test]
+    fn child_running_requires_the_exact_atomic_parent_ack() {
+        let ledger = MissionLedger::open_in_memory().unwrap();
+        let parent = mission("m-child-ack-parent");
+        let child = mission("m-child-ack-child");
+        ledger
+            .create_mission(&parent, "parent-created", "test")
+            .unwrap();
+        ledger
+            .create_mission(&child, "child-created", "test")
+            .unwrap();
+        persist_first_plan(&ledger, &parent, vec![task("parent-task")]);
+        persist_first_plan(&ledger, &child, vec![task("child-task")]);
+        ledger
+            .append(transition(
+                &parent.id,
+                2,
+                "parent-planned",
+                MissionState::Planned,
+            ))
+            .unwrap();
+        ledger
+            .append(transition(
+                &child.id,
+                2,
+                "child-planned",
+                MissionState::Planned,
+            ))
+            .unwrap();
+        let parent_plan = ledger.active_plan(&parent.id).unwrap().unwrap();
+        let child_plan = ledger.active_plan(&child.id).unwrap().unwrap();
+        let workspace = crate::scope::canonical_workspace_identity(&child.working_dir).unwrap();
+        let binding = ChildMissionBinding {
+            schema_version: ACCEPTANCE_OBSERVATION_SCHEMA_VERSION,
+            parent_mission_id: parent.id.as_str().to_string(),
+            parent_plan_revision: parent_plan.revision,
+            parent_plan_digest: parent_plan.content_digest,
+            child_mission_id: child.id.as_str().to_string(),
+            child_plan_revision: child_plan.revision,
+            child_plan_digest: child_plan.content_digest,
+            runtime_session: "OmegaOS-worker-orphan".to_string(),
+            runtime_manifest_digest: "ef".repeat(32),
+            project: "OmegaOS".to_string(),
+            canonical_workspace_id: workspace,
+            runtime_owner: "OmegaOS-worker-orphan".to_string(),
+            runtime_task_id: "child-task".to_string(),
+            parent_ack_event_id: "missing-parent-ack".to_string(),
+            linked_by: "oracle-OmegaOS".to_string(),
+        };
+        let mut event = AppendEvent::new(
+            child.id.clone(),
+            3,
+            "child-mission-binding:orphan",
+            "omega-child-mission-linker",
+            "child_parent_binding_prepared",
+        );
+        event.observation_plan_revision = Some(1);
+        event.correlation_id = Some(binding.runtime_session.clone());
+        event.payload = serde_json::to_value(binding).unwrap();
+        {
+            let mut connection = ledger.connection.lock().unwrap();
+            let transaction = connection
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .unwrap();
+            append_plan_observation_tx(&transaction, event).unwrap();
+            transaction.commit().unwrap();
+        }
+        assert!(ledger
+            .append(transition(
+                &child.id,
+                4,
+                "child-running-without-ack",
+                MissionState::Running,
+            ))
+            .is_err());
+        assert_eq!(
+            ledger.mission(&child.id).unwrap().unwrap().state,
+            MissionState::Planned
+        );
+    }
+
+    /// Write the exact schema deployed before event schema v2. Attempt rows
+    /// intentionally contain information that the old events cannot prove.
+    fn create_schema_v1_fixture(
+        path: &Path,
+        mission_count: usize,
+        attempt_count: usize,
+    ) -> Vec<Mission> {
+        assert!(mission_count > 0);
+        assert!(attempt_count >= mission_count);
+        let connection = Connection::open(path).unwrap();
+        connection
+            .execute_batch(
+                r#"
+                PRAGMA foreign_keys = ON;
+                CREATE TABLE missions (
+                    mission_id TEXT PRIMARY KEY,
+                    mission_json TEXT NOT NULL,
+                    state_json TEXT NOT NULL,
+                    version INTEGER NOT NULL,
+                    active_plan_revision INTEGER,
+                    projection_hash TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE TABLE events (
+                    event_id TEXT PRIMARY KEY,
+                    mission_id TEXT NOT NULL,
+                    task_id TEXT,
+                    attempt_id TEXT,
+                    sequence INTEGER NOT NULL,
+                    expected_version INTEGER NOT NULL,
+                    schema_version INTEGER NOT NULL,
+                    idempotency_key TEXT NOT NULL,
+                    actor TEXT NOT NULL,
+                    provider TEXT,
+                    causation_id TEXT,
+                    correlation_id TEXT,
+                    fencing_token INTEGER,
+                    plan_revision INTEGER,
+                    recorded_at TEXT NOT NULL,
+                    kind TEXT NOT NULL,
+                    payload_json TEXT NOT NULL,
+                    mission_state_json TEXT,
+                    UNIQUE(mission_id, sequence),
+                    UNIQUE(mission_id, idempotency_key),
+                    FOREIGN KEY(mission_id) REFERENCES missions(mission_id)
+                );
+                CREATE TABLE plans (
+                    mission_id TEXT NOT NULL,
+                    plan_id TEXT NOT NULL,
+                    revision INTEGER NOT NULL,
+                    contract_json TEXT NOT NULL,
+                    content_digest TEXT NOT NULL,
+                    PRIMARY KEY(mission_id, revision),
+                    UNIQUE(mission_id, content_digest),
+                    FOREIGN KEY(mission_id) REFERENCES missions(mission_id)
+                );
+                CREATE TABLE task_attempts (
+                    attempt_id TEXT PRIMARY KEY,
+                    mission_id TEXT NOT NULL,
+                    task_id TEXT NOT NULL,
+                    plan_revision INTEGER NOT NULL,
+                    state_json TEXT NOT NULL,
+                    version INTEGER NOT NULL,
+                    fencing_token INTEGER,
+                    updated_at TEXT NOT NULL,
+                    UNIQUE(mission_id, task_id, attempt_id),
+                    FOREIGN KEY(mission_id) REFERENCES missions(mission_id)
+                );
+                "#,
+            )
+            .unwrap();
+
+        let base = attempt_count / mission_count;
+        let remainder = attempt_count % mission_count;
+        let origin = Utc::now() - ChronoDuration::hours(1);
+        let mut missions = Vec::new();
+        let mut global_attempt = 0_usize;
+        for mission_index in 0..mission_count {
+            let attempts_for_mission = base + usize::from(mission_index < remainder);
+            let mission = mission(&format!("legacy-mission-{mission_index}"));
+            let tasks = (0..attempts_for_mission)
+                .map(|task_index| task(&format!("legacy-task-{mission_index}-{task_index}")))
+                .collect::<Vec<_>>();
+            let plan = PlanContract::new(
+                mission.id.clone(),
+                1,
+                1,
+                tasks.clone(),
+                Vec::new(),
+                Vec::new(),
+            )
+            .unwrap();
+            let final_version = 2_u64 + attempts_for_mission as u64;
+            let created_at = origin + ChronoDuration::seconds((mission_index * 100) as i64);
+            let updated_at = created_at + ChronoDuration::seconds(final_version as i64 - 1);
+            let hash = projection_hash(
+                &mission.id,
+                MissionState::Classified,
+                final_version,
+                Some(1),
+            )
+            .unwrap();
+            connection
+                .execute(
+                    "INSERT INTO missions (
+                        mission_id, mission_json, state_json, version,
+                        active_plan_revision, projection_hash, created_at, updated_at
+                     ) VALUES (?1, ?2, ?3, ?4, 1, ?5, ?6, ?7)",
+                    params![
+                        mission.id.as_str(),
+                        serde_json::to_string(&mission).unwrap(),
+                        serde_json::to_string(&MissionState::Classified).unwrap(),
+                        as_i64(final_version).unwrap(),
+                        hash,
+                        created_at.to_rfc3339(),
+                        updated_at.to_rfc3339(),
+                    ],
+                )
+                .unwrap();
+            connection
+                .execute(
+                    "INSERT INTO plans (
+                        mission_id, plan_id, revision, contract_json, content_digest
+                     ) VALUES (?1, ?2, 1, ?3, ?4)",
+                    params![
+                        mission.id.as_str(),
+                        plan.plan_id.0.as_str(),
+                        serde_json::to_string(&plan).unwrap(),
+                        plan.content_digest,
+                    ],
+                )
+                .unwrap();
+
+            let insert_event = |sequence: u64,
+                                task_id: Option<&str>,
+                                attempt_id: Option<&str>,
+                                plan_revision: Option<u64>,
+                                kind: &str,
+                                payload: Value,
+                                state: Option<MissionState>| {
+                let recorded_at = created_at + ChronoDuration::seconds(sequence as i64 - 1);
+                connection
+                    .execute(
+                        "INSERT INTO events (
+                            event_id, mission_id, task_id, attempt_id, sequence,
+                            expected_version, schema_version, idempotency_key, actor,
+                            provider, causation_id, correlation_id, fencing_token,
+                            plan_revision, recorded_at, kind, payload_json,
+                            mission_state_json
+                         ) VALUES (
+                            ?1, ?2, ?3, ?4, ?5, ?6, 1, ?7, 'legacy-engine',
+                            NULL, NULL, NULL, NULL, ?8, ?9, ?10, ?11, ?12
+                         )",
+                        params![
+                            format!("legacy-event-{mission_index}-{sequence}"),
+                            mission.id.as_str(),
+                            task_id,
+                            attempt_id,
+                            as_i64(sequence).unwrap(),
+                            as_i64(sequence - 1).unwrap(),
+                            format!("legacy-key-{mission_index}-{sequence}"),
+                            plan_revision.map(as_i64).transpose().unwrap(),
+                            recorded_at.to_rfc3339(),
+                            kind,
+                            serde_json::to_string(&payload).unwrap(),
+                            state
+                                .map(|value| serde_json::to_string(&value))
+                                .transpose()
+                                .unwrap(),
+                        ],
+                    )
+                    .unwrap();
+                recorded_at
+            };
+            insert_event(
+                1,
+                None,
+                None,
+                None,
+                "mission_created",
+                serde_json::to_value(&mission).unwrap(),
+                Some(MissionState::Created),
+            );
+            insert_event(
+                2,
+                None,
+                None,
+                Some(1),
+                "plan_accepted",
+                Value::Null,
+                Some(MissionState::Classified),
+            );
+            for (task_index, task) in tasks.iter().enumerate() {
+                let sequence = 3 + task_index as u64;
+                let attempt_id = format!("legacy-attempt-{mission_index}-{task_index}");
+                let attempt_updated_at = insert_event(
+                    sequence,
+                    Some(task.task_id.as_str()),
+                    Some(&attempt_id),
+                    Some(1),
+                    "task_attempt_historical",
+                    Value::Null,
+                    None,
+                );
+                let historical_state = match global_attempt {
+                    0 => TaskAttemptState::Accepted,
+                    1 => TaskAttemptState::Running,
+                    _ => TaskAttemptState::CandidateDone,
+                };
+                connection
+                    .execute(
+                        "INSERT INTO task_attempts (
+                            attempt_id, mission_id, task_id, plan_revision,
+                            state_json, version, fencing_token, updated_at
+                         ) VALUES (?1, ?2, ?3, 1, ?4, ?5, NULL, ?6)",
+                        params![
+                            attempt_id,
+                            mission.id.as_str(),
+                            task.task_id.as_str(),
+                            serde_json::to_string(&historical_state).unwrap(),
+                            as_i64(7 + global_attempt as u64).unwrap(),
+                            attempt_updated_at.to_rfc3339(),
+                        ],
+                    )
+                    .unwrap();
+                global_attempt += 1;
+            }
+            missions.push(mission);
+        }
+        assert_eq!(global_attempt, attempt_count);
+        missions
+    }
+
+    #[test]
+    fn ledger_ids_are_fixed_format_and_unique_under_parallel_generation() {
+        const WORKERS: usize = 16;
+        const IDS_PER_WORKER: usize = 5_000;
+        let barrier = Arc::new(Barrier::new(WORKERS));
+        let joins: Vec<_> = (0..WORKERS)
+            .map(|_| {
+                let barrier = Arc::clone(&barrier);
+                thread::spawn(move || {
+                    barrier.wait();
+                    (0..IDS_PER_WORKER)
+                        .map(|_| stable_id("event"))
+                        .collect::<Vec<_>>()
+                })
+            })
+            .collect();
+        let ids: std::collections::HashSet<String> = joins
+            .into_iter()
+            .flat_map(|join| join.join().unwrap())
+            .collect();
+        assert_eq!(ids.len(), WORKERS * IDS_PER_WORKER);
+        assert!(ids.iter().all(|id| {
+            let Some(hex) = id.strip_prefix("event-") else {
+                return false;
+            };
+            hex.len() == 32
+                && hex
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        }));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn filesystem_ledger_refuses_symlinked_or_non_regular_paths() {
+        let temp = tempfile::tempdir().unwrap();
+        let target = temp.path().join("target.sqlite");
+        drop(MissionLedger::open(&target).unwrap());
+
+        let file_link = temp.path().join("linked.sqlite");
+        symlink(&target, &file_link).unwrap();
+        assert!(matches!(
+            MissionLedger::open(&file_link),
+            Err(LedgerError::InvalidInput(message)) if message.contains("symlink")
+        ));
+
+        let directory_path = temp.path().join("directory.sqlite");
+        fs::create_dir(&directory_path).unwrap();
+        assert!(matches!(
+            MissionLedger::open(&directory_path),
+            Err(LedgerError::InvalidInput(message)) if message.contains("not a regular file")
+        ));
+
+        let real_parent = temp.path().join("real-parent");
+        fs::create_dir(&real_parent).unwrap();
+        let linked_parent = temp.path().join("linked-parent");
+        symlink(&real_parent, &linked_parent).unwrap();
+        assert!(matches!(
+            MissionLedger::open(linked_parent.join("mission.sqlite")),
+            Err(LedgerError::InvalidInput(message)) if message.contains("parent") && message.contains("symlink")
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn filesystem_ledger_refuses_hardlinked_database_and_sidecars_before_sqlite_mutation() {
+        let temp = tempfile::tempdir().unwrap();
+        let external = temp.path().join("external-main");
+        fs::write(&external, b"external-main-sentinel").unwrap();
+        let hardlinked = temp.path().join("hardlinked.sqlite");
+        fs::hard_link(&external, &hardlinked).unwrap();
+        assert!(matches!(
+            MissionLedger::open(&hardlinked),
+            Err(LedgerError::InvalidInput(message)) if message.contains("hard links")
+        ));
+        assert_eq!(fs::read(&external).unwrap(), b"external-main-sentinel");
+
+        let path = temp.path().join("sidecar.sqlite");
+        drop(MissionLedger::open(&path).unwrap());
+        for suffix in ["-wal", "-shm"] {
+            let sidecar = sqlite_sidecar(&path, suffix);
+            let _ = fs::remove_file(&sidecar);
+            let source = temp
+                .path()
+                .join(format!("external{}", suffix.trim_start_matches('-')));
+            let sentinel = format!("sentinel-{suffix}");
+            fs::write(&source, sentinel.as_bytes()).unwrap();
+            fs::hard_link(&source, &sidecar).unwrap();
+            assert!(matches!(
+                MissionLedger::open(&path),
+                Err(LedgerError::InvalidInput(message)) if message.contains("hard links")
+            ));
+            assert_eq!(fs::read(&source).unwrap(), sentinel.as_bytes());
+            fs::remove_file(&sidecar).unwrap();
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn filesystem_ledger_enforces_owner_only_database_and_sidecar_modes() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("private.sqlite");
+        {
+            let ledger = MissionLedger::open(&path).unwrap();
+            let mission = mission("m-private-ledger");
+            ledger
+                .create_mission(&mission, "create-private-ledger", "test")
+                .unwrap();
+        }
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o666)).unwrap();
+
+        let ledger = MissionLedger::open(&path).unwrap();
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        let mission = mission("m-private-ledger-second-write");
+        ledger
+            .create_mission(&mission, "create-private-ledger-second-write", "test")
+            .unwrap();
+
+        let sidecars = [sqlite_sidecar(&path, "-wal"), sqlite_sidecar(&path, "-shm")];
+        assert!(
+            sidecars.iter().all(|sidecar| sidecar.exists()),
+            "WAL mode must expose both sidecars while the ledger is open"
+        );
+        for sidecar in sidecars {
+            assert_eq!(
+                fs::metadata(sidecar).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+    }
+
+    #[test]
+    fn schema_v1_14_mission_72_attempt_fixture_is_quarantined_and_requeueable() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("legacy-v1.sqlite");
+        let missions = create_schema_v1_fixture(&path, 14, 72);
+
+        {
+            let ledger = MissionLedger::open(&path).unwrap();
+            assert_eq!(ledger.legacy_task_attempt_count().unwrap(), 72);
+            assert!(ledger.task_attempts(&missions[0].id).unwrap().is_empty());
+            assert!(ledger
+                .replay_task_attempts(&missions[0].id)
+                .unwrap()
+                .is_empty());
+            assert!(ledger.task_attempt("legacy-attempt-0-0").unwrap().is_none());
+
+            let historical = ledger.legacy_task_attempts(&missions[0].id).unwrap();
+            assert_eq!(historical.len(), 6);
+            assert_eq!(historical[0].attempt_id, "legacy-attempt-0-0");
+            assert_eq!(historical[0].historical_state, TaskAttemptState::Accepted);
+            assert_eq!(historical[0].historical_version, 7);
+            assert_eq!(historical[0].provenance, LEGACY_ATTEMPT_PROVENANCE);
+            assert_eq!(historical[0].source, "schema_v1_event_projection");
+            assert_eq!(historical[1].historical_state, TaskAttemptState::Running);
+
+            let projection = ledger.mission(&missions[0].id).unwrap().unwrap();
+            let mut requeue = AppendEvent::new(
+                missions[0].id.clone(),
+                projection.version,
+                "requeue-after-schema-v1-quarantine",
+                "verifier",
+                "task_attempt_requeued_for_reverification",
+            );
+            requeue.task_attempt = Some(TaskAttemptMutation {
+                task_id: "legacy-task-0-0".to_string(),
+                attempt_id: "legacy-attempt-0-0".to_string(),
+                plan_revision: 1,
+                expected_version: 0,
+                next_state: TaskAttemptState::Queued,
+            });
+            let appended = ledger.append(requeue.clone()).unwrap();
+            assert_eq!(appended.event.schema_version, SCHEMA_VERSION);
+            assert_eq!(
+                ledger
+                    .task_attempt("legacy-attempt-0-0")
+                    .unwrap()
+                    .unwrap()
+                    .state,
+                TaskAttemptState::Queued
+            );
+            assert!(ledger.append(requeue).unwrap().idempotent_replay);
+
+            let mut active_requeue = AppendEvent::new(
+                missions[0].id.clone(),
+                appended.projection.version,
+                "requeue-active-schema-v1-attempt",
+                "verifier",
+                "task_attempt_requeued_for_reverification",
+            );
+            active_requeue.task_attempt = Some(TaskAttemptMutation {
+                task_id: "legacy-task-0-1".to_string(),
+                attempt_id: "legacy-attempt-0-1".to_string(),
+                plan_revision: 1,
+                expected_version: 0,
+                next_state: TaskAttemptState::Queued,
+            });
+            ledger.append(active_requeue).unwrap();
+            assert_eq!(ledger.task_attempts(&missions[0].id).unwrap().len(), 2);
+            assert_eq!(ledger.legacy_task_attempt_count().unwrap(), 72);
+        }
+
+        // Migration and quarantine are idempotent. The schema-v2 requeue stays
+        // authoritative while the exact schema-v1 Accepted row stays archived.
+        let reopened = MissionLedger::open(&path).unwrap();
+        assert_eq!(reopened.legacy_task_attempt_count().unwrap(), 72);
+        assert_eq!(
+            reopened
+                .task_attempt("legacy-attempt-0-0")
+                .unwrap()
+                .unwrap()
+                .state,
+            TaskAttemptState::Queued
+        );
+        assert_eq!(
+            reopened.legacy_task_attempts(&missions[0].id).unwrap()[0].historical_state,
+            TaskAttemptState::Accepted
+        );
+    }
+
+    #[test]
+    fn legacy_archive_failure_rolls_back_before_authoritative_rows_are_deleted() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("legacy-rollback.sqlite");
+        create_schema_v1_fixture(&path, 1, 1);
+        {
+            let connection = Connection::open(&path).unwrap();
+            connection
+                .execute_batch(
+                    "CREATE TABLE legacy_task_attempts (
+                        attempt_id TEXT PRIMARY KEY,
+                        mission_id TEXT NOT NULL,
+                        task_id TEXT NOT NULL,
+                        plan_revision INTEGER NOT NULL,
+                        state_json TEXT NOT NULL,
+                        version INTEGER NOT NULL,
+                        fencing_token INTEGER,
+                        updated_at TEXT NOT NULL,
+                        imported_at TEXT NOT NULL,
+                        provenance TEXT NOT NULL CHECK (provenance = 'forced_failure'),
+                        source TEXT NOT NULL
+                    );",
+                )
+                .unwrap();
+        }
+
+        assert!(matches!(
+            MissionLedger::open(&path),
+            Err(LedgerError::Sqlite(_))
+        ));
+        let connection = Connection::open(&path).unwrap();
+        let authoritative_count: i64 = connection
+            .query_row("SELECT COUNT(*) FROM task_attempts", [], |row| row.get(0))
+            .unwrap();
+        let archived_count: i64 = connection
+            .query_row("SELECT COUNT(*) FROM legacy_task_attempts", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(authoritative_count, 1);
+        assert_eq!(archived_count, 0);
     }
 
     #[test]
@@ -1686,6 +6495,51 @@ mod tests {
                 actual: 2
             })
         ));
+    }
+
+    #[test]
+    fn reusing_an_idempotency_key_for_a_different_command_is_rejected() {
+        let ledger = MissionLedger::open_in_memory().unwrap();
+        let mission = mission("m-idempotency-collision");
+        ledger
+            .create_mission(&mission, "create-idempotency-collision", "test")
+            .unwrap();
+        ledger
+            .append(transition(
+                &mission.id,
+                1,
+                "same-key",
+                MissionState::Classified,
+            ))
+            .unwrap();
+
+        let collision = transition(&mission.id, 1, "same-key", MissionState::Cancelled);
+        assert!(matches!(
+            ledger.append(collision),
+            Err(LedgerError::IdempotencyConflict { key, .. }) if key == "same-key"
+        ));
+    }
+
+    #[test]
+    fn canonical_payload_key_order_replays_the_same_command() {
+        let ledger = MissionLedger::open_in_memory().unwrap();
+        let mission = mission("m-canonical-idempotency");
+        ledger
+            .create_mission(&mission, "create-canonical-idempotency", "test")
+            .unwrap();
+        let mut first = transition(&mission.id, 1, "canonical", MissionState::Classified);
+        let mut first_payload = serde_json::Map::new();
+        first_payload.insert("b".to_string(), Value::from(2));
+        first_payload.insert("a".to_string(), Value::from(1));
+        first.payload = Value::Object(first_payload);
+        let mut replay = transition(&mission.id, 1, "canonical", MissionState::Classified);
+        let mut replay_payload = serde_json::Map::new();
+        replay_payload.insert("a".to_string(), Value::from(1));
+        replay_payload.insert("b".to_string(), Value::from(2));
+        replay.payload = Value::Object(replay_payload);
+
+        ledger.append(first).unwrap();
+        assert!(ledger.append(replay).unwrap().idempotent_replay);
     }
 
     #[test]
@@ -1765,14 +6619,139 @@ mod tests {
     }
 
     #[test]
+    fn projection_at_replays_the_exact_historical_prefix_and_hash() {
+        let ledger = MissionLedger::open_in_memory().unwrap();
+        let mission = mission("m-historical-projection");
+        let created = ledger
+            .create_mission(&mission, "create-historical-projection", "test")
+            .unwrap();
+        ledger
+            .append(transition(
+                &mission.id,
+                1,
+                "classify-after-history",
+                MissionState::Classified,
+            ))
+            .unwrap();
+
+        let historical = ledger.projection_at(&mission.id, 1).unwrap().unwrap();
+        assert_eq!(historical, created.projection);
+        assert_ne!(historical.projection_hash, "forged-stale-hash");
+        assert!(ledger.projection_at(&mission.id, 3).unwrap().is_none());
+        assert!(ledger
+            .projection_at(&MissionId("absent".to_string()), 1)
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn stored_projection_hash_tampering_is_rejected_before_replay() {
+        let ledger = MissionLedger::open_in_memory().unwrap();
+        let mission = mission("m-projection-hash-tamper");
+        ledger
+            .create_mission(&mission, "create-projection-hash-tamper", "test")
+            .unwrap();
+        ledger
+            .connection
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE missions SET projection_hash = 'forged' WHERE mission_id = ?1",
+                params![mission.id.as_str()],
+            )
+            .unwrap();
+
+        assert!(matches!(
+            ledger.mission(&mission.id),
+            Err(LedgerError::ProjectionHashMismatch { stored, .. }) if stored == "forged"
+        ));
+    }
+
+    #[test]
+    fn recomputed_hash_cannot_hide_materialized_projection_divergence() {
+        let ledger = MissionLedger::open_in_memory().unwrap();
+        let mission = mission("m-materialized-divergence");
+        ledger
+            .create_mission(&mission, "create-materialized-divergence", "test")
+            .unwrap();
+        ledger
+            .append(transition(
+                &mission.id,
+                1,
+                "classify-materialized-divergence",
+                MissionState::Classified,
+            ))
+            .unwrap();
+        let forged_hash = projection_hash(&mission.id, MissionState::Cancelled, 2, None).unwrap();
+        ledger
+            .connection
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE missions SET state_json = ?1, projection_hash = ?2 WHERE mission_id = ?3",
+                params![
+                    serde_json::to_string(&MissionState::Cancelled).unwrap(),
+                    forged_hash,
+                    mission.id.as_str()
+                ],
+            )
+            .unwrap();
+
+        assert!(matches!(
+            ledger.mission(&mission.id),
+            Err(LedgerError::ReplayDivergence { reason, .. })
+                if reason.contains("stored state/version/plan/hash/time")
+        ));
+    }
+
+    #[test]
+    fn replay_rejects_tampered_event_version_binding() {
+        let ledger = MissionLedger::open_in_memory().unwrap();
+        let mission = mission("m-event-version-tamper");
+        ledger
+            .create_mission(&mission, "create-event-version-tamper", "test")
+            .unwrap();
+        ledger
+            .append(transition(
+                &mission.id,
+                1,
+                "classify-event-version-tamper",
+                MissionState::Classified,
+            ))
+            .unwrap();
+        ledger
+            .connection
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE events SET expected_version = 9 WHERE mission_id = ?1 AND sequence = 2",
+                params![mission.id.as_str()],
+            )
+            .unwrap();
+
+        assert!(matches!(
+            ledger.replay(&mission.id),
+            Err(LedgerError::ReplayDivergence { reason, .. })
+                if reason.contains("expected_version")
+        ));
+    }
+
+    #[test]
     fn replay_reconstructs_plan_revision_from_typed_event_field() {
         let ledger = MissionLedger::open_in_memory().unwrap();
         let mission = mission("m-plan-replay");
         ledger
             .create_mission(&mission, "create-plan-replay", "test")
             .unwrap();
-        let plan = PlanContract::new(mission.id.clone(), 1, 1, Vec::new(), Vec::new(), Vec::new())
-            .unwrap();
+        let plan = PlanContract::new(
+            mission.id.clone(),
+            1,
+            1,
+            vec![task("task-a")],
+            Vec::new(),
+            Vec::new(),
+        )
+        .unwrap();
         let mut event = AppendEvent::new(
             mission.id.clone(),
             1,
@@ -1787,6 +6766,313 @@ mod tests {
         assert_eq!(materialized.active_plan_revision, Some(1));
         assert_eq!(replayed.active_plan_revision, Some(1));
         assert_eq!(materialized.projection_hash, replayed.projection_hash);
+    }
+
+    #[test]
+    fn task_attempt_event_is_complete_and_idempotent_replay_is_projection_neutral() {
+        let ledger = MissionLedger::open_in_memory().unwrap();
+        let mission = mission("m-attempt-event-authority");
+        ledger
+            .create_mission(&mission, "create-attempt-event-authority", "test")
+            .unwrap();
+        persist_first_plan(&ledger, &mission, vec![task("task-a")]);
+
+        let mutation = TaskAttemptMutation {
+            task_id: "task-a".to_string(),
+            attempt_id: "attempt-authoritative".to_string(),
+            plan_revision: 1,
+            expected_version: 0,
+            next_state: TaskAttemptState::Queued,
+        };
+        let mut request = AppendEvent::new(
+            mission.id.clone(),
+            2,
+            "queue-authoritative",
+            "engine",
+            "task_queued",
+        );
+        request.task_attempt = Some(mutation.clone());
+        let first = ledger.append(request.clone()).unwrap();
+        let duplicate = ledger.append(request).unwrap();
+
+        assert_eq!(first.event.schema_version, SCHEMA_VERSION);
+        assert_eq!(first.event.task_attempt_mutation, Some(mutation));
+        let resulting = first.event.resulting_task_attempt.as_ref().unwrap();
+        assert_eq!(resulting.state, TaskAttemptState::Queued);
+        assert_eq!(resulting.version, 1);
+        assert!(duplicate.idempotent_replay);
+        assert_eq!(duplicate.event.event_id, first.event.event_id);
+        assert_eq!(ledger.events(&mission.id).unwrap().len(), 3);
+        assert_eq!(
+            ledger.replay_task_attempts(&mission.id).unwrap(),
+            ledger.task_attempts(&mission.id).unwrap()
+        );
+    }
+
+    #[test]
+    fn tampered_or_missing_attempt_projection_is_rejected_and_rebuild_restores_truth() {
+        let ledger = MissionLedger::open_in_memory().unwrap();
+        let mission = mission("m-attempt-rebuild");
+        ledger
+            .create_mission(&mission, "create-attempt-rebuild", "test")
+            .unwrap();
+        persist_first_plan(&ledger, &mission, vec![task("task-a")]);
+        let mut queued = AppendEvent::new(
+            mission.id.clone(),
+            2,
+            "queue-attempt-rebuild",
+            "engine",
+            "task_queued",
+        );
+        queued.task_attempt = Some(TaskAttemptMutation {
+            task_id: "task-a".to_string(),
+            attempt_id: "attempt-rebuild".to_string(),
+            plan_revision: 1,
+            expected_version: 0,
+            next_state: TaskAttemptState::Queued,
+        });
+        ledger.append(queued).unwrap();
+
+        ledger
+            .connection
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE task_attempts SET state_json = ?1, version = 99
+                 WHERE attempt_id = 'attempt-rebuild'",
+                params![serde_json::to_string(&TaskAttemptState::Accepted).unwrap()],
+            )
+            .unwrap();
+        assert!(matches!(
+            ledger.mission(&mission.id),
+            Err(LedgerError::ReplayDivergence { reason, .. })
+                if reason.contains("materialized task attempts")
+        ));
+        let replayed = ledger.replay_task_attempts(&mission.id).unwrap();
+        assert_eq!(replayed[0].state, TaskAttemptState::Queued);
+        assert_eq!(replayed[0].version, 1);
+
+        ledger.rebuild_projections(&mission.id).unwrap();
+        assert_eq!(
+            ledger.task_attempt("attempt-rebuild").unwrap().unwrap(),
+            replayed[0]
+        );
+
+        ledger
+            .connection
+            .lock()
+            .unwrap()
+            .execute(
+                "DELETE FROM task_attempts WHERE attempt_id = 'attempt-rebuild'",
+                [],
+            )
+            .unwrap();
+        assert!(matches!(
+            ledger.task_attempt("attempt-rebuild"),
+            Err(LedgerError::ReplayDivergence { reason, .. })
+                if reason.contains("materialized task attempts")
+        ));
+        ledger.rebuild_projections(&mission.id).unwrap();
+        assert_eq!(ledger.task_attempts(&mission.id).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn orphan_attempt_projection_is_rejected_and_removed_by_rebuild() {
+        let ledger = MissionLedger::open_in_memory().unwrap();
+        let mission = mission("m-attempt-orphan");
+        ledger
+            .create_mission(&mission, "create-attempt-orphan", "test")
+            .unwrap();
+        persist_first_plan(&ledger, &mission, vec![task("task-a")]);
+        let now = Utc::now();
+        ledger
+            .connection
+            .lock()
+            .unwrap()
+            .execute(
+                "INSERT INTO task_attempts (
+                    attempt_id, mission_id, task_id, plan_revision, state_json,
+                    version, fencing_token, updated_at
+                 ) VALUES ('orphan-attempt', ?1, 'task-a', 1, ?2, 1, NULL, ?3)",
+                params![
+                    mission.id.as_str(),
+                    serde_json::to_string(&TaskAttemptState::Queued).unwrap(),
+                    now.to_rfc3339(),
+                ],
+            )
+            .unwrap();
+
+        assert!(matches!(
+            ledger.task_attempts(&mission.id),
+            Err(LedgerError::ReplayDivergence { reason, .. })
+                if reason.contains("materialized task attempts")
+        ));
+        ledger.rebuild_projections(&mission.id).unwrap();
+        assert!(ledger.task_attempts(&mission.id).unwrap().is_empty());
+    }
+
+    #[test]
+    fn tampered_authoritative_attempt_event_fails_replay_and_cannot_rebuild() {
+        let ledger = MissionLedger::open_in_memory().unwrap();
+        let mission = mission("m-attempt-event-tamper");
+        ledger
+            .create_mission(&mission, "create-attempt-event-tamper", "test")
+            .unwrap();
+        persist_first_plan(&ledger, &mission, vec![task("task-a")]);
+        let mut queued = AppendEvent::new(
+            mission.id.clone(),
+            2,
+            "queue-attempt-event-tamper",
+            "engine",
+            "task_queued",
+        );
+        queued.task_attempt = Some(TaskAttemptMutation {
+            task_id: "task-a".to_string(),
+            attempt_id: "attempt-event-tamper".to_string(),
+            plan_revision: 1,
+            expected_version: 0,
+            next_state: TaskAttemptState::Queued,
+        });
+        ledger.append(queued).unwrap();
+
+        let mut projection: TaskAttemptProjection = {
+            let connection = ledger.connection.lock().unwrap();
+            let json: String = connection
+                .query_row(
+                    "SELECT task_attempt_projection_json FROM events
+                     WHERE attempt_id = 'attempt-event-tamper'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            serde_json::from_str(&json).unwrap()
+        };
+        projection.state = TaskAttemptState::Accepted;
+        projection.version = 99;
+        ledger
+            .connection
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE events SET task_attempt_projection_json = ?1
+                 WHERE attempt_id = 'attempt-event-tamper'",
+                params![serde_json::to_string(&projection).unwrap()],
+            )
+            .unwrap();
+
+        assert!(matches!(
+            ledger.replay_task_attempts(&mission.id),
+            Err(LedgerError::ReplayDivergence { reason, .. })
+                if reason.contains("resulting task attempt")
+        ));
+        assert!(matches!(
+            ledger.rebuild_projections(&mission.id),
+            Err(LedgerError::ReplayDivergence { .. })
+        ));
+    }
+
+    #[test]
+    fn opening_a_ledger_rejects_attempt_projection_drift() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("attempt-integrity.sqlite");
+        let mission = mission("m-attempt-open-integrity");
+        {
+            let ledger = MissionLedger::open(&path).unwrap();
+            ledger
+                .create_mission(&mission, "create-attempt-open-integrity", "test")
+                .unwrap();
+            persist_first_plan(&ledger, &mission, vec![task("task-a")]);
+            let mut queued = AppendEvent::new(
+                mission.id.clone(),
+                2,
+                "queue-attempt-open-integrity",
+                "engine",
+                "task_queued",
+            );
+            queued.task_attempt = Some(TaskAttemptMutation {
+                task_id: "task-a".to_string(),
+                attempt_id: "attempt-open-integrity".to_string(),
+                plan_revision: 1,
+                expected_version: 0,
+                next_state: TaskAttemptState::Queued,
+            });
+            ledger.append(queued).unwrap();
+        }
+        {
+            let connection = Connection::open(&path).unwrap();
+            connection
+                .execute(
+                    "UPDATE task_attempts SET state_json = ?1, version = 99
+                     WHERE attempt_id = 'attempt-open-integrity'",
+                    params![serde_json::to_string(&TaskAttemptState::Accepted).unwrap()],
+                )
+                .unwrap();
+        }
+
+        assert!(matches!(
+            MissionLedger::open(&path),
+            Err(LedgerError::ReplayDivergence { reason, .. })
+                if reason.contains("materialized task attempts")
+        ));
+    }
+
+    #[test]
+    fn schema_v1_attempt_events_are_historical_and_never_replay_as_authority() {
+        let ledger = MissionLedger::open_in_memory().unwrap();
+        let mission = mission("m-legacy-attempt-event");
+        ledger
+            .create_mission(&mission, "create-legacy-attempt-event", "test")
+            .unwrap();
+        persist_first_plan(&ledger, &mission, vec![task("task-a")]);
+        ledger
+            .connection
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE events
+                 SET schema_version = ?1,
+                     plan_revision = CASE WHEN sequence = 2 THEN 1 ELSE plan_revision END
+                 WHERE sequence IN (1, 2)",
+                params![i64::from(LEGACY_SCHEMA_VERSION)],
+            )
+            .unwrap();
+        assert_eq!(ledger.replay(&mission.id).unwrap().version, 2);
+
+        let mut queued = AppendEvent::new(
+            mission.id.clone(),
+            2,
+            "queue-legacy-attempt-event",
+            "engine",
+            "task_queued",
+        );
+        queued.task_attempt = Some(TaskAttemptMutation {
+            task_id: "task-a".to_string(),
+            attempt_id: "attempt-legacy".to_string(),
+            plan_revision: 1,
+            expected_version: 0,
+            next_state: TaskAttemptState::Queued,
+        });
+        ledger.append(queued).unwrap();
+        ledger
+            .connection
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE events
+                 SET schema_version = ?1,
+                     task_attempt_mutation_json = NULL,
+                     task_attempt_projection_json = NULL
+                 WHERE attempt_id = 'attempt-legacy'",
+                params![i64::from(LEGACY_SCHEMA_VERSION)],
+            )
+            .unwrap();
+        assert_eq!(ledger.replay(&mission.id).unwrap().version, 3);
+        assert!(ledger.replay_task_attempts(&mission.id).unwrap().is_empty());
+        assert!(matches!(
+            ledger.task_attempt("attempt-legacy"),
+            Err(LedgerError::ReplayDivergence { reason, .. })
+                if reason.contains("materialized task attempts")
+        ));
     }
 
     #[test]
@@ -1831,9 +7117,38 @@ mod tests {
         ledger
             .create_mission(&mission, "create-m-lease", "test")
             .unwrap();
+        let mut contract = task("auth");
+        contract.scope = vec!["src/auth.rs".to_string()];
+        persist_first_plan(&ledger, &mission, vec![contract]);
+        let mut first_queued = AppendEvent::new(
+            mission.id.clone(),
+            2,
+            "queue-lease-attempt-1",
+            "engine",
+            "task_queued",
+        );
+        first_queued.task_attempt = Some(TaskAttemptMutation {
+            task_id: "auth".to_string(),
+            attempt_id: "attempt-1".to_string(),
+            plan_revision: 1,
+            expected_version: 0,
+            next_state: TaskAttemptState::Queued,
+        });
+        ledger.append(first_queued).unwrap();
+        let version = advance_test_mission_to_running(&ledger, &mission, 3);
+        let (version, resources) = append_test_scope_authority(
+            &ledger,
+            &mission,
+            "auth",
+            "attempt-1",
+            "worker-a",
+            vec!["src/auth.rs".to_string()],
+            version,
+            101,
+        );
         let first = ledger
             .acquire_lease(
-                "src/auth.rs",
+                &resources[0],
                 &mission.id,
                 "auth",
                 "attempt-1",
@@ -1841,9 +7156,35 @@ mod tests {
                 Duration::ZERO,
             )
             .unwrap();
+        let mut second_queued = AppendEvent::new(
+            mission.id.clone(),
+            version,
+            "queue-lease-attempt-2",
+            "engine",
+            "task_queued",
+        );
+        second_queued.task_attempt = Some(TaskAttemptMutation {
+            task_id: "auth".to_string(),
+            attempt_id: "attempt-2".to_string(),
+            plan_revision: 1,
+            expected_version: 0,
+            next_state: TaskAttemptState::Queued,
+        });
+        ledger.append(second_queued).unwrap();
+        let (_, second_resources) = append_test_scope_authority(
+            &ledger,
+            &mission,
+            "auth",
+            "attempt-2",
+            "worker-b",
+            vec!["src/auth.rs".to_string()],
+            version + 1,
+            101,
+        );
+        assert_eq!(resources, second_resources);
         let second = ledger
             .acquire_lease(
-                "src/auth.rs",
+                &resources[0],
                 &mission.id,
                 "auth",
                 "attempt-2",
@@ -1853,11 +7194,489 @@ mod tests {
             .unwrap();
         assert!(second.fencing_token > first.fencing_token);
         assert!(matches!(
-            ledger.assert_fence("src/auth.rs", first.fencing_token),
+            ledger.assert_fence(&resources[0], first.fencing_token),
             Err(LedgerError::StaleFence { .. })
         ));
         ledger
-            .assert_fence("src/auth.rs", second.fencing_token)
+            .assert_fence(&resources[0], second.fencing_token)
+            .unwrap();
+    }
+
+    #[test]
+    fn lease_primitives_reject_nonexistent_superseded_and_terminal_authority() {
+        let setup = |mission_id: &str, workspace_serial: u64| {
+            let ledger = MissionLedger::open_in_memory().unwrap();
+            let mission = mission(mission_id);
+            let create_key = format!("create-{mission_id}");
+            ledger
+                .create_mission(&mission, &create_key, "test")
+                .unwrap();
+            let contract = task("task-a");
+            persist_first_plan(&ledger, &mission, vec![contract]);
+            let mut queued = AppendEvent::new(
+                mission.id.clone(),
+                2,
+                format!("queue-{mission_id}"),
+                "engine",
+                "task_queued",
+            );
+            queued.task_attempt = Some(TaskAttemptMutation {
+                task_id: "task-a".to_string(),
+                attempt_id: format!("attempt-{mission_id}"),
+                plan_revision: 1,
+                expected_version: 0,
+                next_state: TaskAttemptState::Queued,
+            });
+            ledger.append(queued).unwrap();
+            let version = advance_test_mission_to_running(&ledger, &mission, 3);
+            let attempt_id = format!("attempt-{mission_id}");
+            let (version, resources) = append_test_scope_authority(
+                &ledger,
+                &mission,
+                "task-a",
+                &attempt_id,
+                "worker-a",
+                vec!["src/task-a.rs".to_string()],
+                version,
+                workspace_serial,
+            );
+            (ledger, mission, attempt_id, version, resources[0].clone())
+        };
+
+        let (ledger, mission, attempt_id, version, resource) =
+            setup("m-lease-lifecycle-superseded", 401);
+        assert!(ledger
+            .acquire_lease(
+                &resource,
+                &mission.id,
+                "task-a",
+                "attempt-does-not-exist",
+                "worker-a",
+                Duration::from_secs(30),
+            )
+            .is_err());
+        let lease = ledger
+            .acquire_lease(
+                &resource,
+                &mission.id,
+                "task-a",
+                &attempt_id,
+                "worker-a",
+                Duration::from_secs(300),
+            )
+            .unwrap();
+        let plan = ledger.active_plan(&mission.id).unwrap().unwrap();
+        let amended = plan
+            .amend(
+                1,
+                version,
+                vec![task("task-a"), task("task-b")],
+                &[TaskId::new("task-a")],
+            )
+            .unwrap();
+        let mut amendment = AppendEvent::new(
+            mission.id.clone(),
+            version,
+            "lease-lifecycle-amend",
+            "engine",
+            "plan_amended",
+        );
+        amendment.plan = Some(amended);
+        ledger.append(amendment).unwrap();
+        assert!(matches!(
+            ledger.renew_lease(
+                &lease.resource_key,
+                &lease.owner,
+                lease.fencing_token,
+                Duration::from_secs(300),
+            ),
+            Err(LedgerError::PlanRevisionNotActive { .. })
+        ));
+
+        let (cancelled, mission, attempt_id, version, resource) =
+            setup("m-lease-lifecycle-cancelled", 402);
+        let lease = cancelled
+            .acquire_lease(
+                &resource,
+                &mission.id,
+                "task-a",
+                &attempt_id,
+                "worker-a",
+                Duration::from_secs(300),
+            )
+            .unwrap();
+        let mut running = AppendEvent::new(
+            mission.id.clone(),
+            version,
+            "lease-lifecycle-running",
+            "worker-a",
+            "task_running",
+        );
+        running.task_attempt = Some(TaskAttemptMutation {
+            task_id: "task-a".to_string(),
+            attempt_id: attempt_id.clone(),
+            plan_revision: 1,
+            expected_version: 1,
+            next_state: TaskAttemptState::Running,
+        });
+        running.lease_assertions = vec![LeaseAssertion::from(&lease)];
+        cancelled.append(running).unwrap();
+        let mut cancel = AppendEvent::new(
+            mission.id.clone(),
+            version + 1,
+            "lease-lifecycle-cancel",
+            "worker-a",
+            "task_cancelled",
+        );
+        cancel.task_attempt = Some(TaskAttemptMutation {
+            task_id: "task-a".to_string(),
+            attempt_id: attempt_id.clone(),
+            plan_revision: 1,
+            expected_version: 2,
+            next_state: TaskAttemptState::Cancelled,
+        });
+        cancel.lease_assertions = vec![LeaseAssertion::from(&lease)];
+        cancelled.append(cancel).unwrap();
+        assert!(cancelled
+            .renew_lease(
+                &lease.resource_key,
+                &lease.owner,
+                lease.fencing_token,
+                Duration::from_secs(300),
+            )
+            .is_err());
+
+        let (failed, mission, _attempt_id, version, resource) =
+            setup("m-lease-lifecycle-failed", 403);
+        let lease = failed
+            .acquire_lease(
+                &resource,
+                &mission.id,
+                "task-a",
+                "attempt-m-lease-lifecycle-failed",
+                "worker-a",
+                Duration::from_secs(300),
+            )
+            .unwrap();
+        failed
+            .append(transition(
+                &mission.id,
+                version,
+                "lease-mission-verifying",
+                MissionState::Verifying,
+            ))
+            .unwrap();
+        failed
+            .append(transition(
+                &mission.id,
+                version + 1,
+                "lease-mission-failed",
+                MissionState::Failed,
+            ))
+            .unwrap();
+        assert!(failed
+            .renew_lease(
+                &lease.resource_key,
+                &lease.owner,
+                lease.fencing_token,
+                Duration::from_secs(300),
+            )
+            .is_err());
+    }
+
+    #[test]
+    fn leased_append_is_bound_to_mission_task_attempt_and_owner() {
+        let ledger = MissionLedger::open_in_memory().unwrap();
+        let mission_a = mission("m-lease-context-a");
+        let mission_b = mission("m-lease-context-b");
+        ledger
+            .create_mission(&mission_a, "create-lease-context-a", "test")
+            .unwrap();
+        ledger
+            .create_mission(&mission_b, "create-lease-context-b", "test")
+            .unwrap();
+        persist_first_plan(&ledger, &mission_a, vec![task("task-a")]);
+        persist_first_plan(&ledger, &mission_b, vec![task("task-b")]);
+
+        for (mission, task_id, attempt_id, key) in [
+            (&mission_a, "task-a", "attempt-a", "queue-lease-context-a"),
+            (&mission_b, "task-b", "attempt-b", "queue-lease-context-b"),
+        ] {
+            let mut queued = AppendEvent::new(mission.id.clone(), 2, key, "engine", "task_queued");
+            queued.task_attempt = Some(TaskAttemptMutation {
+                task_id: task_id.to_string(),
+                attempt_id: attempt_id.to_string(),
+                plan_revision: 1,
+                expected_version: 0,
+                next_state: TaskAttemptState::Queued,
+            });
+            ledger.append(queued).unwrap();
+        }
+
+        let version_a = advance_test_mission_to_running(&ledger, &mission_a, 3);
+        let version_b = advance_test_mission_to_running(&ledger, &mission_b, 3);
+        let (version_a, resources_a) = append_test_scope_authority(
+            &ledger,
+            &mission_a,
+            "task-a",
+            "attempt-a",
+            "worker-a",
+            vec!["src/task-a.rs".to_string()],
+            version_a,
+            201,
+        );
+        let (_version_b, _resources_b) = append_test_scope_authority(
+            &ledger,
+            &mission_b,
+            "task-b",
+            "attempt-b",
+            "worker-b",
+            vec!["src/task-b.rs".to_string()],
+            version_b,
+            202,
+        );
+
+        let lease = ledger
+            .acquire_lease(
+                &resources_a[0],
+                &mission_a.id,
+                "task-a",
+                "attempt-a",
+                "worker-a",
+                Duration::from_secs(300),
+            )
+            .unwrap();
+
+        let leased_running =
+            |mission_id: MissionId, task_id: &str, attempt_id: &str, actor: &str, key: &str| {
+                let expected_version = if mission_id == mission_a.id {
+                    version_a
+                } else {
+                    _version_b
+                };
+                let mut event =
+                    AppendEvent::new(mission_id, expected_version, key, actor, "task_running");
+                event.task_attempt = Some(TaskAttemptMutation {
+                    task_id: task_id.to_string(),
+                    attempt_id: attempt_id.to_string(),
+                    plan_revision: 1,
+                    expected_version: 1,
+                    next_state: TaskAttemptState::Running,
+                });
+                event.lease_resource = Some(resources_a[0].clone());
+                event.fencing_token = Some(lease.fencing_token);
+                event
+            };
+
+        for (event, field) in [
+            (
+                leased_running(
+                    mission_a.id.clone(),
+                    "task-a",
+                    "attempt-a",
+                    "worker-b",
+                    "wrong-lease-owner",
+                ),
+                "owner",
+            ),
+            (
+                leased_running(
+                    mission_a.id.clone(),
+                    "task-b",
+                    "attempt-a",
+                    "worker-a",
+                    "wrong-lease-task",
+                ),
+                "task_id",
+            ),
+            (
+                leased_running(
+                    mission_a.id.clone(),
+                    "task-a",
+                    "attempt-other",
+                    "worker-a",
+                    "wrong-lease-attempt",
+                ),
+                "attempt_id",
+            ),
+            (
+                leased_running(
+                    mission_b.id.clone(),
+                    "task-b",
+                    "attempt-b",
+                    "worker-a",
+                    "wrong-lease-mission",
+                ),
+                "mission_id",
+            ),
+        ] {
+            assert!(matches!(
+                ledger.append(event),
+                Err(LedgerError::LeaseContextMismatch { reason, .. })
+                    if reason.contains(field)
+            ));
+        }
+
+        let accepted = ledger
+            .append(leased_running(
+                mission_a.id.clone(),
+                "task-a",
+                "attempt-a",
+                "worker-a",
+                "correct-lease-context",
+            ))
+            .unwrap();
+        assert_eq!(accepted.projection.version, version_a + 1);
+        assert_eq!(
+            ledger.task_attempt("attempt-a").unwrap().unwrap().state,
+            TaskAttemptState::Running
+        );
+    }
+
+    #[test]
+    fn attempt_mutation_requires_every_active_lease_and_rejects_one_stolen_scope() {
+        let ledger = MissionLedger::open_in_memory().unwrap();
+        let mission = mission("m-aggregate-lease");
+        ledger
+            .create_mission(&mission, "create-aggregate-lease", "test")
+            .unwrap();
+        let mut contract = task("task-a");
+        contract.scope = vec!["src/first.rs".to_string(), "src/second.rs".to_string()];
+        persist_first_plan(&ledger, &mission, vec![contract]);
+        let mut queued = AppendEvent::new(
+            mission.id.clone(),
+            2,
+            "queue-aggregate-lease",
+            "engine",
+            "task_attempt_queued",
+        );
+        queued.task_attempt = Some(TaskAttemptMutation {
+            task_id: "task-a".to_string(),
+            attempt_id: "attempt-a".to_string(),
+            plan_revision: 1,
+            expected_version: 0,
+            next_state: TaskAttemptState::Queued,
+        });
+        ledger.append(queued).unwrap();
+
+        let version = advance_test_mission_to_running(&ledger, &mission, 3);
+        let (version, resources) = append_test_scope_authority(
+            &ledger,
+            &mission,
+            "task-a",
+            "attempt-a",
+            "worker-a",
+            vec!["src/first.rs".to_string(), "src/second.rs".to_string()],
+            version,
+            301,
+        );
+
+        let first = ledger
+            .acquire_lease(
+                &resources[0],
+                &mission.id,
+                "task-a",
+                "attempt-a",
+                "worker-a",
+                Duration::from_secs(300),
+            )
+            .unwrap();
+        let second = ledger
+            .acquire_lease(
+                &resources[1],
+                &mission.id,
+                "task-a",
+                "attempt-a",
+                "worker-a",
+                Duration::from_secs(300),
+            )
+            .unwrap();
+        assert_eq!(
+            ledger
+                .active_leases_for_attempt(&mission.id, "task-a", "attempt-a")
+                .unwrap(),
+            vec![first.clone(), second.clone()]
+        );
+
+        let running = |key: &str, assertions: Vec<LeaseAssertion>| {
+            let mut event = AppendEvent::new(
+                mission.id.clone(),
+                version,
+                key,
+                "worker-a",
+                "task_attempt_running",
+            );
+            event.task_attempt = Some(TaskAttemptMutation {
+                task_id: "task-a".to_string(),
+                attempt_id: "attempt-a".to_string(),
+                plan_revision: 1,
+                expected_version: 1,
+                next_state: TaskAttemptState::Running,
+            });
+            event.lease_assertions = assertions;
+            event
+        };
+        assert!(matches!(
+            ledger.append(running("aggregate-none", Vec::new())),
+            Err(LedgerError::LeaseContextMismatch { .. })
+        ));
+        assert!(matches!(
+            ledger.append(running("aggregate-one", vec![LeaseAssertion::from(&first)])),
+            Err(LedgerError::LeaseContextMismatch { .. })
+        ));
+        ledger
+            .append(running(
+                "aggregate-all",
+                vec![LeaseAssertion::from(&first), LeaseAssertion::from(&second)],
+            ))
+            .unwrap();
+
+        ledger
+            .release_lease(&first.resource_key, first.fencing_token)
+            .unwrap();
+        assert!(ledger
+            .acquire_lease(
+                &first.resource_key,
+                &mission.id,
+                "task-a",
+                "attempt-stolen",
+                "worker-b",
+                Duration::from_secs(300),
+            )
+            .is_err());
+        assert_eq!(
+            ledger
+                .active_leases_for_attempt(&mission.id, "task-a", "attempt-a")
+                .unwrap(),
+            vec![second.clone()]
+        );
+
+        let mut candidate = AppendEvent::new(
+            mission.id.clone(),
+            version + 1,
+            "aggregate-stale-candidate",
+            "worker-a",
+            "task_attempt_candidate_done",
+        );
+        candidate.task_attempt = Some(TaskAttemptMutation {
+            task_id: "task-a".to_string(),
+            attempt_id: "attempt-a".to_string(),
+            plan_revision: 1,
+            expected_version: 2,
+            next_state: TaskAttemptState::CandidateDone,
+        });
+        candidate.lease_assertions =
+            vec![LeaseAssertion::from(&first), LeaseAssertion::from(&second)];
+        assert!(matches!(
+            ledger.append(candidate),
+            Err(LedgerError::StaleFence { resource, .. }) if resource == first.resource_key
+        ));
+        assert_eq!(
+            ledger.task_attempt("attempt-a").unwrap().unwrap().state,
+            TaskAttemptState::Running
+        );
+        ledger
+            .assert_fence(&second.resource_key, second.fencing_token)
             .unwrap();
     }
 
@@ -1868,8 +7687,9 @@ mod tests {
         ledger
             .create_mission(&mission, "create-m-task", "test")
             .unwrap();
+        persist_first_plan(&ledger, &mission, vec![task("task-a")]);
         let mut queued =
-            AppendEvent::new(mission.id.clone(), 1, "queue-task", "engine", "task_queued");
+            AppendEvent::new(mission.id.clone(), 2, "queue-task", "engine", "task_queued");
         queued.task_attempt = Some(TaskAttemptMutation {
             task_id: "task-a".to_string(),
             attempt_id: "attempt-a1".to_string(),
@@ -1881,7 +7701,7 @@ mod tests {
 
         let mut invalid = AppendEvent::new(
             mission.id.clone(),
-            2,
+            3,
             "accept-task-directly",
             "engine",
             "task_accepted",
@@ -1897,5 +7717,231 @@ mod tests {
             ledger.append(invalid),
             Err(LedgerError::InvalidTaskTransition(_))
         ));
+    }
+
+    #[test]
+    fn task_attempt_requires_an_active_plan_and_a_declared_task() {
+        let ledger = MissionLedger::open_in_memory().unwrap();
+        let mission = mission("m-task-auth");
+        ledger
+            .create_mission(&mission, "create-m-task-auth", "test")
+            .unwrap();
+
+        let mut no_plan = AppendEvent::new(
+            mission.id.clone(),
+            1,
+            "queue-no-plan",
+            "engine",
+            "task_queued",
+        );
+        no_plan.task_attempt = Some(TaskAttemptMutation {
+            task_id: "task-a".to_string(),
+            attempt_id: "attempt-no-plan".to_string(),
+            plan_revision: 1,
+            expected_version: 0,
+            next_state: TaskAttemptState::Queued,
+        });
+        assert!(matches!(
+            ledger.append(no_plan),
+            Err(LedgerError::PlanRevisionNotActive { active: None, .. })
+        ));
+
+        persist_first_plan(&ledger, &mission, vec![task("task-a")]);
+        let mut unknown = AppendEvent::new(
+            mission.id.clone(),
+            2,
+            "queue-unknown",
+            "engine",
+            "task_queued",
+        );
+        unknown.task_attempt = Some(TaskAttemptMutation {
+            task_id: "ghost".to_string(),
+            attempt_id: "attempt-ghost".to_string(),
+            plan_revision: 1,
+            expected_version: 0,
+            next_state: TaskAttemptState::Queued,
+        });
+        assert!(matches!(
+            ledger.append(unknown),
+            Err(LedgerError::TaskNotInPlan { task_id, .. }) if task_id == "ghost"
+        ));
+
+        let mut stale = AppendEvent::new(
+            mission.id.clone(),
+            2,
+            "queue-stale",
+            "engine",
+            "task_queued",
+        );
+        stale.task_attempt = Some(TaskAttemptMutation {
+            task_id: "task-a".to_string(),
+            attempt_id: "attempt-stale".to_string(),
+            plan_revision: 2,
+            expected_version: 0,
+            next_state: TaskAttemptState::Queued,
+        });
+        assert!(matches!(
+            ledger.append(stale),
+            Err(LedgerError::PlanRevisionNotActive {
+                supplied: 2,
+                active: Some(1),
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn active_plan_fails_closed_when_persisted_contract_is_tampered() {
+        let ledger = MissionLedger::open_in_memory().unwrap();
+        let mission = mission("m-plan-integrity");
+        ledger
+            .create_mission(&mission, "create-m-plan-integrity", "test")
+            .unwrap();
+        persist_first_plan(&ledger, &mission, vec![task("task-a")]);
+        {
+            let connection = ledger.connection.lock().unwrap();
+            let contract_json: String = connection
+                .query_row(
+                    "SELECT contract_json FROM plans WHERE mission_id = ?1 AND revision = 1",
+                    params![mission.id.as_str()],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            let mut contract: Value = serde_json::from_str(&contract_json).unwrap();
+            contract["tasks"][0]["prompt"] = Value::from("tampered after persistence");
+            connection
+                .execute(
+                    "UPDATE plans SET contract_json = ?1 WHERE mission_id = ?2 AND revision = 1",
+                    params![
+                        serde_json::to_string(&contract).unwrap(),
+                        mission.id.as_str()
+                    ],
+                )
+                .unwrap();
+        }
+        assert!(matches!(
+            ledger.active_plan(&mission.id),
+            Err(LedgerError::InvalidInput(message)) if message.contains("digest mismatch")
+        ));
+    }
+
+    #[test]
+    fn ledger_protects_attempted_tasks_even_when_amend_helper_is_bypassed() {
+        let ledger = MissionLedger::open_in_memory().unwrap();
+        let mission = mission("m-ledger-derived-protection");
+        ledger
+            .create_mission(&mission, "create-ledger-derived-protection", "test")
+            .unwrap();
+        persist_first_plan(&ledger, &mission, vec![task("task-a")]);
+
+        let mut queued = AppendEvent::new(
+            mission.id.clone(),
+            2,
+            "queue-before-bypass",
+            "engine",
+            "task_queued",
+        );
+        queued.task_attempt = Some(TaskAttemptMutation {
+            task_id: "task-a".to_string(),
+            attempt_id: "attempt-before-bypass".to_string(),
+            plan_revision: 1,
+            expected_version: 0,
+            next_state: TaskAttemptState::Queued,
+        });
+        ledger.append(queued).unwrap();
+
+        let mut changed_task = task("task-a");
+        changed_task.prompt = "silently changed after dispatch".to_string();
+        let bypassed = PlanContract::new(
+            mission.id.clone(),
+            2,
+            3,
+            vec![changed_task],
+            Vec::new(),
+            Vec::new(),
+        )
+        .unwrap();
+        let mut amendment = AppendEvent::new(
+            mission.id.clone(),
+            3,
+            "bypass-plan-amend-helper",
+            "engine",
+            "plan_amended",
+        );
+        amendment.plan = Some(bypassed);
+
+        assert!(matches!(
+            ledger.append(amendment),
+            Err(LedgerError::InvalidInput(message))
+                if message.contains("protected task changed: task-a")
+        ));
+        assert_eq!(
+            ledger.mission(&mission.id).unwrap().unwrap().version,
+            3,
+            "a rejected amendment must be transactionally inert"
+        );
+    }
+
+    #[test]
+    fn in_flight_attempt_may_continue_only_when_its_task_is_unchanged_in_active_plan() {
+        let ledger = MissionLedger::open_in_memory().unwrap();
+        let mission = mission("m-active-amendment");
+        ledger
+            .create_mission(&mission, "create-m-active-amendment", "test")
+            .unwrap();
+        let mut task_a = task("task-a");
+        task_a.scope.clear();
+        persist_first_plan(&ledger, &mission, vec![task_a.clone()]);
+
+        let mut queued = AppendEvent::new(
+            mission.id.clone(),
+            2,
+            "queue-before-amendment",
+            "engine",
+            "task_queued",
+        );
+        queued.task_attempt = Some(TaskAttemptMutation {
+            task_id: "task-a".to_string(),
+            attempt_id: "attempt-before-amendment".to_string(),
+            plan_revision: 1,
+            expected_version: 0,
+            next_state: TaskAttemptState::Queued,
+        });
+        ledger.append(queued).unwrap();
+
+        let plan = ledger.active_plan(&mission.id).unwrap().unwrap();
+        let amended = plan
+            .amend(1, 3, vec![task_a, task("task-b")], &[TaskId::new("task-a")])
+            .unwrap();
+        let mut amendment = AppendEvent::new(
+            mission.id.clone(),
+            3,
+            "amend-with-protected-task",
+            "engine",
+            "plan_amended",
+        );
+        amendment.plan = Some(amended);
+        ledger.append(amendment).unwrap();
+
+        let mut running = AppendEvent::new(
+            mission.id.clone(),
+            4,
+            "continue-after-amendment",
+            "engine",
+            "task_running",
+        );
+        running.task_attempt = Some(TaskAttemptMutation {
+            task_id: "task-a".to_string(),
+            attempt_id: "attempt-before-amendment".to_string(),
+            plan_revision: 1,
+            expected_version: 1,
+            next_state: TaskAttemptState::Running,
+        });
+        ledger.append(running).unwrap();
+        assert_eq!(
+            ledger.replay(&mission.id).unwrap().active_plan_revision,
+            Some(2),
+            "an event bound to an older task plan must not regress the active plan"
+        );
     }
 }

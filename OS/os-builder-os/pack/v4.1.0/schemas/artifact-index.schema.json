@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Builder OS Artifact Index",
+  "type": "object",
+  "required": [
+    "artifacts"
+  ],
+  "properties": {
+    "artifacts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "artifact_id",
+          "phase",
+          "path",
+          "status"
+        ],
+        "properties": {
+          "artifact_id": {
+            "type": "string"
+          },
+          "phase": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "template",
+              "draft",
+              "validated",
+              "released",
+              "deprecated"
+            ]
+          },
+          "inputs": {
+            "type": "array"
+          },
+          "outputs_to": {
+            "type": "array"
+          },
+          "source_trace": {
+            "type": "array"
+          }
+        }
+      }
+    }
+  }
+}

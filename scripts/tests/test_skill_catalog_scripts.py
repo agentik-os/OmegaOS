@@ -2,6 +2,7 @@
 """Contract tests for the SkillCatalogV1 Atlas/RAG projections."""
 
 import json
+import hashlib
 import os
 from pathlib import Path
 import shutil
@@ -24,6 +25,13 @@ def catalog(digest, skills):
         "skills": skills,
         "warnings": [],
     }
+
+
+def source_digest(root_id, relative_path, content):
+    normalized = content.replace("\r\n", "\n").encode()
+    rows = [[root_id, relative_path, hashlib.sha256(normalized).hexdigest()]]
+    payload = json.dumps(rows, ensure_ascii=False, separators=(",", ":")).encode()
+    return hashlib.sha256(payload).hexdigest()
 
 
 def skill(name, description, relative_path, category="Custom"):
@@ -178,6 +186,61 @@ class SkillCatalogScriptTests(unittest.TestCase):
         atlas = json.loads(
             (self.omega / "skills-atlas.json").read_text(encoding="utf-8"))
         self.assertEqual(atlas["catalog_hash"], "b" * 64)
+
+    def test_cli_recompiles_catalog_when_source_tree_changes(self):
+        source_root = self.omega / "source-skills"
+        skill_dir = source_root / "alpha"
+        skill_dir.mkdir(parents=True)
+        relative = "alpha/SKILL.md"
+        initial = "---\nname: alpha\ndescription: First\n---\n"
+        changed = "---\nname: alpha\ndescription: Changed\n---\n"
+        skill_dir.joinpath("SKILL.md").write_text(initial, encoding="utf-8")
+        value = catalog("a" * 64, [skill("alpha", "First", relative)])
+        value["source_roots"] = [{"id": "omegaos", "path": str(source_root)}]
+        value["source_tree_digest"] = source_digest("omegaos", relative, initial)
+        self.write_catalog(value)
+
+        bin_dir = self.omega / "bin"
+        bin_dir.mkdir()
+        shutil.copy2(ATLAS_SCRIPT, bin_dir / ATLAS_SCRIPT.name)
+        shutil.copy2(RAG_SCRIPT, bin_dir / RAG_SCRIPT.name)
+        self.run_script(bin_dir / ATLAS_SCRIPT.name)
+
+        fake_cli = self.omega / "fake-omega.py"
+        fake_cli.write_text(
+            "#!/usr/bin/env python3\n"
+            "import hashlib,json,sys\n"
+            "from pathlib import Path\n"
+            "out=Path(sys.argv[sys.argv.index('--out')+1])\n"
+            "data=json.loads(out.read_text())\n"
+            "root=Path(data['source_roots'][0]['path'])\n"
+            "raw=(root/'alpha/SKILL.md').read_bytes().replace(b'\\r\\n',b'\\n')\n"
+            "digest=hashlib.sha256(raw).hexdigest()\n"
+            "rows=[['omegaos','alpha/SKILL.md',digest]]\n"
+            "data['skills'][0]['content_digest']=digest\n"
+            "data['skills'][0]['description']='Changed'\n"
+            "data['source_tree_digest']=hashlib.sha256(json.dumps(rows,separators=(',',':')).encode()).hexdigest()\n"
+            "data['content_digest']='b'*64\n"
+            "out.write_text(json.dumps(data))\n",
+            encoding="utf-8",
+        )
+        fake_cli.chmod(0o755)
+        self.env["OMEGA_CLI"] = str(fake_cli)
+        skill_dir.joinpath("SKILL.md").write_text(changed, encoding="utf-8")
+
+        result = subprocess.run(
+            ["bash", str(CLI_SCRIPT), "alpha"],
+            env=self.env,
+            text=True,
+            capture_output=True,
+            check=True,
+        )
+        self.assertIn("Changed", result.stdout)
+        atlas = json.loads(
+            (self.omega / "skills-atlas.json").read_text(encoding="utf-8"))
+        self.assertEqual(atlas["catalog_hash"], "b" * 64)
+        self.assertEqual(
+            atlas["source_tree_digest"], source_digest("omegaos", relative, changed))
 
 
 if __name__ == "__main__":

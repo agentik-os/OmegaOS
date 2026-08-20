@@ -1,0 +1,82 @@
+{
+  "schema_version": "2.0.0",
+  "id": "money-os",
+  "num": 51,
+  "name": "Money {OS}",
+  "version": "0.1.0",
+  "status": "scaffold",
+  "group": {
+    "key": "own",
+    "label": "06 · OWN",
+    "purpose": "Turn work into assets"
+  },
+  "tagline": "Personal cash flow: what comes in, what goes out, what is left.",
+  "inherits_from": null,
+  "commands": [
+    "/money",
+    "/money-intake",
+    "/money-classify",
+    "/money-close",
+    "/money-runway",
+    "/money-forecast",
+    "/money-obligations",
+    "/money-decide",
+    "/money-pack"
+  ],
+  "dependencies": {
+    "requires": [
+      "context-memory-os"
+    ],
+    "consumes": [
+      "revenue.owner_distribution.verified",
+      "wealth.reserve_target.set",
+      "change.approved",
+      "memory.context.compiled"
+    ],
+    "emits": [
+      "money.month.closed",
+      "money.surplus.verified",
+      "money.runway.updated",
+      "money.obligation.due",
+      "memory.record.staged"
+    ]
+  },
+  "targets": {
+    "claude": {
+      "supported": true
+    },
+    "chatgpt": {
+      "supported": true
+    },
+    "gemini": {
+      "supported": true
+    },
+    "codex": {
+      "supported": true
+    }
+  },
+  "entrypoints": {
+    "spec": "OS.md",
+    "system": "SYSTEM.md",
+    "skill": "SKILL.md",
+    "setup": "SETUP.md",
+    "workflows": "WORKFLOWS/",
+    "commands": "COMMANDS/",
+    "prompts": "PROMPTS/",
+    "references": "REFERENCES/",
+    "memory": "MEMORY/",
+    "tools": "TOOLS/",
+    "evals": "EVALS/",
+    "examples": "EXAMPLES/",
+    "interfaces": "INTERFACES/",
+    "adapters": "ADAPTERS/"
+  },
+  "requires_human_approval_for": [
+    "promoting a staged document extraction to a verified transaction",
+    "closing a month that still has a reconciliation gap",
+    "applying a classification rule that would rewrite an already closed month",
+    "exporting or sending records to anyone outside the operator, including their own accountant, per recipient and per document",
+    "deleting or replacing a source document",
+    "any instruction that would result in money moving: the operator executes it personally, this OS never initiates a payment, transfer, direct debit, card action or cancellation"
+  ]
+}

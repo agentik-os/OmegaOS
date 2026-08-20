@@ -1220,7 +1220,7 @@ POST-FIX VERIFICATION (after writing code, BEFORE commit):
 
 IF ANY POST-FIX CHECK FAILS:
   → `git revert HEAD` immediately
-  → Log the failure in .audit/fix-log.md with exact error
+  → Log the failure in audits/.a11yaudit/fix-log.md with exact error
   → Mark as NEEDS_REVIEW (never retry same approach blindly)
   → Try alternative approach OR skip this fix
 
@@ -1505,11 +1505,11 @@ After v1.2 compliance round:
 
 Every fix MUST follow the "Do No Harm" protocol:
 
-1. **PRE-FIX BASELINE** — grep all references, capture functional state, save to `.{audit}/baseline/`.
+1. **PRE-FIX BASELINE** — grep all references, capture functional state, save to `audits/.<audit-id>/baseline/`.
 2. **APPLY FIX** — normal execution.
 3. **POST-FIX CHECK** — repeat every baseline check. If any PASSED→FAILED transition occurs, revert immediately.
 4. **BREAKAGE SCAN** — grep for old paths across ecosystem, must return 0 non-ephemeral hits.
-5. **BEFORE/AFTER MATRIX** — produce `.{audit}/before-after.md` with functional status table per affected item.
+5. **BEFORE/AFTER MATRIX** — produce `audits/.<audit-id>/before-after.md` with functional status table per affected item.
 
 **An audit that breaks 1 working thing is WORSE than no audit.** Do NOT claim "done" without `before-after.md` showing zero regressions.
 

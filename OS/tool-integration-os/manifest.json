@@ -1,0 +1,115 @@
+{
+  "schema_version": "2.0.0",
+  "id": "tool-integration-os",
+  "num": 71,
+  "name": "Tool & Integration {OS}",
+  "version": "0.1.0",
+  "status": "scaffold",
+  "group": {
+    "key": "systems",
+    "label": "08 · AI & SYSTEMS",
+    "purpose": "Intelligence infrastructure for everything"
+  },
+  "tagline": "Connect external tools safely, with typed contracts.",
+  "inherits_from": null,
+  "commands": [
+    {
+      "name": "/tool contract <system>",
+      "mode": "contract",
+      "summary": "Write or update the typed contract: inputs, outputs, errors, idempotency, limits, cost."
+    },
+    {
+      "name": "/tool probe <system>",
+      "mode": "probe",
+      "summary": "Call the live system and record what it actually does, with the date."
+    },
+    {
+      "name": "/tool auth <system>",
+      "mode": "auth",
+      "summary": "Record which secret is required and where it is configured, never its value."
+    },
+    {
+      "name": "/tool grant <consumer> <system>",
+      "mode": "grant",
+      "summary": "Issue a least privilege grant with named consumer, operations and expiry."
+    },
+    {
+      "name": "/tool failures <system>",
+      "mode": "failures",
+      "summary": "Define the response to every error class: retry, do not retry, escalate, compensate."
+    },
+    {
+      "name": "/tool drift [system]",
+      "mode": "drift",
+      "summary": "Compare the contract against observed reality and notify affected consumers."
+    },
+    {
+      "name": "/tool inventory",
+      "mode": "inventory",
+      "summary": "List every integration, its consumers, its grants and its health."
+    },
+    {
+      "name": "/tool retire <system>",
+      "mode": "retire",
+      "summary": "Revoke credentials, close call paths and record the retirement."
+    }
+  ],
+  "dependencies": {
+    "requires": [
+      "context-memory-os"
+    ],
+    "consumes": [
+      "agent.tool.requested",
+      "automation.blueprint.approved",
+      "memory.context.compiled"
+    ],
+    "emits": [
+      "integration.contract.published",
+      "integration.probe.recorded",
+      "integration.credential.required",
+      "integration.grant.issued",
+      "integration.call.failed",
+      "integration.drift.detected",
+      "integration.retired",
+      "memory.record.staged"
+    ]
+  },
+  "targets": {
+    "claude": {
+      "supported": true
+    },
+    "chatgpt": {
+      "supported": true
+    },
+    "gemini": {
+      "supported": true
+    },
+    "codex": {
+      "supported": true
+    }
+  },
+  "entrypoints": {
+    "spec": "OS.md",
+    "system": "SYSTEM.md",
+    "skill": "SKILL.md",
+    "setup": "SETUP.md",
+    "workflows": "WORKFLOWS/",
+    "commands": "COMMANDS/",
+    "prompts": "PROMPTS/",
+    "references": "REFERENCES/",
+    "memory": "MEMORY/",
+    "tools": "TOOLS/",
+    "evals": "EVALS/",
+    "examples": "EXAMPLES/",
+    "interfaces": "INTERFACES/",
+    "adapters": "ADAPTERS/"
+  },
+  "requires_human_approval_for": [
+    "granting any operation that sends, publishes, pays, deletes or signs",
+    "granting access to customer data or personal data",
+    "widening an existing grant",
+    "accepting a credential with broader scope than the contract requires",
+    "connecting a system whose terms or data handling are unclear",
+    "retiring a connection consumers still depend on"
+  ]
+}

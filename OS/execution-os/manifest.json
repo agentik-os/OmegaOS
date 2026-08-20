@@ -1,0 +1,138 @@
+{
+  "schema_version": "2.0.0",
+  "id": "execution-os",
+  "num": 41,
+  "name": "Execution {OS}",
+  "version": "0.1.0",
+  "status": "scaffold",
+  "group": {
+    "key": "operate",
+    "label": "05 · OPERATE",
+    "purpose": "Turn chaos into repeatable execution"
+  },
+  "tagline": "Time-bound personal commitments and proof of output.",
+  "inherits_from": "execution-os",
+  "commands": [
+    {
+      "name": "/boot",
+      "mode": "BOOT",
+      "summary": "Open the day: capacity, usable minutes, one must-win, the day's commitments."
+    },
+    {
+      "name": "/capture",
+      "mode": "CAPTURE",
+      "summary": "Record an incoming item without judging it."
+    },
+    {
+      "name": "/clarify",
+      "mode": "CLARIFY",
+      "summary": "Empty the inbox by classifying every entry."
+    },
+    {
+      "name": "/commit",
+      "mode": "COMMIT",
+      "summary": "Turn an intention into a commitment with an acceptance test and one physical next action."
+    },
+    {
+      "name": "/focus",
+      "mode": "FOCUS",
+      "summary": "Protect a block of 25, 50 or 90 minutes on exactly one commitment."
+    },
+    {
+      "name": "/prove",
+      "mode": "PROVE",
+      "summary": "Close a commitment on evidence plus the acceptance test it satisfies."
+    },
+    {
+      "name": "/recover",
+      "mode": "RECOVER",
+      "summary": "Classify a failed commitment as blocked, deferred, cancelled or delegated, with a next action."
+    },
+    {
+      "name": "/promise",
+      "mode": "COMMIT",
+      "summary": "Record a promise to another person, with a notice-by date and a consequence."
+    },
+    {
+      "name": "/capacity",
+      "mode": "BOOT",
+      "summary": "Show or set the capacity budget, and name the overflow."
+    },
+    {
+      "name": "/halt",
+      "mode": "HALT",
+      "summary": "Close the day with a classification, a proof and tomorrow's first physical action."
+    },
+    {
+      "name": "/reset",
+      "mode": "RESET",
+      "summary": "The weekly reset: the honest truth, next week's single win, one system experiment."
+    },
+    {
+      "name": "/audit",
+      "mode": "AUDIT",
+      "summary": "The monthly system audit: one change to the system, with its test."
+    }
+  ],
+  "dependencies": {
+    "requires": [
+      "context-memory-os"
+    ],
+    "emits": [
+      "execution.day.opened",
+      "execution.commitment.created",
+      "execution.commitment.proved",
+      "execution.commitment.recovered",
+      "execution.promise.recorded",
+      "execution.day.closed",
+      "execution.week.reset",
+      "execution.system.audited"
+    ],
+    "consumes_from": [
+      "project-os",
+      "meeting-os",
+      "client-os",
+      "team-delegation-os",
+      "habit-tracker-os",
+      "goal-life-strategy-os"
+    ]
+  },
+  "targets": {
+    "claude": {
+      "supported": true
+    },
+    "chatgpt": {
+      "supported": true
+    },
+    "gemini": {
+      "supported": true
+    },
+    "codex": {
+      "supported": true
+    }
+  },
+  "entrypoints": {
+    "spec": "OS.md",
+    "system": "SYSTEM.md",
+    "skill": "SKILL.md",
+    "setup": "SETUP.md",
+    "workflows": "WORKFLOWS/",
+    "commands": "COMMANDS/",
+    "prompts": "PROMPTS/",
+    "references": "REFERENCES/",
+    "memory": "MEMORY/",
+    "tools": "TOOLS/",
+    "evals": "EVALS/",
+    "examples": "EXAMPLES/",
+    "interfaces": "INTERFACES/",
+    "adapters": "ADAPTERS/"
+  },
+  "requires_human_approval_for": [
+    "cancelling a commitment that carries a promise to another person",
+    "sending or drafting a late-promise notice to a stakeholder",
+    "changing an agreed deadline held by a client or a teammate",
+    "deleting or rewriting historical ledger entries, including proofs",
+    "reclassifying a completed day",
+    "handing a commitment to Team & Delegation {OS}"
+  ]
+}

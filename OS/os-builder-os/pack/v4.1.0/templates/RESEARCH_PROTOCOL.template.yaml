@@ -1,0 +1,41 @@
+research_id: ""
+domain: ""
+questions:
+  conceptual: []
+  empirical: []
+  procedural: []
+  diagnostic: []
+  implementation: []
+  risk_and_failure: []
+source_classes:
+  books:
+    bestseller: true
+    foundational: true
+    evidence_led: true
+    practitioner: true
+    specialist: true
+    current: true
+    critical: true
+  non_book:
+    primary_research: true
+    systematic_reviews: true
+    official_sources: true
+    technical_documentation: conditional
+    expert_consensus: true
+    practitioner_cases: true
+    postmortems: true
+    datasets_and_benchmarks: conditional
+languages: [en]
+time_windows: []
+inclusion_rules: []
+exclusion_rules: []
+quality_dimensions:
+  - relevance
+  - authority
+  - evidence_transparency
+  - directness
+  - recency
+  - applicability
+  - actionability
+  - contradiction_value
+saturation_rules: []

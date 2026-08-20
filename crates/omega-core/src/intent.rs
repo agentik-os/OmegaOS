@@ -57,48 +57,148 @@ pub struct IntentJson {
 /// Longest match first within each group to avoid partial hits.
 const PATTERNS: &[(&[&str], IntentAction, f32)] = &[
     // God mode — check before feature/ship
-    (&["/godmode", "god mode", "godmode"], IntentAction::GodMode, 0.95),
+    (
+        &["/godmode", "god mode", "godmode"],
+        IntentAction::GodMode,
+        0.95,
+    ),
     // Status queries
-    (&["status", "health", "how is", "comment va", "état"], IntentAction::Status, 0.85),
+    (
+        &["status", "health", "how is", "comment va", "état"],
+        IntentAction::Status,
+        0.85,
+    ),
     // Ship / deploy
-    (&[
-        "ship", "deploy", "push", "merge", "envoie en prod",
-        "met en prod", "livre", "publish",
-    ], IntentAction::Ship, 0.90),
+    (
+        &[
+            "ship",
+            "deploy",
+            "push",
+            "merge",
+            "envoie en prod",
+            "met en prod",
+            "livre",
+            "publish",
+        ],
+        IntentAction::Ship,
+        0.90,
+    ),
     // Audit keywords (high confidence — well-defined)
-    (&[
-        "audit", "/codeaudit", "/flowaudit", "/uiuxaudit", "/debugaudit",
-        "/featureaudit", "/perfaudit", "/secaudit", "/a11yaudit", "/seoaudit",
-        "/dataaudit", "/apiaudit", "/copyaudit", "/dxaudit", "/motionaudit",
-        "/automationaudit", "/logicaudit", "/retentionaudit",
-    ], IntentAction::Audit, 0.95),
+    (
+        &[
+            "audit",
+            "/codeaudit",
+            "/flowaudit",
+            "/uiuxaudit",
+            "/debugaudit",
+            "/featureaudit",
+            "/perfaudit",
+            "/secaudit",
+            "/a11yaudit",
+            "/seoaudit",
+            "/dataaudit",
+            "/apiaudit",
+            "/copyaudit",
+            "/dxaudit",
+            "/motionaudit",
+            "/automationaudit",
+            "/logicaudit",
+            "/retentionaudit",
+        ],
+        IntentAction::Audit,
+        0.95,
+    ),
     // Bug fix
-    (&[
-        "fix", "bug", "broken", "crash", "error", "fail", "issue",
-        "doesn't work", "ne marche pas", "ne fonctionne pas", "cassé",
-        "problème", "problem", "regression", "revert",
-    ], IntentAction::BugFix, 0.80),
+    (
+        &[
+            "fix",
+            "bug",
+            "broken",
+            "crash",
+            "error",
+            "fail",
+            "issue",
+            "doesn't work",
+            "ne marche pas",
+            "ne fonctionne pas",
+            "cassé",
+            "problème",
+            "problem",
+            "regression",
+            "revert",
+        ],
+        IntentAction::BugFix,
+        0.80,
+    ),
     // Feature
-    (&[
-        "add", "create", "build", "implement", "new feature", "ajoute",
-        "crée", "construis", "implémente", "nouvelle feature",
-    ], IntentAction::Feature, 0.75),
+    (
+        &[
+            "add",
+            "create",
+            "build",
+            "implement",
+            "new feature",
+            "ajoute",
+            "crée",
+            "construis",
+            "implémente",
+            "nouvelle feature",
+        ],
+        IntentAction::Feature,
+        0.75,
+    ),
     // Refactor
-    (&[
-        "refactor", "clean up", "restructure", "reorganize", "simplify",
-        "optimize", "améliore", "nettoie", "réorganise",
-    ], IntentAction::Refactor, 0.80),
+    (
+        &[
+            "refactor",
+            "clean up",
+            "restructure",
+            "reorganize",
+            "simplify",
+            "optimize",
+            "améliore",
+            "nettoie",
+            "réorganise",
+        ],
+        IntentAction::Refactor,
+        0.80,
+    ),
     // Docs
-    (&[
-        "document", "readme", "docs", "documentation", "write docs",
-        "update docs", "changelog",
-    ], IntentAction::Docs, 0.85),
+    (
+        &[
+            "document",
+            "readme",
+            "docs",
+            "documentation",
+            "write docs",
+            "update docs",
+            "changelog",
+        ],
+        IntentAction::Docs,
+        0.85,
+    ),
     // Question — weakest signal, checked last
-    (&[
-        "what", "how", "why", "where", "when", "can you", "explain",
-        "tell me", "show me", "list", "which", "est-ce que", "comment",
-        "pourquoi", "qu'est-ce",
-    ], IntentAction::Question, 0.60),
+    (
+        &[
+            "what",
+            "how",
+            "why",
+            "where",
+            "when",
+            "can you",
+            "explain",
+            "tell me",
+            "show me",
+            "list",
+            "which",
+            "est-ce que",
+            "comment",
+            "pourquoi",
+            "qu'est-ce",
+        ],
+        IntentAction::Question,
+        0.60,
+    ),
 ];
 
 pub struct IntentParser {
@@ -243,24 +343,75 @@ fn word_boundary_match(haystack: &str, needle: &str) -> bool {
 /// Detect which audit skills are referenced in the text.
 fn detect_audit_names(lower: &str) -> Vec<String> {
     let table: &[(&[&str], &str)] = &[
-        (&["ux", "ui", "design audit", "audit visuel", "audit design", "ui/ux"], "uiuxaudit"),
-        (&["refonte", "refontaudit", "redesign dashboard"], "refontaudit"),
-        (&["flow", "user flow", "parcours", "audit flow"], "flowaudit"),
+        (
+            &[
+                "ux",
+                "ui",
+                "design audit",
+                "audit visuel",
+                "audit design",
+                "ui/ux",
+            ],
+            "uiuxaudit",
+        ),
+        (
+            &["refonte", "refontaudit", "redesign dashboard"],
+            "refontaudit",
+        ),
+        (
+            &["flow", "user flow", "parcours", "audit flow"],
+            "flowaudit",
+        ),
         (&["code audit", "code quality", "audit code"], "codeaudit"),
-        (&["perf", "performance", "core web vitals", "audit perf"], "perfaudit"),
+        (
+            &["perf", "performance", "core web vitals", "audit perf"],
+            "perfaudit",
+        ),
         (&["security", "vulnerab", "owasp", "audit sec"], "secaudit"),
         (&["a11y", "accessibility", "wcag"], "a11yaudit"),
         (&["seo", "audit seo", "crawlability"], "seoaudit"),
-        (&["feature audit", "completeness", "audit feature"], "featureaudit"),
-        (&["copy audit", "messaging audit", "audit copy"], "copyaudit"),
+        (
+            &["feature audit", "completeness", "audit feature"],
+            "featureaudit",
+        ),
+        (
+            &["copy audit", "messaging audit", "audit copy"],
+            "copyaudit",
+        ),
         (&["dx audit", "developer experience", "audit dx"], "dxaudit"),
-        (&["motion audit", "animation audit", "audit motion"], "motionaudit"),
-        (&["data integrity", "data audit", "audit data", "schema audit"], "dataaudit"),
+        (
+            &["motion audit", "animation audit", "audit motion"],
+            "motionaudit",
+        ),
+        (
+            &["data integrity", "data audit", "audit data", "schema audit"],
+            "dataaudit",
+        ),
         (&["api audit", "audit api", "api contracts"], "apiaudit"),
         (&["debugaudit", "runtime bug", "debug audit"], "debugaudit"),
-        (&["automation", "cron", "crontab", "scripts audit", "daemon health"], "automationaudit"),
-        (&["logic", "optimize logic", "system optimization"], "logicaudit"),
-        (&["retention", "retentionaudit", "feature opportunities", "make it sticky"], "retentionaudit"),
+        (
+            &[
+                "automation",
+                "cron",
+                "crontab",
+                "scripts audit",
+                "daemon health",
+            ],
+            "automationaudit",
+        ),
+        (
+            &["logic", "optimize logic", "system optimization"],
+            "logicaudit",
+        ),
+        (
+            &[
+                "retention",
+                "retentionaudit",
+                "feature opportunities",
+                "make it sticky",
+            ],
+            "retentionaudit",
+        ),
     ];
 
     // "full audit" → EVERY Quality Arsenal audit. Delegate to the audit
@@ -269,7 +420,10 @@ fn detect_audit_names(lower: &str) -> Vec<String> {
     // registry grew to 23, so the two "full audit" paths disagreed on which
     // audits run. The registry's own test (select_full_audit_returns_all) locks
     // the count, so this path now always matches it.
-    if lower.contains("full audit") || lower.contains("audit complet") || lower.contains("toutes les audits") {
+    if lower.contains("full audit")
+        || lower.contains("audit complet")
+        || lower.contains("toutes les audits")
+    {
         return crate::audit::all_audits()
             .iter()
             .map(|a| a.id.to_string())
@@ -296,7 +450,9 @@ fn extract_target(text: &str, action: IntentAction) -> Option<String> {
     if lower.starts_with('/') {
         let rest = text.split_once(' ')?.1;
         let trimmed = rest.trim();
-        if trimmed.is_empty() { return None; }
+        if trimmed.is_empty() {
+            return None;
+        }
         return Some(trimmed.to_string());
     }
 
@@ -432,7 +588,10 @@ mod tests {
         // Must equal the audit registry exactly (single source of truth), not a
         // hardcoded count that drifts when audits are added. Pre-fix this path
         // returned 17 (a stale local table) while the registry held 23.
-        assert_eq!(intent.detected_audits.len(), crate::audit::all_audits().len());
+        assert_eq!(
+            intent.detected_audits.len(),
+            crate::audit::all_audits().len()
+        );
         assert_eq!(intent.detected_audits.len(), 23);
     }
 
@@ -482,10 +641,14 @@ mod tests {
         // The word_boundary_match function is for project names, not audit triggers.
         let p = parser_with_projects();
         let intent = p.parse("DentistryGPT needs a fix");
-        assert!(intent.detected_projects.contains(&"DentistryGPT".to_string()));
+        assert!(intent
+            .detected_projects
+            .contains(&"DentistryGPT".to_string()));
         // "dent" alias should NOT match "indent"
         let intent2 = p.parse("indent the code properly");
-        assert!(!intent2.detected_projects.contains(&"DentistryGPT".to_string()));
+        assert!(!intent2
+            .detected_projects
+            .contains(&"DentistryGPT".to_string()));
     }
 
     #[test]

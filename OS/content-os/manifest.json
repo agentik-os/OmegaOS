@@ -1,0 +1,206 @@
+{
+  "schema_version": "2.0.0",
+  "id": "content-os",
+  "num": 34,
+  "name": "Content {OS}",
+  "version": "0.1.0",
+  "status": "scaffold",
+  "group": {
+    "key": "grow",
+    "label": "04 · GROW",
+    "purpose": "Turn value into distribution and revenue"
+  },
+  "tagline": "Editorial strategy, packaging, publishing and content analytics.",
+  "inherits_from": "content-os",
+  "commands": [
+    {
+      "name": "/content",
+      "does": "Opens Content {OS}: blocked releases, pending approvals, then the calendar.",
+      "returns": "Rights blocks first, approvals pending, and the calendar with unready slots shown empty."
+    },
+    {
+      "name": "/content-gps",
+      "does": "Defines positioning and the content system: audience, pillars, cadence and exclusions.",
+      "returns": "A content GPS where each pillar traces to the claim and to a real capability."
+    },
+    {
+      "name": "/capture-day",
+      "does": "Ingests the day as source material.",
+      "returns": "Staged records, each with a source and a timestamp, low-confidence extractions left staged."
+    },
+    {
+      "name": "/story-mine",
+      "does": "Finds candidate stories, insights and proof in captured material.",
+      "returns": "Candidates with epistemic labels; anything narrative is referred to Storyteller {OS}."
+    },
+    {
+      "name": "/pillar",
+      "does": "Creates a pillar asset from a selected candidate.",
+      "returns": "A draft with every material claim labelled E1 to E5 and the dropped claims listed."
+    },
+    {
+      "name": "/article",
+      "does": "Creates a standalone article outside a cascade.",
+      "returns": "A draft with labelled claims and the dropped claims listed."
+    },
+    {
+      "name": "/cascade",
+      "does": "Turns one pillar into a native waterfall across the selected surfaces.",
+      "returns": "One adapted package per surface; a word-count crop is rejected and reported as a crop."
+    },
+    {
+      "name": "/instagram",
+      "does": "Creates an Instagram-native package.",
+      "returns": "A package in Instagram's grammar with its accessibility requirements."
+    },
+    {
+      "name": "/tiktok",
+      "does": "Creates a TikTok-native package.",
+      "returns": "A package in TikTok's grammar with its accessibility requirements."
+    },
+    {
+      "name": "/youtube",
+      "does": "Creates a YouTube package.",
+      "returns": "A package in YouTube's grammar with its accessibility requirements."
+    },
+    {
+      "name": "/linkedin",
+      "does": "Creates a LinkedIn package.",
+      "returns": "A package in LinkedIn's grammar with its accessibility requirements."
+    },
+    {
+      "name": "/x",
+      "does": "Creates an X package.",
+      "returns": "A package in X's grammar with its accessibility requirements."
+    },
+    {
+      "name": "/newsletter",
+      "does": "Creates a newsletter edition.",
+      "returns": "A newsletter draft with its disclosure and accessibility requirements."
+    },
+    {
+      "name": "/visual-brief",
+      "does": "Creates image and design direction for an asset.",
+      "returns": "A brief referencing the Brand {OS} visual system, with rights, licences and accessibility."
+    },
+    {
+      "name": "/video-brief",
+      "does": "Creates script, shots and edit plan for an asset.",
+      "returns": "A brief with rights, likeness clearances and accessibility requirements."
+    },
+    {
+      "name": "/sound-brief",
+      "does": "Creates sound, music and voice direction for an asset.",
+      "returns": "A brief with licence requirements stated per track or voice."
+    },
+    {
+      "name": "/content-calendar",
+      "does": "Builds the editorial calendar from the pillars and the cadence.",
+      "returns": "A calendar where every slot states its job; slots with no job are left unfilled."
+    },
+    {
+      "name": "/content-review",
+      "does": "Runs the performance council over published assets.",
+      "returns": "Per-asset verdicts against the job each was given, plus what would change the recommendation."
+    }
+  ],
+  "dependencies": {
+    "requires": [
+      "positioning-os",
+      "brand-os"
+    ],
+    "consumes_from": [
+      "positioning-os",
+      "brand-os",
+      "storyteller-os",
+      "growth-os",
+      "offer-os"
+    ],
+    "emits_to": [
+      "growth-os",
+      "sales-os",
+      "kpi-analytics-os"
+    ],
+    "handoffs": [
+      {
+        "to": "positioning-os",
+        "artifact": "claim"
+      },
+      {
+        "to": "brand-os",
+        "artifact": "voice rules and visual system"
+      },
+      {
+        "to": "storyteller-os",
+        "artifact": "story objects and truth verdicts"
+      },
+      {
+        "to": "growth-os",
+        "artifact": "experiment hypotheses"
+      },
+      {
+        "to": "offer-os",
+        "artifact": "what the content points at"
+      },
+      {
+        "to": "growth-os",
+        "artifact": "editorial calendar"
+      },
+      {
+        "to": "sales-os",
+        "artifact": "editorial calendar"
+      },
+      {
+        "to": "growth-os",
+        "artifact": "published asset and content performance"
+      },
+      {
+        "to": "sales-os",
+        "artifact": "published asset and content performance"
+      },
+      {
+        "to": "kpi-analytics-os",
+        "artifact": "published asset and content performance"
+      }
+    ]
+  },
+  "targets": {
+    "claude": {
+      "supported": true
+    },
+    "chatgpt": {
+      "supported": true
+    },
+    "gemini": {
+      "supported": true
+    },
+    "codex": {
+      "supported": true
+    }
+  },
+  "entrypoints": {
+    "spec": "OS.md",
+    "system": "SYSTEM.md",
+    "skill": "SKILL.md",
+    "setup": "SETUP.md",
+    "workflows": "WORKFLOWS/",
+    "commands": "COMMANDS/",
+    "prompts": "PROMPTS/",
+    "references": "REFERENCES/",
+    "memory": "MEMORY/",
+    "tools": "TOOLS/",
+    "evals": "EVALS/",
+    "examples": "EXAMPLES/",
+    "interfaces": "INTERFACES/",
+    "adapters": "ADAPTERS/"
+  },
+  "requires_human_approval_for": [
+    "publishing to any external channel, in the exact wording and assets that will ship",
+    "any paid distribution spend",
+    "publishing content that names a customer, a partner or any third party",
+    "publishing any material claim labelled E4 or E5 as though it were settled",
+    "responding publicly on behalf of the operator in community engagement",
+    "overriding a content.rights.blocked release block",
+    "changing the pack's boundaries, schemas or quality gates"
+  ]
+}

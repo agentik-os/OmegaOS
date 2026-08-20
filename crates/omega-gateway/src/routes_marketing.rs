@@ -103,23 +103,24 @@ pub async fn list() -> Result<Json<MarketingResponse>, (StatusCode, Json<serde_j
     let scan = tokio::time::timeout(
         timeout,
         tokio::task::spawn_blocking(|| {
-            let projects = dedupe_by_canonical_path(omega_core::marketing::list_marketing_projects())
-                .into_iter()
-                .map(|p| MarketingProjectEntry {
-                    name: p.name,
-                    slug: p.slug,
-                    has_content: p.has_content,
-                    calendar_posts: p.calendar_posts,
-                    engine_on: p.engine_on,
-                    accounts: p.accounts,
-                    accounts_tried: p.accounts_tried,
-                    has_context: p.has_context,
-                    has_strategy: p.has_strategy,
-                    has_copy: p.has_copy,
-                    has_visual: p.has_visual,
-                    has_branding: p.has_branding,
-                })
-                .collect();
+            let projects =
+                dedupe_by_canonical_path(omega_core::marketing::list_marketing_projects())
+                    .into_iter()
+                    .map(|p| MarketingProjectEntry {
+                        name: p.name,
+                        slug: p.slug,
+                        has_content: p.has_content,
+                        calendar_posts: p.calendar_posts,
+                        engine_on: p.engine_on,
+                        accounts: p.accounts,
+                        accounts_tried: p.accounts_tried,
+                        has_context: p.has_context,
+                        has_strategy: p.has_strategy,
+                        has_copy: p.has_copy,
+                        has_visual: p.has_visual,
+                        has_branding: p.has_branding,
+                    })
+                    .collect();
             MarketingResponse { projects }
         }),
     )

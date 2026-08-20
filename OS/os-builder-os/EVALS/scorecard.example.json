@@ -1,0 +1,95 @@
+{
+  "os": "example-candidate-os",
+  "version": "1.0.0",
+  "scored_by": "reviewer who did not write the package",
+  "date": "2026-08-16",
+  "tier": "full",
+  "notes": "A worked example showing the shape TOOLS/score_os.py reads and a scorecard that clears the threshold by a genuinely narrow margin. 'example-candidate-os' is a fictional candidate, not a registered unit, and these numbers are a demonstration of the arithmetic rather than a claim about any OS in the suite. Five fives and eleven fours give a mean of 4.3125, which passes the 4.3 threshold by 0.0125. Drop any single five to a four and the mean falls to 4.25 and the build is BLOCKED on the average alone, with every individual dimension still at or above 4. That is the intended behaviour: sixteen merely adequate dimensions do not add up to a release.",
+  "scores": {
+    "value_proposition": {
+      "score": 4,
+      "evidence": "README.md opening names the before state, the after state and the artifact. Swapping in another capability's name makes the sentence false, which is the test. Not a 5 because it does not state what would show the promise failed."
+    },
+    "scope": {
+      "score": 4,
+      "evidence": "OS.md section 2 fills all four boundary statements and names the near neighbour. Overlap against the boundary map is under 30 percent."
+    },
+    "domain_depth": {
+      "score": 4,
+      "evidence": "Six captured sources, one official and one academic, meeting the medium risk sufficiency floor. Every reference carries a filled WHERE USED. Not a 5: nothing here contradicts the obvious approach."
+    },
+    "human_skill": {
+      "score": 4,
+      "evidence": "SKILL.md carries mental models, the questions an expert asks and a six level proficiency ladder. A competent operator gets better at the work with the model removed."
+    },
+    "operating_logic": {
+      "score": 5,
+      "evidence": "CRITICAL. Five modes in OS.md section 3, each with an entry condition and a completion test. Section 8 specifies the failure paths at the same depth as the happy path, and three gates name who can overrule them."
+    },
+    "evidence_discipline": {
+      "score": 5,
+      "evidence": "CRITICAL. All six evidence states used in the operating logic, confidence tracked separately from state, and EXAMPLES/ carries a worked path whose correct output is UNKNOWN."
+    },
+    "decision_quality": {
+      "score": 4,
+      "evidence": "Every gate names its criterion and its branches. Two gates do not name who can overrule them, which is what holds this at 4."
+    },
+    "artifact_quality": {
+      "score": 4,
+      "evidence": "CRITICAL. The primary artifact is defined in OS.md section 5 and shown finished in EXAMPLES/. It does not yet state its own limitations, so it is not a 5."
+    },
+    "executive_usability": {
+      "score": 4,
+      "evidence": "The artifact opens with the answer and the confidence. What would change the answer is present but appears after the working."
+    },
+    "security": {
+      "score": 5,
+      "evidence": "CRITICAL. Every input and output classified, the money domain controls present and tested, requires_human_approval_for holds three entries, and the security suite includes a path whose correct output is refusal."
+    },
+    "testability": {
+      "score": 5,
+      "evidence": "CRITICAL. All seven case families covered, every case carries a fail signature, and two regression cases come from defects that actually occurred during the build."
+    },
+    "traceability": {
+      "score": 4,
+      "evidence": "Recommendation to finding to evidence to source is intact and the assumption register ships with two open items. Two findings cite a source without an intermediate evidence id."
+    },
+    "reusability": {
+      "score": 4,
+      "evidence": "Operating logic is parameterised. One figure from the originating case still appears in a prompt default and should move into EXAMPLES/."
+    },
+    "installability": {
+      "score": 5,
+      "evidence": "validate_os.py --full exits 0, graph.py --strict exits 0, manifest.json complete with thirteen keys, and SETUP.md answers every question a first install raises."
+    },
+    "handoffs": {
+      "score": 4,
+      "evidence": "Three handoffs declared in manifest.json, every slug resolving, graph.py reports no orphan consume. One artifact string is written in the producer's vocabulary rather than the receiver's."
+    },
+    "adapters": {
+      "score": 4,
+      "evidence": "All four adapters present and target specific: each contains at least one sentence that would be false in another adapter. Degradation is declared in three of the four, not in the fourth."
+    }
+  },
+  "waivers": [],
+  "gate": {
+    "bounded_capability": "YES",
+    "specific_value_proposition": "YES",
+    "primary_artifact_defined": "YES",
+    "human_skill_defined": "YES",
+    "evidence_states_defined": "YES",
+    "decision_gates_defined": "YES",
+    "stop_conditions_defined": "YES",
+    "handoffs_defined": "YES",
+    "appropriate_security_controls": "YES",
+    "tests_beyond_happy_path": "YES",
+    "substantive_files": "YES",
+    "realistic_examples": "YES",
+    "purposeful_references": "YES",
+    "no_unsupported_major_claims": "YES",
+    "quality_threshold_passed": "YES",
+    "package_validated": "YES",
+    "changelog_updated": "YES",
+    "reproducible_zip": "YES"
+  }
+}

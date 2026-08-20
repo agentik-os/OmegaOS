@@ -1,0 +1,123 @@
+{
+  "schema_version": "2.0.0",
+  "id": "design-os",
+  "num": 22,
+  "name": "Design {OS}",
+  "version": "0.1.0",
+  "status": "scaffold",
+  "group": {
+    "key": "build",
+    "label": "03 · BUILD",
+    "purpose": "Turn evidence into products"
+  },
+  "tagline": "UX, interaction and visual design compiled into a machine-readable handoff.",
+  "inherits_from": "design-os",
+  "commands": [
+    {
+      "name": "/design-os",
+      "surface": "session",
+      "does": "Open the compiler, read the pinned Blueprint, propose a mode"
+    },
+    {
+      "name": "full",
+      "surface": "session",
+      "does": "Run every pass and emit the complete design pack plus the handoff"
+    },
+    {
+      "name": "audit",
+      "surface": "session",
+      "does": "Challenge an existing design or shipped UI, emit a repair handoff"
+    },
+    {
+      "name": "flow <id>",
+      "surface": "session",
+      "does": "Resolve selected journeys with every edge state named"
+    },
+    {
+      "name": "ai-app",
+      "surface": "session",
+      "does": "Compile the AI interaction surface and its visible states"
+    },
+    {
+      "name": "stax-fit",
+      "surface": "session",
+      "does": "Decide whether, where and how to use the STAX panel model"
+    },
+    {
+      "name": "revision <delta>",
+      "surface": "session",
+      "does": "Update only the impacted IDs and contracts"
+    },
+    {
+      "name": "omega-designer intake",
+      "surface": "cli",
+      "does": "Validate the Blueprint intake before designing"
+    },
+    {
+      "name": "omega-designer handoff",
+      "surface": "cli",
+      "does": "Validate the Design Handoff for Stepper"
+    },
+    {
+      "name": "omega-designer self-test",
+      "surface": "cli",
+      "does": "Run the validator self-test"
+    }
+  ],
+  "dependencies": {
+    "requires": [
+      "blueprint-os"
+    ],
+    "consumes": [
+      "blueprint.handoff.frozen",
+      "blueprint.delta.published",
+      "prototype.verdict.recorded",
+      "brand.identity.defined",
+      "memory.context.compiled"
+    ],
+    "emits": [
+      "design.flow.challenged",
+      "design.prototype.requested",
+      "design.decision.requested",
+      "design.handoff.completed"
+    ]
+  },
+  "targets": {
+    "claude": {
+      "supported": true
+    },
+    "chatgpt": {
+      "supported": true
+    },
+    "gemini": {
+      "supported": true
+    },
+    "codex": {
+      "supported": true
+    }
+  },
+  "entrypoints": {
+    "spec": "OS.md",
+    "system": "SYSTEM.md",
+    "skill": "SKILL.md",
+    "setup": "SETUP.md",
+    "workflows": "WORKFLOWS/",
+    "commands": "COMMANDS/",
+    "prompts": "PROMPTS/",
+    "references": "REFERENCES/",
+    "memory": "MEMORY/",
+    "tools": "TOOLS/",
+    "evals": "EVALS/",
+    "examples": "EXAMPLES/",
+    "interfaces": "INTERFACES/",
+    "adapters": "ADAPTERS/"
+  },
+  "requires_human_approval_for": [
+    "freezing the Design Handoff, since Stepper plans against it",
+    "adopting a navigation shell that changes the product's mental model",
+    "overriding a Brand {OS} constraint",
+    "accepting a known accessibility failure into a release",
+    "specifying a destructive or irreversible user action without local undo",
+    "replacing an existing component library or design system"
+  ]
+}

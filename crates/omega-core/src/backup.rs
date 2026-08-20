@@ -208,8 +208,7 @@ pub fn run_backup(
         }
     }
 
-    let archive =
-        out.unwrap_or_else(|| home.join(format!("omega-backup-{}.tgz", timestamp)));
+    let archive = out.unwrap_or_else(|| home.join(format!("omega-backup-{}.tgz", timestamp)));
 
     // Tar relative to $HOME so the memory store (.claude/projects) shares one
     // base with the state dir. The state dir is config::omega_dir() — legacy

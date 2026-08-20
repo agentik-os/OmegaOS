@@ -41,7 +41,7 @@
 //!    stuck oracle must be able to emit, and refusing those would leave it with
 //!    no legal way to report at all.
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -49,7 +49,8 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 
 use crate::done::{DoneStatus, OracleDoneSignal};
-use crate::oracle_lifecycle::LiveWorkers;
+use crate::mission_ledger::{MissionLedger, MissionProjection};
+use crate::oracle_lifecycle::{CompatibilityProjection, LiveWorkers, OracleState};
 
 // ---------------------------------------------------------------------------
 // TodoStatus — the on-disk `s` value, as a validated state machine
@@ -273,6 +274,20 @@ pub struct OracleTodo {
     total: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     ts: Option<DateTime<Utc>>,
+    /// Provenance of this mutable progress view. Historical files omit it and
+    /// remain readable, but new mutation paths can require it with
+    /// [`OracleTodo::require_ledger_authority`] instead of trusting task JSON as
+    /// mission truth.
+    #[serde(
+        default,
+        rename = "_omega_projection",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub compatibility_projection: Option<CompatibilityProjection>,
+    /// Optimistic concurrency revision of this compatibility document. It is
+    /// not a mission version and carries no authority by itself.
+    #[serde(default, rename = "_omega_version")]
+    storage_version: u64,
     /// Every top-level key this module does not own: the bot's `chat`,
     /// `thread`, `msgId`, `bot`, `project`, `oracle`, `mission`, and whatever
     /// the next producer adds. Written back verbatim.
@@ -283,6 +298,11 @@ pub struct OracleTodo {
     /// field for that purpose.
     #[serde(skip)]
     session: String,
+    /// Digest of the authority-owned fields observed at load time. Foreign
+    /// Telegram/card keys may change concurrently; tasks/provenance/version may
+    /// not, which prevents a stale writer from clobbering a newer task list.
+    #[serde(skip)]
+    source_owned_digest: Option<String>,
 }
 
 impl OracleTodo {
@@ -300,6 +320,39 @@ impl OracleTodo {
         &self.session
     }
 
+    /// Stamp this compatibility view from the already-validated OracleState.
+    /// The stamp is cloned, never synthesized from progress JSON.
+    pub fn attach_projection_from_oracle(&mut self, state: &OracleState) -> Result<()> {
+        if state.oracle_name != self.session {
+            anyhow::bail!(
+                "progress session {} differs from oracle projection {}",
+                self.session,
+                state.oracle_name
+            );
+        }
+        self.compatibility_projection =
+            Some(state.compatibility_projection.clone().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "oracle {} has no V3 compatibility provenance",
+                    state.oracle_name
+                )
+            })?);
+        Ok(())
+    }
+
+    /// Validate this progress document against the ledger. This deliberately
+    /// returns the ledger projection rather than deriving mission state from
+    /// todo statuses: JSON is a display/write compatibility surface only.
+    pub fn require_ledger_authority(&self, ledger: &MissionLedger) -> Result<MissionProjection> {
+        let stamp = self.compatibility_projection.as_ref().ok_or_else(|| {
+            anyhow::anyhow!(
+                "progress {} is a legacy projection without V3 authority",
+                self.session
+            )
+        })?;
+        stamp.validate(&stamp.source_mission_id, ledger)
+    }
+
     /// Same path rule as [`crate::progress::ProgressInfo::read`] and
     /// `cmd_progress`: the file key is the session name minus ONE leading
     /// `oracle-`, so a worker session keeps its full name inside the key and
@@ -311,36 +364,90 @@ impl OracleTodo {
         state_dir.join(format!("oracle-{}.progress.json", key))
     }
 
+    fn checked_path(state_dir: &Path, session: &str) -> Result<(PathBuf, String)> {
+        crate::scope::validate_session_identity(session)?;
+        let key = session.strip_prefix("oracle-").unwrap_or(session);
+        crate::scope::validate_session_identity(key)?;
+        Ok((
+            state_dir.join(format!("oracle-{key}.progress.json")),
+            key.to_string(),
+        ))
+    }
+
     /// Load the plan. A MISSING file is an empty plan, never an error: that is
     /// the post-compaction resume path, where an oracle asks what it was doing
     /// before it has ever written anything. A file that exists but does not
     /// parse IS an error, because silently starting from empty there would let
     /// the next save overwrite a real plan with nothing.
     pub fn load(state_dir: &Path, session: &str) -> Result<Self> {
-        let path = Self::path(state_dir, session);
-        let content = match std::fs::read_to_string(&path) {
-            Ok(c) => c,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Self::new(session)),
-            // Any OTHER io error (a permission problem, a directory where the
-            // file should be) is real and must surface: it is not the same
-            // thing as "this oracle has not written a plan yet".
-            Err(e) => {
-                return Err(
-                    anyhow::Error::from(e).context(format!("cannot read {}", path.display()))
-                )
-            }
+        let (path, _) = Self::checked_path(state_dir, session)?;
+        let Some(content) = crate::config::read_private_optional(&path)? else {
+            let mut todo = Self::new(session);
+            todo.inherit_projection_from_oracle(state_dir)?;
+            return Ok(todo);
         };
-        let mut todo: Self = serde_json::from_str(&content).map_err(|e| {
-            anyhow::anyhow!("{} is not a readable progress file: {}", path.display(), e)
+        let raw: Value = serde_json::from_slice(&content).map_err(|error| {
+            anyhow::anyhow!(
+                "{} is not a readable progress file: {}",
+                path.display(),
+                error
+            )
+        })?;
+        if !raw.is_object() {
+            anyhow::bail!("{} is not a JSON object", path.display());
+        }
+        let source_owned_digest = Some(owned_fields_digest(&raw)?);
+        let mut todo: Self = serde_json::from_value(raw).map_err(|error| {
+            anyhow::anyhow!(
+                "{} is not a readable progress file: {}",
+                path.display(),
+                error
+            )
         })?;
         todo.session = session.to_string();
+        todo.inherit_projection_from_oracle(state_dir)?;
         // INVARIANT 3 is a property of the LEDGER, not just of this module's
         // write path, and every other producer writes this file without any
         // notion of it. Repairing on the way in is what makes the invariant
         // true for a file we did not write, and it is the only reason
         // `current()` has a single answer after a compaction.
         todo.enforce_single_doing();
+        todo.source_owned_digest = source_owned_digest;
         Ok(todo)
+    }
+
+    /// Explicitly tolerant read-only projection for diagnostics. It never
+    /// participates in mutation and returns `None` for missing or unsafe data.
+    pub fn load_diagnostic(state_dir: &Path, session: &str) -> Option<Self> {
+        Self::load(state_dir, session).ok()
+    }
+
+    fn inherit_projection_from_oracle(&mut self, state_dir: &Path) -> Result<()> {
+        match OracleState::read(state_dir, &self.session)? {
+            Some(state) => match (
+                self.compatibility_projection.as_ref(),
+                state.compatibility_projection.as_ref(),
+            ) {
+                (Some(todo), Some(oracle)) if todo != oracle => {
+                    anyhow::bail!(
+                        "progress {} provenance differs from its OracleState",
+                        self.session
+                    )
+                }
+                (Some(_), None) => anyhow::bail!(
+                    "progress {} claims V3 authority but its OracleState is legacy",
+                    self.session
+                ),
+                (None, Some(oracle)) => self.compatibility_projection = Some(oracle.clone()),
+                _ => {}
+            },
+            None if self.compatibility_projection.is_some() => anyhow::bail!(
+                "progress {} has V3 provenance but no OracleState",
+                self.session
+            ),
+            None => {}
+        }
+        Ok(())
     }
 
     /// Replace the task list with `titles`, in the given order.
@@ -540,57 +647,167 @@ impl OracleTodo {
     /// `done.rs` and `oracle_lifecycle.rs` already use, so a reader never
     /// catches a half-written plan.
     ///
-    /// The BOUND on that merge, because an overstated guarantee is worse than a
-    /// stated limit: it protects FOREIGN top-level keys only. `tasks`, `done`,
-    /// `total` and `ts` are overwritten wholesale from memory, so a task edit
-    /// another producer made since this plan was loaded is LOST — last writer
-    /// wins on the task list. That is survivable today only because the foreign
-    /// keys are written once at dispatch while the task list has one writer at
-    /// a time; a second concurrent task writer would need a version check here,
-    /// not a wider merge.
+    /// Foreign top-level keys are merged from the freshest disk document.
+    /// Authority-owned fields (`tasks`, provenance and `_omega_version`) use an
+    /// optimistic digest/CAS: concurrent card metadata survives, while a
+    /// concurrent task edit causes a loud retry instead of being clobbered.
     pub fn save(&self, state_dir: &Path, session: &str) -> Result<()> {
-        std::fs::create_dir_all(state_dir)?;
-        let path = Self::path(state_dir, session);
-        let key = session.strip_prefix("oracle-").unwrap_or(session);
-        // The tmp name carries THIS process's pid. `cmd_progress` writes
-        // `.oracle-<key>.progress.json.tmp` (omega-cli/src/main.rs:6363) with
-        // the same key derivation, so a shared name is not a cosmetic clash:
-        // two writers racing on one oracle would have one `rename` publish the
-        // OTHER's half-flushed file as the live document, which is both a torn
-        // read and — because `load` fails closed on unparseable JSON — a plan
-        // that can never be opened again.
-        let tmp = state_dir.join(format!(
-            ".oracle-{}.progress.json.{}.tmp",
-            key,
-            std::process::id()
-        ));
+        let (_, key) = Self::checked_path(state_dir, session)?;
+        let _lock = crate::scope::lock_private_state_file(
+            state_dir,
+            &format!(".oracle-{key}.progress.lock"),
+        )?;
+        self.save_locked(state_dir, session)
+    }
 
-        // Start from what is on disk RIGHT NOW so a concurrent producer's keys
-        // are preserved, then fill in anything we remember that disk no longer
-        // has. Disk wins on a conflict: it is the fresher of the two.
-        let mut root: Map<String, Value> = std::fs::read_to_string(&path)
-            .ok()
-            .and_then(|c| serde_json::from_str::<Value>(&c).ok())
-            .and_then(|v| match v {
-                Value::Object(m) => Some(m),
-                _ => None,
-            })
-            .unwrap_or_default();
+    fn save_locked(&self, state_dir: &Path, session: &str) -> Result<()> {
+        if self.session != session {
+            anyhow::bail!(
+                "progress session mismatch: loaded={}, requested={}",
+                self.session,
+                session
+            );
+        }
+        let (path, _) = Self::checked_path(state_dir, session)?;
+        self.validate_projection_against_oracle(state_dir)?;
+
+        let current = crate::config::read_private_optional(&path)?;
+        let mut root: Map<String, Value> = match current.as_deref() {
+            Some(bytes) => match serde_json::from_slice::<Value>(bytes)
+                .with_context(|| format!("parsing {} for progress CAS", path.display()))?
+            {
+                Value::Object(root) => root,
+                _ => anyhow::bail!("{} is not a JSON object", path.display()),
+            },
+            None => Map::new(),
+        };
+
+        if let Some(expected) = &self.source_owned_digest {
+            let actual = owned_fields_digest(&Value::Object(root.clone()))?;
+            if &actual != expected {
+                anyhow::bail!(
+                    "stale progress mutation for {}: tasks/provenance changed; reload before saving",
+                    session
+                );
+            }
+        } else if current.is_some() {
+            anyhow::bail!(
+                "progress {} appeared after this plan was created; reload before saving",
+                session
+            );
+        }
+
+        let current_version = root
+            .get("_omega_version")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        if self.source_owned_digest.is_some() && self.storage_version != current_version {
+            anyhow::bail!(
+                "stale progress version for {}: loaded {}, current {}",
+                session,
+                self.storage_version,
+                current_version
+            );
+        }
+        let next_version = current_version
+            .checked_add(1)
+            .ok_or_else(|| anyhow::anyhow!("progress version overflow for {session}"))?;
+
+        // Start from the live disk object so foreign Telegram/card fields win.
         for (k, v) in &self.extra {
             root.entry(k.clone()).or_insert_with(|| v.clone());
         }
-        // The keys this module owns are authoritative and overwrite whatever
-        // was there.
         let (done, total) = self.counts();
         root.insert("tasks".to_string(), serde_json::to_value(&self.tasks)?);
         root.insert("done".to_string(), Value::from(done));
         root.insert("total".to_string(), Value::from(total));
         root.insert("ts".to_string(), serde_json::to_value(Utc::now())?);
+        root.insert("_omega_version".to_string(), Value::from(next_version));
+        match &self.compatibility_projection {
+            Some(projection) => {
+                root.insert(
+                    "_omega_projection".to_string(),
+                    serde_json::to_value(projection)?,
+                );
+            }
+            None => {
+                root.remove("_omega_projection");
+            }
+        }
 
-        let content = serde_json::to_string_pretty(&Value::Object(root))?;
-        std::fs::write(&tmp, &content)?;
-        std::fs::rename(&tmp, &path)?;
+        let expected_owned_digest = owned_fields_digest(&Value::Object(root.clone()))?;
+        let content = serde_json::to_vec_pretty(&Value::Object(root))?;
+        crate::config::atomic_write_private(&path, &content)?;
+        let published = crate::config::read_private_optional(&path)?
+            .ok_or_else(|| anyhow::anyhow!("progress projection vanished after publish"))?;
+        let published: Value = serde_json::from_slice(&published)?;
+        if published.get("_omega_version").and_then(Value::as_u64) != Some(next_version)
+            || owned_fields_digest(&published)? != expected_owned_digest
+        {
+            anyhow::bail!("progress projection changed while being published");
+        }
         Ok(())
+    }
+
+    fn validate_projection_against_oracle(&self, state_dir: &Path) -> Result<()> {
+        let oracle = OracleState::read(state_dir, &self.session)?;
+        match (self.compatibility_projection.as_ref(), oracle.as_ref()) {
+            (Some(todo), Some(state)) => {
+                let oracle_projection =
+                    state.compatibility_projection.as_ref().ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "progress {} claims V3 authority but OracleState is legacy",
+                            self.session
+                        )
+                    })?;
+                if todo != oracle_projection {
+                    anyhow::bail!(
+                        "progress {} provenance differs from OracleState",
+                        self.session
+                    );
+                }
+                let ledger =
+                    MissionLedger::open(crate::oracle_lifecycle::mission_ledger_path(state_dir))?;
+                state.require_ledger_authority(&ledger)?;
+                self.require_ledger_authority(&ledger)?;
+            }
+            (Some(_), None) => anyhow::bail!(
+                "progress {} has V3 provenance but no OracleState",
+                self.session
+            ),
+            (None, Some(state)) if state.compatibility_projection.is_some() => {
+                anyhow::bail!(
+                    "progress {} omitted mandatory OracleState provenance",
+                    self.session
+                )
+            }
+            (None, _) => {
+                // Explicit legacy compatibility view. It remains writable for
+                // pre-v3 sessions, but can never satisfy require_ledger_authority.
+            }
+        }
+        Ok(())
+    }
+
+    /// Serialized authority read-modify-write. Callers that mutate a task list
+    /// concurrently can use this API instead of implementing retry/CAS loops.
+    pub fn mutate_authoritative<T, F>(state_dir: &Path, session: &str, mutate: F) -> Result<T>
+    where
+        F: FnOnce(&mut Self) -> Result<T>,
+    {
+        let (_, key) = Self::checked_path(state_dir, session)?;
+        let _lock = crate::scope::lock_private_state_file(
+            state_dir,
+            &format!(".oracle-{key}.progress.lock"),
+        )?;
+        let mut todo = Self::load(state_dir, session)?;
+        todo.validate_projection_against_oracle(state_dir)?;
+        if todo.compatibility_projection.is_none() {
+            anyhow::bail!("progress {session} is a legacy view without mutation authority");
+        }
+        let output = mutate(&mut todo)?;
+        todo.save_locked(state_dir, session)?;
+        Ok(output)
     }
 
     /// The checklist an oracle reads back to itself after a compaction, with
@@ -618,6 +835,20 @@ impl OracleTodo {
         out.push_str(&format!("{}/{}", done, total));
         out
     }
+}
+
+fn owned_fields_digest(document: &Value) -> Result<String> {
+    let root = document
+        .as_object()
+        .ok_or_else(|| anyhow::anyhow!("progress document is not an object"))?;
+    let owned = serde_json::json!({
+        "tasks": root.get("tasks").cloned().unwrap_or(Value::Array(Vec::new())),
+        "projection": root.get("_omega_projection").cloned().unwrap_or(Value::Null),
+        "version": root.get("_omega_version").cloned().unwrap_or(Value::from(0_u64)),
+    });
+    Ok(blake3::hash(&serde_json::to_vec(&owned)?)
+        .to_hex()
+        .to_string())
 }
 
 // ---------------------------------------------------------------------------
@@ -808,6 +1039,161 @@ pub fn honest_status(requested: DoneStatus, todo: &OracleTodo) -> DoneStatus {
 mod tests {
     use super::*;
     use crate::progress::ProgressInfo;
+
+    #[test]
+    fn progress_paths_and_corrupt_live_documents_fail_closed() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        assert!(OracleTodo::load(tmp.path(), "../escape").is_err());
+        let escaping = OracleTodo::new("../escape");
+        assert!(escaping.save(tmp.path(), "../escape").is_err());
+
+        let path = OracleTodo::path(tmp.path(), "oracle-corrupt");
+        std::fs::write(&path, b"{").unwrap();
+        let mut replacement = OracleTodo::new("oracle-corrupt");
+        replacement.set_plan(["must not overwrite"]);
+        assert!(replacement.save(tmp.path(), "oracle-corrupt").is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), b"{");
+    }
+
+    #[test]
+    fn concurrent_task_writer_is_rejected_but_first_writer_survives() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut initial = OracleTodo::new("oracle-cas");
+        initial.set_plan(["first", "second"]);
+        initial.save(tmp.path(), "oracle-cas").unwrap();
+
+        let mut first = OracleTodo::load(tmp.path(), "oracle-cas").unwrap();
+        let mut stale = OracleTodo::load(tmp.path(), "oracle-cas").unwrap();
+        first
+            .upsert("first", TodoStatus::Doing, Some("first-writer"))
+            .unwrap();
+        stale
+            .upsert("second", TodoStatus::Doing, Some("stale-writer"))
+            .unwrap();
+        first.save(tmp.path(), "oracle-cas").unwrap();
+        assert!(stale.save(tmp.path(), "oracle-cas").is_err());
+
+        let current = OracleTodo::load(tmp.path(), "oracle-cas").unwrap();
+        assert_eq!(
+            current.current().map(|item| item.title.as_str()),
+            Some("first")
+        );
+        assert_eq!(current.tasks[0].evidence.as_deref(), Some("first-writer"));
+    }
+
+    #[test]
+    fn exhausted_progress_revision_fails_without_overwriting() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = OracleTodo::path(tmp.path(), "oracle-overflow");
+        let document = serde_json::json!({
+            "tasks": [{"t": "safe", "s": "todo"}],
+            "done": 0,
+            "total": 1,
+            "_omega_version": u64::MAX,
+        });
+        crate::config::atomic_write_private(&path, &serde_json::to_vec_pretty(&document).unwrap())
+            .unwrap();
+        let before = std::fs::read(&path).unwrap();
+        let mut todo = OracleTodo::load(tmp.path(), "oracle-overflow").unwrap();
+        todo.upsert("safe", TodoStatus::Doing, None).unwrap();
+        assert!(todo.save(tmp.path(), "oracle-overflow").is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn progress_rejects_symlink_hardlink_and_unsafe_lock_paths() {
+        use std::os::unix::fs::symlink;
+        let root = tempfile::TempDir::new().unwrap();
+
+        let symlink_dir = root.path().join("symlink");
+        std::fs::create_dir(&symlink_dir).unwrap();
+        let target = symlink_dir.join("target");
+        std::fs::write(&target, b"sentinel").unwrap();
+        symlink(&target, OracleTodo::path(&symlink_dir, "oracle-safe")).unwrap();
+        assert!(OracleTodo::load(&symlink_dir, "oracle-safe").is_err());
+        assert_eq!(std::fs::read(&target).unwrap(), b"sentinel");
+
+        let hardlink_dir = root.path().join("hardlink");
+        std::fs::create_dir(&hardlink_dir).unwrap();
+        let hard_target = hardlink_dir.join("target");
+        std::fs::write(&hard_target, b"{}").unwrap();
+        std::fs::hard_link(&hard_target, OracleTodo::path(&hardlink_dir, "oracle-safe")).unwrap();
+        assert!(OracleTodo::load(&hardlink_dir, "oracle-safe").is_err());
+
+        let lock_dir = root.path().join("lock");
+        std::fs::create_dir(&lock_dir).unwrap();
+        let lock_target = lock_dir.join("target");
+        std::fs::write(&lock_target, b"sentinel").unwrap();
+        symlink(&lock_target, lock_dir.join(".oracle-safe.progress.lock")).unwrap();
+        let mut todo = OracleTodo::new("oracle-safe");
+        todo.set_plan(["safe"]);
+        assert!(todo.save(&lock_dir, "oracle-safe").is_err());
+        assert_eq!(std::fs::read(&lock_target).unwrap(), b"sentinel");
+    }
+
+    #[test]
+    fn progress_projection_must_match_persisted_oracle_provenance() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let ledger =
+            MissionLedger::open(crate::oracle_lifecycle::mission_ledger_path(tmp.path())).unwrap();
+        let mission = crate::mission::Mission::new(
+            "OmegaOS",
+            "todo projection",
+            PathBuf::from("/tmp/OmegaOS"),
+        );
+        let created = ledger
+            .create_mission(
+                &mission,
+                &format!("test:{}:created", mission.id.as_str()),
+                "test",
+            )
+            .unwrap();
+        OracleState::from_ledger("oracle-OmegaOS", &mission, &created)
+            .unwrap()
+            .write(tmp.path())
+            .unwrap();
+        let mut todo = OracleTodo::load(tmp.path(), "oracle-OmegaOS").unwrap();
+        todo.set_plan(["cannot forge"]);
+        todo.compatibility_projection
+            .as_mut()
+            .unwrap()
+            .source_projection_hash = "forged".to_string();
+        assert!(todo.save(tmp.path(), "oracle-OmegaOS").is_err());
+    }
+
+    #[test]
+    fn todo_is_a_stamped_projection_and_never_mission_authority() {
+        let ledger = MissionLedger::open_in_memory().unwrap();
+        let mission = crate::mission::Mission::new(
+            "OmegaOS",
+            "todo projection",
+            PathBuf::from("/tmp/OmegaOS"),
+        );
+        let created = ledger
+            .create_mission(
+                &mission,
+                &format!("test:{}:created", mission.id.as_str()),
+                "test",
+            )
+            .unwrap();
+        let state = OracleState::from_ledger("oracle-OmegaOS", &mission, &created).unwrap();
+        let mut todo = OracleTodo::new("oracle-OmegaOS");
+        todo.attach_projection_from_oracle(&state).unwrap();
+        todo.set_plan(["claim success"]);
+        todo.upsert("claim success", TodoStatus::Done, None)
+            .unwrap();
+
+        assert_eq!(
+            todo.require_ledger_authority(&ledger).unwrap(),
+            created.projection
+        );
+        assert_eq!(
+            ledger.mission(&mission.id).unwrap().unwrap().state,
+            crate::mission::MissionState::Created,
+            "todo status must never advance the mission state"
+        );
+    }
 
     /// A real merged on-disk file: the Telegram bot's card fields alongside
     /// `cmd_progress`'s tasks/done/total/ts. Same shape as the fixture

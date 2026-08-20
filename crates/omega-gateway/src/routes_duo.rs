@@ -118,27 +118,45 @@ use crate::server::AppState;
 type ApiError = (StatusCode, Json<serde_json::Value>);
 
 fn bad_request(msg: impl Into<String>) -> ApiError {
-    (StatusCode::BAD_REQUEST, Json(serde_json::json!({ "error": msg.into() })))
+    (
+        StatusCode::BAD_REQUEST,
+        Json(serde_json::json!({ "error": msg.into() })),
+    )
 }
 
 fn conflict(msg: impl Into<String>) -> ApiError {
-    (StatusCode::CONFLICT, Json(serde_json::json!({ "error": msg.into() })))
+    (
+        StatusCode::CONFLICT,
+        Json(serde_json::json!({ "error": msg.into() })),
+    )
 }
 
 fn too_many_requests(msg: impl Into<String>) -> ApiError {
-    (StatusCode::TOO_MANY_REQUESTS, Json(serde_json::json!({ "error": msg.into() })))
+    (
+        StatusCode::TOO_MANY_REQUESTS,
+        Json(serde_json::json!({ "error": msg.into() })),
+    )
 }
 
 fn bad_gateway(msg: impl Into<String>) -> ApiError {
-    (StatusCode::BAD_GATEWAY, Json(serde_json::json!({ "error": msg.into() })))
+    (
+        StatusCode::BAD_GATEWAY,
+        Json(serde_json::json!({ "error": msg.into() })),
+    )
 }
 
 fn gateway_timeout(msg: impl Into<String>) -> ApiError {
-    (StatusCode::GATEWAY_TIMEOUT, Json(serde_json::json!({ "error": msg.into() })))
+    (
+        StatusCode::GATEWAY_TIMEOUT,
+        Json(serde_json::json!({ "error": msg.into() })),
+    )
 }
 
 fn internal(msg: impl std::fmt::Display) -> ApiError {
-    (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "error": msg.to_string() })))
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        Json(serde_json::json!({ "error": msg.to_string() })),
+    )
 }
 
 /// Byte-length cap on `prompt`, mirroring `routes_dispatch.rs::
@@ -178,7 +196,11 @@ fn duo_root_dir() -> PathBuf {
     if let Ok(dir) = std::env::var("OMEGA_DUO_DIR") {
         return PathBuf::from(dir);
     }
-    dirs::home_dir().expect("no home dir").join(".omega").join("state").join("gateway-duo")
+    dirs::home_dir()
+        .expect("no home dir")
+        .join(".omega")
+        .join("state")
+        .join("gateway-duo")
 }
 
 /// Where this endpoint writes the caller's `prompt` before invoking
@@ -200,7 +222,9 @@ pub(crate) fn duo_bin() -> PathBuf {
     if let Ok(bin) = std::env::var("OMEGA_DUO_BIN") {
         return PathBuf::from(bin);
     }
-    dirs::home_dir().expect("no home dir").join(".local/bin/omega-duo")
+    dirs::home_dir()
+        .expect("no home dir")
+        .join(".local/bin/omega-duo")
 }
 
 /// Maps this endpoint's `profile` (the `/duo` skill's own three real
@@ -224,7 +248,10 @@ async fn resolve_project_path(project: &str) -> Result<PathBuf, ApiError> {
     let name = project.to_string();
     let found = tokio::task::spawn_blocking(move || {
         let home = crate::config::home_dir();
-        omega_core::projects::discover(&home).into_iter().find(|p| p.name == name).map(|p| p.path)
+        omega_core::projects::discover(&home)
+            .into_iter()
+            .find(|p| p.name == name)
+            .map(|p| p.path)
     })
     .await
     .unwrap_or(None);
@@ -256,13 +283,21 @@ impl Drop for CwdLockGuard {
 /// drop. `Err(409)` — without inserting anything — when `path` is already
 /// present, i.e. another `POST /v1/duo` request against the SAME resolved
 /// cwd is still in flight.
-fn acquire_cwd_lock(set: &Arc<Mutex<HashSet<PathBuf>>>, path: PathBuf) -> Result<CwdLockGuard, ApiError> {
+fn acquire_cwd_lock(
+    set: &Arc<Mutex<HashSet<PathBuf>>>,
+    path: PathBuf,
+) -> Result<CwdLockGuard, ApiError> {
     let mut guard = set.lock().unwrap_or_else(|e| e.into_inner());
     if !guard.insert(path.clone()) {
-        return Err(conflict("a duo run is already in flight against this directory"));
+        return Err(conflict(
+            "a duo run is already in flight against this directory",
+        ));
     }
     drop(guard);
-    Ok(CwdLockGuard { set: Arc::clone(set), path })
+    Ok(CwdLockGuard {
+        set: Arc::clone(set),
+        path,
+    })
 }
 
 /// Best-effort canonicalization of `path`: when `path` itself resolves
@@ -344,7 +379,10 @@ fn repo_root_for_lock(target: &std::path::Path) -> PathBuf {
 /// reaches it too, not just the `omega-duo` process itself.
 async fn kill_process_group(pid: u32) {
     let _ = tokio::task::spawn_blocking(move || {
-        std::process::Command::new("kill").arg("--").arg(format!("-{pid}")).status()
+        std::process::Command::new("kill")
+            .arg("--")
+            .arg(format!("-{pid}"))
+            .status()
     })
     .await;
 }
@@ -433,7 +471,9 @@ async fn run_omega_duo(args: &[&str]) -> Result<DuoOutput, ApiError> {
     cmd.kill_on_drop(true);
     cmd.process_group(0);
 
-    let child = cmd.spawn().map_err(|e| bad_gateway(format!("failed to spawn omega-duo: {e}")))?;
+    let child = cmd
+        .spawn()
+        .map_err(|e| bad_gateway(format!("failed to spawn omega-duo: {e}")))?;
     // Captured now, before the child is ever consumed by `wait_with_output`
     // (which takes `self` by value) — `Child::id()` returns `None` once the
     // child has been polled to completion.
@@ -503,7 +543,9 @@ pub async fn create(
     // does — the cheapest possible short-circuit, mirroring
     // `routes_pdf::create`'s / `routes_dispatch::create`'s own Step 0.
     let Ok(_permit) = state.duo_permits.clone().try_acquire_owned() else {
-        return Err(too_many_requests("too many concurrent duo runs, try again shortly"));
+        return Err(too_many_requests(
+            "too many concurrent duo runs, try again shortly",
+        ));
     };
 
     // Step 1: `profile` -> `--mode`, validated against the literal closed
@@ -523,7 +565,9 @@ pub async fn create(
         return Err(bad_request("prompt must not contain a NUL byte"));
     }
     if req.prompt.len() > MAX_DUO_PROMPT_LEN {
-        return Err(bad_request(format!("prompt too long (max {MAX_DUO_PROMPT_LEN} bytes)")));
+        return Err(bad_request(format!(
+            "prompt too long (max {MAX_DUO_PROMPT_LEN} bytes)"
+        )));
     }
 
     // Step 3: exactly one of `project`/`dir`, then resolve it to a real,
@@ -531,7 +575,9 @@ pub async fn create(
     // ambiguous, missing, unknown, or out-of-bounds target.
     let target = match (&req.project, &req.dir) {
         (Some(_), Some(_)) => {
-            return Err(bad_request("ambiguous target: give exactly one of project or dir"))
+            return Err(bad_request(
+                "ambiguous target: give exactly one of project or dir",
+            ))
         }
         (None, None) => return Err(bad_request("no target: give project or dir")),
         (Some(p), None) => resolve_project_path(p).await?,
@@ -555,7 +601,9 @@ pub async fn create(
     // discovered project, or a `dir_under_home`-validated request) is
     // already absolute, so nothing legitimate is ever rejected here.
     if !target.is_absolute() {
-        return Err(bad_request("resolved target directory must be an absolute path"));
+        return Err(bad_request(
+            "resolved target directory must be an absolute path",
+        ));
     }
 
     // Step 5: per-cwd in-process lock, BEFORE writing the scratch file or
@@ -578,7 +626,8 @@ pub async fn create(
         move || -> Result<(), ApiError> {
             std::fs::create_dir_all(&tasks_dir)
                 .map_err(|e| internal(format!("mkdir {}: {e}", tasks_dir.display())))?;
-            std::fs::write(&task_path, prompt).map_err(|e| internal(format!("write task file: {e}")))?;
+            std::fs::write(&task_path, prompt)
+                .map_err(|e| internal(format!("write task file: {e}")))?;
             Ok(())
         }
     })
@@ -590,8 +639,16 @@ pub async fn create(
     // `=`-joined flags (see this module's doc comment for why both would be
     // wrong for THIS binary's own arg parser).
     let cwd_str = target.to_string_lossy().to_string();
-    let output =
-        run_omega_duo(&["run", "--task", &task_path_str, "--cwd", &cwd_str, "--mode", mode]).await?;
+    let output = run_omega_duo(&[
+        "run",
+        "--task",
+        &task_path_str,
+        "--cwd",
+        &cwd_str,
+        "--mode",
+        mode,
+    ])
+    .await?;
 
     // Step 8: parse EXACTLY one JSON line from stdout — the LAST non-empty
     // line, not the whole buffer (Finding 4, adversarial review round): the
@@ -614,7 +671,12 @@ pub async fn create(
     // still goes to the gateway's own tracing log; the client only ever
     // sees the parse error (a generic "expected value at line X" shape,
     // never the offending text itself) with no raw dump attached.
-    let last_line = output.stdout.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("");
+    let last_line = output
+        .stdout
+        .lines()
+        .rev()
+        .find(|l| !l.trim().is_empty())
+        .unwrap_or("");
     match serde_json::from_str::<DuoResponse>(last_line.trim()) {
         Ok(resp) => Ok(Json(resp)),
         Err(e) => {
@@ -655,7 +717,11 @@ mod tests {
         let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
         std::env::remove_var("OMEGA_DUO_BIN");
         let bin = duo_bin();
-        assert!(bin.ends_with(".local/bin/omega-duo"), "expected ~/.local/bin/omega-duo, got {}", bin.display());
+        assert!(
+            bin.ends_with(".local/bin/omega-duo"),
+            "expected ~/.local/bin/omega-duo, got {}",
+            bin.display()
+        );
     }
 
     #[test]

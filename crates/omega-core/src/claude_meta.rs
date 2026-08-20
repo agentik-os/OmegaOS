@@ -87,7 +87,13 @@ pub fn fmt_tokens(t: u64) -> String {
 /// (which classify() leaves as None).
 fn pane_cwd(session_name: &str) -> Option<PathBuf> {
     let out = std::process::Command::new("rmux")
-        .args(["list-panes", "-t", session_name, "-F", "#{pane_current_path}"])
+        .args([
+            "list-panes",
+            "-t",
+            session_name,
+            "-F",
+            "#{pane_current_path}",
+        ])
         .output()
         .ok()?;
     if !out.status.success() {
@@ -162,8 +168,7 @@ pub fn read_meta(working_dir: &Path) -> Option<ClaudeMeta> {
         }
         if let Some(u) = msg.get("usage") {
             let g = |k: &str| u.get(k).and_then(|x| x.as_u64()).unwrap_or(0);
-            tokens +=
-                g("input_tokens") + g("output_tokens") + g("cache_creation_input_tokens");
+            tokens += g("input_tokens") + g("output_tokens") + g("cache_creation_input_tokens");
         }
     }
     if model.is_empty() && tokens == 0 {

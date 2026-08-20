@@ -70,42 +70,42 @@ Choose the lowest profile capable of supporting the decision. Label the selected
 
 Execute in order. Reopen earlier passes when evidence contradicts them.
 
-1. **Frame the decision** — decision owner, capital/time at risk, geography, horizon, idea maturity, success threshold, non-goals, risk tolerance, deliverable.
-2. **Recover context** — enumerate authorized sources; recover facts, decisions, constraints, definitions, prior attempts, and conflicts.
-3. **Register hypotheses** — problem, segment, urgency, current behavior, value, solution, differentiation, price, acquisition, retention, feasibility, regulatory, and timing hypotheses.
-4. **Design the research** — evidence questions, methods, sample, source plan, stopping rules, budget, dependencies, and bias controls.
-5. **Run source preflight** — authority, access rights, terms, privacy, robots, licensing, retention, rate limits, PII, credentials, and permitted use.
-6. **Map the environment** — category, adjacent markets, value chain, ecosystem, PESTEL/STEEPLED, forces, timing, regulation, and scenario drivers.
-7. **Size the opportunity** — top-down, bottom-up, and value-based estimates where useful; TAM/SAM/SOM; assumptions; ranges; sensitivity; cross-checks.
-8. **Segment demand** — behavioral/needs-based segments, beachhead, JTBD, pains, triggers, frequency, stakes, budgets, buying unit, switching costs, and exclusions.
-9. **Mine voice of customer** — interviews, communities, reviews, support/forums, search language, workaround behavior, objections, emotional/social jobs, and exact-language evidence.
-10. **Map alternatives and competition** — direct, indirect, substitute, do-nothing, internal-build; positioning, pricing, features, proof, distribution, business model, strategic group, value curve, and moat.
-11. **Analyze demand signals** — search, traffic, ads, reviews, communities, social, jobs, funding, filings, product launches, app stores, developer activity, partnerships, patents, and trend quality.
-12. **Challenge the offer and features** — opportunity-solution tree, Kano, importance/satisfaction, feature evidence, table stakes, differentiators, anti-features, adoption barriers, and minimum viable promise.
-13. **Test price and economics** — WTP, price architecture, Van Westendorp/Gabor-Granger/conjoint where suitable, revenue logic, CAC constraints, gross margin, payback, retention, capacity, and marketplace liquidity.
-14. **Assess go-to-market** — category entry point, positioning, channel access, sales cycle, trust, proof, distribution advantage, partnerships, wedge, and launch sequence hypotheses.
-15. **Run primary research and experiments** — interviews, surveys, prototype tests, smoke/fake-door tests, landing pages, ads, concierge pilots, LOIs, deposits, pre-orders, or paid pilots as authorized.
-16. **Triangulate and update confidence** — reconcile sources, detect contradictions, adjust hypothesis confidence, run sensitivity, identify alternative explanations, and log negative evidence.
-17. **Critic and red-team** — desirability, viability, feasibility, defensibility, timing, ethics, data quality, sampling, incentives, regulatory, execution, founder-market-fit, and pre-mortem passes.
-18. **Decide** — `GO`, `PIVOT`, `HOLD`, `NO-GO`, or `INSUFFICIENT EVIDENCE`; attach conditions, kill criteria, next evidence, owners, and expiry date.
-19. **Handoff** — if eligible, freeze a Market Research version and create a Blueprint Input Manifest. Never silently invoke Blueprint.
+1. **Frame the decision**: decision owner, capital/time at risk, geography, horizon, idea maturity, success threshold, non-goals, risk tolerance, deliverable.
+2. **Recover context**: enumerate authorized sources; recover facts, decisions, constraints, definitions, prior attempts, and conflicts.
+3. **Register hypotheses**: problem, segment, urgency, current behavior, value, solution, differentiation, price, acquisition, retention, feasibility, regulatory, and timing hypotheses.
+4. **Design the research**: evidence questions, methods, sample, source plan, stopping rules, budget, dependencies, and bias controls.
+5. **Run source preflight**: authority, access rights, terms, privacy, robots, licensing, retention, rate limits, PII, credentials, and permitted use.
+6. **Map the environment**: category, adjacent markets, value chain, ecosystem, PESTEL/STEEPLED, forces, timing, regulation, and scenario drivers.
+7. **Size the opportunity**: top-down, bottom-up, and value-based estimates where useful; TAM/SAM/SOM; assumptions; ranges; sensitivity; cross-checks.
+8. **Segment demand**: behavioral/needs-based segments, beachhead, JTBD, pains, triggers, frequency, stakes, budgets, buying unit, switching costs, and exclusions.
+9. **Mine voice of customer**: interviews, communities, reviews, support/forums, search language, workaround behavior, objections, emotional/social jobs, and exact-language evidence.
+10. **Map alternatives and competition**: direct, indirect, substitute, do-nothing, internal-build; positioning, pricing, features, proof, distribution, business model, strategic group, value curve, and moat.
+11. **Analyze demand signals**: search, traffic, ads, reviews, communities, social, jobs, funding, filings, product launches, app stores, developer activity, partnerships, patents, and trend quality.
+12. **Challenge the offer and features**: opportunity-solution tree, Kano, importance/satisfaction, feature evidence, table stakes, differentiators, anti-features, adoption barriers, and minimum viable promise.
+13. **Test price and economics**: WTP, price architecture, Van Westendorp/Gabor-Granger/conjoint where suitable, revenue logic, CAC constraints, gross margin, payback, retention, capacity, and marketplace liquidity.
+14. **Assess go-to-market**: category entry point, positioning, channel access, sales cycle, trust, proof, distribution advantage, partnerships, wedge, and launch sequence hypotheses.
+15. **Run primary research and experiments**: interviews, surveys, prototype tests, smoke/fake-door tests, landing pages, ads, concierge pilots, LOIs, deposits, pre-orders, or paid pilots as authorized.
+16. **Triangulate and update confidence**: reconcile sources, detect contradictions, adjust hypothesis confidence, run sensitivity, identify alternative explanations, and log negative evidence.
+17. **Critic and red-team**: desirability, viability, feasibility, defensibility, timing, ethics, data quality, sampling, incentives, regulatory, execution, founder-market-fit, and pre-mortem passes.
+18. **Decide**: `GO`, `PIVOT`, `HOLD`, `NO-GO`, or `INSUFFICIENT EVIDENCE`; attach conditions, kill criteria, next evidence, owners, and expiry date.
+19. **Handoff**: if eligible, freeze a Market Research version and create a Blueprint Input Manifest. Never silently invoke Blueprint.
 
 ## Epistemic discipline
 
 Classify every material statement:
 
-- `FACT` — directly supported by a cited source or observed result.
-- `MEASUREMENT` — value produced by a defined method, population, window, and unit.
-- `INFERENCE` — conclusion derived from evidence; name the reasoning and alternatives.
-- `ASSUMPTION` — provisional input; include confidence and validation path.
-- `HYPOTHESIS` — falsifiable claim with success/failure evidence.
-- `DECISION` — accepted choice made by the authorized owner.
-- `PROPOSAL` — recommendation not yet accepted.
-- `UNKNOWN` — unresolved information.
-- `CONFLICT` — incompatible claims or results.
-- `LIMITATION` — known restriction on interpretation.
-- `NEGATIVE EVIDENCE` — credible evidence against the idea or hypothesis.
-- `SUPERSEDED` — retained historical item no longer active.
+- `FACT`: directly supported by a cited source or observed result.
+- `MEASUREMENT`: value produced by a defined method, population, window, and unit.
+- `INFERENCE`: conclusion derived from evidence; name the reasoning and alternatives.
+- `ASSUMPTION`: provisional input; include confidence and validation path.
+- `HYPOTHESIS`: falsifiable claim with success/failure evidence.
+- `DECISION`: accepted choice made by the authorized owner.
+- `PROPOSAL`: recommendation not yet accepted.
+- `UNKNOWN`: unresolved information.
+- `CONFLICT`: incompatible claims or results.
+- `LIMITATION`: known restriction on interpretation.
+- `NEGATIVE EVIDENCE`: credible evidence against the idea or hypothesis.
+- `SUPERSEDED`: retained historical item no longer active.
 
 Do not convert mention volume into demand, search interest into willingness to pay, survey intent into purchase behavior, competitor funding into market attractiveness, or LLM synthesis into primary evidence.
 
@@ -133,12 +133,12 @@ Each normative record must include status, statement, provenance, method, scope/
 
 ## Primary-research law
 
-- Ask about past behavior, concrete episodes, consequences, frequency, workaround, budget, authority, and switching—not compliments or speculative intent alone.
+- Ask about past behavior, concrete episodes, consequences, frequency, workaround, budget, authority, and switching, not compliments or speculative intent alone.
 - Separate discovery interviews from sales pitches.
 - Record recruitment source, inclusion/exclusion criteria, incentive, consent, instrument version, sample limitations, and analyst influence.
 - Pretest surveys; avoid leading, double-barreled, ambiguous, loaded, and non-exhaustive questions; randomize where order can bias results.
 - Define metrics, thresholds, sample/stopping rules, and analysis before observing experiment outcomes.
-- Prefer behavior with real friction—time, money, data, access, or organizational commitment—over declarations.
+- Prefer behavior with real friction (time, money, data, access, or organizational commitment) over declarations.
 
 ## Question policy
 
@@ -150,17 +150,17 @@ Use only:
 
 - `MARKET RESEARCH IN PROGRESS`
 - `MARKET RESEARCH BLOCKED`
-- `MARKET RESEARCH COMPLETE — DECISION READY`
+- `MARKET RESEARCH COMPLETE, DECISION READY`
 
 Never declare completion when only desk research is present but the requested conclusion requires observed customer or commercial behavior. In that case, finish the desk-research phase, provide the executable validation plan, and retain `IN PROGRESS` or return `INSUFFICIENT EVIDENCE` as the recommendation.
 
 The decision vocabulary is:
 
-- `GO` — evidence crosses the defined threshold; risks and conditions remain visible.
-- `PIVOT` — a materially different segment/problem/promise/model has stronger evidence.
-- `HOLD` — attractive but blocked by timing, access, economics, regulation, or missing dependency.
-- `NO-GO` — evidence crosses a predeclared kill threshold or credible downside dominates.
-- `INSUFFICIENT EVIDENCE` — the current evidence cannot support a responsible decision.
+- `GO`: evidence crosses the defined threshold; risks and conditions remain visible.
+- `PIVOT`: a materially different segment/problem/promise/model has stronger evidence.
+- `HOLD`: attractive but blocked by timing, access, economics, regulation, or missing dependency.
+- `NO-GO`: evidence crosses a predeclared kill threshold or credible downside dominates.
+- `INSUFFICIENT EVIDENCE`: the current evidence cannot support a responsible decision.
 
 ## Long outputs
 
@@ -187,6 +187,83 @@ End a complete run with:
 11. quality-gate scorecard and orphan report;
 12. recommendation with conditions, kill criteria, and expiry;
 13. Blueprint Input Manifest when `GO` or `PIVOT` is Blueprint-eligible;
-14. status: `MARKET RESEARCH COMPLETE — DECISION READY`.
+14. status: `MARKET RESEARCH COMPLETE, DECISION READY`.
 
 Do not generate the full Blueprint unless the user separately invokes `/blueprint`.
+
+## When to use this
+
+Reach for Market Research when:
+
+- An idea exists and nobody can say how big the market is, who exactly buys, or what the buyer does today instead.
+- A concept came out of a brainstorm and someone is about to write a product definition on top of it.
+- A deck asserts a market size and you want to know which inputs produced it and what happens when each one moves.
+- You are choosing between two or three opportunities and need them compared on the same evidence standard.
+- A competitor launched and you need the alternatives map redrawn before deciding whether anything changes.
+- You inherited a market study and want its evidence, method, sampling and traceability defects named.
+- Pricing is being set from intuition and there is no willingness to pay evidence behind it.
+- A decision that was made months ago is still being cited, and nobody has checked whether it expired.
+
+Near neighbours, and the line between them:
+
+| Confused with | Difference |
+| --- | --- |
+| Research {OS} | Research answers one stated question with defensible outside sources and ends in a memo. Market Research compiles the market and customer evidence body and ends in a bounded market decision. If the question is domain neutral, Research is the right tool. |
+| Customer Discovery {OS} | Discovery is the only unit in this group that talks to a human: recruiting, interviews, transcripts, coded insights. Market Research designs that primary research and requests it via `market.primary_research.requested`, then consumes `discovery.insight.confirmed` and `discovery.segment.profiled`. It never conducts an interview itself. |
+| Validation {OS} | Validation owns the word "validated" for one pre-registered claim, with a threshold signed before the data and a verdict of CONFIRMED, KILLED, INCONCLUSIVE or INVALID. Market Research owns the market level evidence body and its bounded market decision, and it hands unsettled single claims out to be tested rather than declaring them settled. |
+| Trend & Opportunity {OS} | Trend watches over time and reports a direction and a rate of movement. Market Research measures a market at a point in time and decides. A watchlist is not a study. |
+| Business Model {OS} | Business Model says how value is created, delivered and captured, and whether the unit economics are viable. Market Research supplies the market facts that model rests on: sizing, segments, willingness to pay, acquisition constraints. |
+| Strategy & Portfolio {OS} | Strategy decides which bets get money, people and calendar time across every candidate. Market Research decides whether one market is worth pursuing at all, and hands that verdict in as an input. |
+
+## Capabilities
+
+- Frame a market decision: owner, capital and time at risk, geography, horizon, success threshold, non-goals and deliverable.
+- Recover a canonical baseline from prior chats, files, studies and decisions, with provenance and conflicts preserved.
+- Register market hypotheses as falsifiable statements covering problem, segment, urgency, value, differentiation, price, acquisition, retention, feasibility, regulation and timing.
+- Run the source preflight over authority, access rights, terms, robots, privacy, licensing, retention and permitted use before any collection.
+- Build auditable sizing models top down, bottom up and value based, with ranges, sensitivity and cross checks rather than a single figure.
+- Segment demand behaviourally, choose a beachhead, and state which segments are deliberately excluded and why.
+- Mine voice of customer from communities, reviews, support material and search language, keeping exact wording as evidence.
+- Map direct, indirect, substitute, do nothing and internal build alternatives into a positioning and value curve view.
+- Grade demand signals by quality instead of counting them, and record what each signal genuinely supports.
+- Assemble willingness to pay evidence and the market level economic constraints: acquisition ceilings, payback, margin, liquidity, capacity.
+- Design primary research and emit `market.primary_research.requested` to Customer Discovery {OS}, then integrate coded insights and segment profiles back into the evidence body.
+- Run critic and red team passes over desirability, viability, feasibility, defensibility, timing, ethics, sampling, regulation and founder market fit.
+- Issue one bounded decision with conditions, kill criteria and an expiry, and freeze a version plus a Blueprint Input Manifest when it is Blueprint eligible.
+- Audit an existing study and report evidence, method, bias, traceability and decision defects against the record each one lives in.
+- Drive the deterministic workspace CLI for machine readable state, gates, stable IDs and restart safe continuation.
+
+## Procedure
+
+1. **Infer the mode and depth.** State exactly one of `NEW`, `RECOVER`, `RAPID_SCAN`, `FULL_VALIDATION`, `DILIGENCE`, `DEEP_DIVE`, `MONITOR`, `AUDIT`, `DELTA`, and the lowest depth profile that can support the decision, with its exclusions named.
+2. **Frame the decision.** Decision owner, capital and calendar at risk, geography, horizon, success threshold, non-goals, risk tolerance. If no owner exists, stop here and say so.
+3. **Recover context.** Enumerate authorised sources, recover prior facts, decisions, constraints, definitions and attempts, and list conflicts instead of merging them.
+4. **Register hypotheses.** Write each as a falsifiable statement with a subject, a magnitude and a window, and record how it would be settled and at what cost.
+5. **Design the research and run the source preflight.** Evidence questions, methods, sample, source plan, stopping rules, budget and bias controls first; then authority, terms, privacy, robots, licensing and permitted use before a single request leaves the machine.
+6. **Collect and normalise.** Keep raw evidence separate from normalised findings, with locator, retrieval time, query, tool version and licence basis on every raw item.
+7. **Model the market.** Boundary, then sizing top down, bottom up and value based where each is useful, with inputs, ranges, sensitivity and cross checks. Emit `market.sizing.modeled`.
+8. **Segment, then map alternatives.** Behavioural segments, beachhead, jobs to be done, exclusions; then direct, indirect, substitute, do nothing and internal build, with positioning and value curve.
+9. **Grade demand and price evidence.** Say what each signal actually supports. Never convert interest into willingness to pay, or intent into purchase.
+10. **Request primary research.** Design the instrument and the sampling frame, emit `market.primary_research.requested` to Customer Discovery {OS}, and continue independent desk work while it runs. Do not conduct the interviews.
+11. **Integrate what comes back.** Consume `discovery.insight.confirmed` and `discovery.segment.profiled`, reconcile them against the desk evidence, and update hypothesis confidence in both directions.
+12. **Triangulate and log negative evidence.** Reconcile sources, name contradictions, run sensitivity, state alternative explanations, and record credible evidence against the idea as a first class entry.
+13. **Route unsettled claims.** Any single claim that desk work and discovery cannot settle goes to Validation {OS} for a signed test. Do not use the word validated here.
+14. **Run critics.** Desirability, viability, feasibility, defensibility, timing, ethics, data quality, sampling, regulation, execution and a pre-mortem.
+15. **Decide.** One of `GO`, `PIVOT`, `HOLD`, `NO-GO`, `INSUFFICIENT EVIDENCE`, with conditions, kill criteria, next evidence, owners and an expiry date.
+16. **Handoff and record.** On a Blueprint eligible `GO` or `PIVOT`, freeze the version, produce the Blueprint Input Manifest and emit `market.validation.completed`. Write canonical records through Context & Memory {OS}. Close with status `MARKET RESEARCH IN PROGRESS`, `MARKET RESEARCH BLOCKED`, or `MARKET RESEARCH COMPLETE, DECISION READY`.
+
+## Handoffs
+
+| To | Event | What it does with it |
+| --- | --- | --- |
+| Customer Discovery {OS} | `market.primary_research.requested` | recruits, runs the interviews or survey, and returns coded insights and segment profiles |
+| Blueprint {OS} | `market.validation.completed` | writes the frozen evidence pack and Blueprint Input Manifest into a product definition |
+| Strategy & Portfolio {OS} | `market.validation.completed` | weighs this market against every other candidate bet before allocating |
+| Business Model {OS} | `market.validation.completed`, `market.sizing.modeled` | grounds segments, revenue mechanics and unit economics in measured market facts |
+| Context & Memory {OS} | `market.study.audited`, and every canonical record | makes the evidence body, decisions and audit findings durable across sessions |
+| Validation {OS} | the claims desk work could not settle | designs a signed test and issues the verdict this OS may not issue itself |
+
+Received from: Brainstorm {OS} (`brainstorm.concept.selected`), Customer
+Discovery {OS} (`discovery.insight.confirmed`, `discovery.segment.profiled`),
+Research {OS} (`research.evidence.compiled`), Trend & Opportunity {OS}
+(`trend.movement.confirmed`), Validation {OS} (`validation.verdict.issued`).

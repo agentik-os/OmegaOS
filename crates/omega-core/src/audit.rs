@@ -455,10 +455,7 @@ pub struct AuditScope {
 
 /// Build a list of dispatch prompts for all audits selected for a mission.
 pub fn build_dispatch_prompts(mission_text: &str, scope: &AuditScope) -> Vec<(String, String)> {
-    let selected_ids = select_audits(
-        mission_text,
-        &scope.files.clone(),
-    );
+    let selected_ids = select_audits(mission_text, &scope.files.clone());
     selected_ids
         .into_iter()
         .filter_map(|id| {

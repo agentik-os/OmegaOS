@@ -1,0 +1,143 @@
+{
+  "schema_version": "2.0.0",
+  "id": "network-os",
+  "num": 37,
+  "name": "Network {OS}",
+  "version": "0.1.0",
+  "status": "scaffold",
+  "group": {
+    "key": "grow",
+    "label": "04 · GROW",
+    "purpose": "Turn value into distribution and revenue"
+  },
+  "tagline": "Trusted relationship memory and network stewardship.",
+  "inherits_from": "relationship-network-os",
+  "commands": [
+    {
+      "name": "/network",
+      "does": "Reviews the network as a portfolio.",
+      "returns": "Reciprocity, diversity, dormancy and neglect, each named."
+    },
+    {
+      "name": "/person",
+      "does": "Builds a person brief from what is actually known.",
+      "returns": "What is known with provenance, what is missing, one thing to contribute."
+    },
+    {
+      "name": "/meeting-prep",
+      "does": "Prepares you for a specific meeting.",
+      "returns": "Context, open loops, and the outcome you actually want."
+    },
+    {
+      "name": "/interaction",
+      "does": "Captures what happened and what was promised.",
+      "returns": "An interaction record and commitments with owners and dates."
+    },
+    {
+      "name": "/follow-up",
+      "does": "Drafts a loop-closing follow up in your voice.",
+      "returns": "An unsent draft awaiting approval on the exact text."
+    },
+    {
+      "name": "/intro",
+      "does": "Runs a double opt-in introduction.",
+      "returns": "Two consent asks, then the introduction once both sides agree."
+    },
+    {
+      "name": "/nurture",
+      "does": "Designs a relationship rhythm.",
+      "returns": "A cadence with a reason per contact point and an explicit breathing list."
+    },
+    {
+      "name": "/difficult-conversation",
+      "does": "Prepares a truthful conversation.",
+      "returns": "A plan naming the outcome, the opening words and the walk-away."
+    },
+    {
+      "name": "/boundary",
+      "does": "Writes and reinforces a boundary.",
+      "returns": "A boundary script and the consequence you will actually hold."
+    },
+    {
+      "name": "/gathering",
+      "does": "Designs a gathering worth attending.",
+      "returns": "Guest logic, shape and hospitality detail."
+    }
+  ],
+  "dependencies": {
+    "consumes_from": [
+      "meeting-os"
+    ],
+    "emits_to": [
+      "sales-os",
+      "delivery-cs-os",
+      "storyteller-os",
+      "content-os",
+      "execution-os"
+    ],
+    "handoffs": [
+      {
+        "to": "meeting-os",
+        "artifact": "meeting records and the commitments made in them"
+      },
+      {
+        "to": "sales-os",
+        "artifact": "person brief and consented introduction"
+      },
+      {
+        "to": "delivery-cs-os",
+        "artifact": "person brief and consented introduction"
+      },
+      {
+        "to": "storyteller-os",
+        "artifact": "consent status"
+      },
+      {
+        "to": "content-os",
+        "artifact": "consent status"
+      },
+      {
+        "to": "execution-os",
+        "artifact": "follow through commitment"
+      }
+    ]
+  },
+  "targets": {
+    "claude": {
+      "supported": true
+    },
+    "chatgpt": {
+      "supported": true
+    },
+    "gemini": {
+      "supported": true
+    },
+    "codex": {
+      "supported": true
+    }
+  },
+  "entrypoints": {
+    "spec": "OS.md",
+    "system": "SYSTEM.md",
+    "skill": "SKILL.md",
+    "setup": "SETUP.md",
+    "workflows": "WORKFLOWS/",
+    "commands": "COMMANDS/",
+    "prompts": "PROMPTS/",
+    "references": "REFERENCES/",
+    "memory": "MEMORY/",
+    "tools": "TOOLS/",
+    "evals": "EVALS/",
+    "examples": "EXAMPLES/",
+    "interfaces": "INTERFACES/",
+    "adapters": "ADAPTERS/"
+  },
+  "requires_human_approval_for": [
+    "sending any introduction, after both sides have opted in",
+    "sharing a person's information with another OS or another person",
+    "sending or publishing any contact-facing message text, on the exact wording",
+    "recording a sensitive fact, or promoting an inference to a fact",
+    "merging two person records",
+    "adding someone to a gathering guest list on another person's behalf"
+  ]
+}

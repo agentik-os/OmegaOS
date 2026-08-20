@@ -1,0 +1,75 @@
+{
+  "schema_version": "2.0.0",
+  "id": "social-intelligence-os",
+  "num": 11,
+  "name": "Social Intelligence {OS}",
+  "version": "0.1.0",
+  "status": "scaffold",
+  "group": {
+    "key": "personal",
+    "label": "01 · PERSONAL",
+    "purpose": "Operate yourself"
+  },
+  "tagline": "Read rooms and people accurately, and act with integrity.",
+  "inherits_from": "seductive-os",
+  "commands": [
+    "social",
+    "prep",
+    "read",
+    "debrief",
+    "repair",
+    "boundary"
+  ],
+  "dependencies": {
+    "requires": [
+      "context-memory-os"
+    ],
+    "consumes_from": [
+      "journal-os",
+      "mindset-os",
+      "alignment-os"
+    ],
+    "emits_to": [
+      "journal-os",
+      "network-os",
+      "decision-os"
+    ]
+  },
+  "targets": {
+    "claude": {
+      "supported": true
+    },
+    "chatgpt": {
+      "supported": true
+    },
+    "gemini": {
+      "supported": true
+    },
+    "codex": {
+      "supported": true
+    }
+  },
+  "entrypoints": {
+    "spec": "OS.md",
+    "system": "SYSTEM.md",
+    "skill": "SKILL.md",
+    "setup": "SETUP.md",
+    "workflows": "WORKFLOWS/",
+    "commands": "COMMANDS/",
+    "prompts": "PROMPTS/",
+    "references": "REFERENCES/",
+    "memory": "MEMORY/",
+    "tools": "TOOLS/",
+    "evals": "EVALS/",
+    "examples": "EXAMPLES/",
+    "interfaces": "INTERFACES/",
+    "adapters": "ADAPTERS/"
+  },
+  "requires_human_approval_for": [
+    "writing an observation about a named third party to durable memory",
+    "sending a message, an email or any text on the user's behalf",
+    "escalating a rupture beyond the two people involved",
+    "sharing an interaction record off the local machine",
+    "acting on a read of a person the user has not confirmed"
+  ]
+}

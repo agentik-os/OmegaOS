@@ -1,12 +1,12 @@
-use crate::agents::Agent;
+use crate::agents::{Agent, AgentLaunch};
 use anyhow::{Context, Result};
 use rmux_sdk::{
-    EnsureSession, EnsureSessionPolicy, Pane, ProcessSpec, Rmux, Session, SessionName,
-    SplitDirection, TerminalSizeSpec,
+    EnsureSession, EnsureSessionPolicy, Pane, PaneProcessState, ProcessSpec, Rmux, Session,
+    SessionName, SplitDirection, TerminalSizeSpec,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -70,6 +70,83 @@ fn fold_accent(ch: char) -> char {
     }
 }
 
+fn resolve_agent_command(agent_command: &str) -> Result<Agent> {
+    Agent::from_name(agent_command).with_context(|| {
+        format!(
+            "unknown agent provider {agent_command:?}; expected one of: {}",
+            Agent::all()
+                .iter()
+                .map(Agent::name)
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    })
+}
+
+fn shell_single_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\"'\"'"))
+}
+
+/// Wrap one provider command behind an exact, generation-bound filesystem
+/// barrier. The command and provider environment remain separate: only the
+/// non-secret command string is passed as a positional shell argument.
+pub(crate) fn gated_shell_command(
+    command: &str,
+    gate_path: &Path,
+    expected_value: &str,
+) -> Result<String> {
+    if command.trim().is_empty() || command.contains('\0') {
+        anyhow::bail!("gated session command must be non-empty and contain no NUL byte");
+    }
+    if !gate_path.is_absolute() {
+        anyhow::bail!("session start barrier path must be absolute");
+    }
+    let gate = gate_path
+        .to_str()
+        .ok_or_else(|| anyhow::anyhow!("session start barrier path is not valid UTF-8"))?;
+    if gate.contains('\0') {
+        anyhow::bail!("session start barrier path contains a NUL byte");
+    }
+    if expected_value.len() != 64
+        || !expected_value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        anyhow::bail!("session start barrier value must be a lowercase BLAKE3 digest");
+    }
+
+    let script = concat!(
+        "set -u; ",
+        "gate=$1; expected=$2; command=$3; ",
+        "while true; do ",
+        "value=$(cat -- \"$gate\" 2>/dev/null || true); ",
+        "if [ \"$value\" = \"$expected\" ]; then break; fi; ",
+        "sleep 0.05; ",
+        "done; ",
+        "exec bash -lc \"$command\""
+    );
+    Ok(format!(
+        "bash -c {} omega-session-start-gate {} {} {}",
+        shell_single_quote(script),
+        shell_single_quote(gate),
+        shell_single_quote(expected_value),
+        shell_single_quote(command)
+    ))
+}
+
+/// Digest the exact command vector rmux records for a typed gated launch.
+/// Callers freeze this value into the runtime intent before creating a pane.
+pub fn gated_agent_launch_command_digest(
+    launch: &AgentLaunch,
+    gate_path: &Path,
+    expected_value: &str,
+) -> Result<String> {
+    let gated = gated_shell_command(launch.command(), gate_path, expected_value)?;
+    Ok(blake3::hash(&serde_json::to_vec(&vec![gated])?)
+        .to_hex()
+        .to_string())
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SessionRole {
     Oracle,
@@ -115,8 +192,20 @@ impl OmegaSession {
         // Check this BEFORE the system-prefix check so that e.g. AISB-worker-X
         // is correctly identified as a Worker under project AISB.
         let worker_suffixes = [
-            "-worker-", "-fix-", "-dev-", "-dispatch-", "-work-", "-linear", "-task-", "-audit-",
-            "-challenger-", "-report-", "-verify-", "-build-", "-deploy-", "-team-",
+            "-worker-",
+            "-fix-",
+            "-dev-",
+            "-dispatch-",
+            "-work-",
+            "-linear",
+            "-task-",
+            "-audit-",
+            "-challenger-",
+            "-report-",
+            "-verify-",
+            "-build-",
+            "-deploy-",
+            "-team-",
         ];
         for suffix in &worker_suffixes {
             // rfind (RIGHTMOST match): the role suffix is the LAST component, so
@@ -168,35 +257,22 @@ impl OmegaSession {
 }
 
 fn session_provider_path(name: &str) -> PathBuf {
-    crate::config::omega_dir()
-        .join("state")
-        .join(format!(
-            "session-provider-{}.json",
-            sanitize_session_name(name)
-        ))
+    crate::config::omega_dir().join("state").join(format!(
+        "session-provider-{}.json",
+        sanitize_session_name(name)
+    ))
 }
 
-fn record_session_provider(name: &str, agent: Agent) {
+fn record_session_provider(name: &str, agent: Agent) -> Result<()> {
     let path = session_provider_path(name);
-    let Some(parent) = path.parent() else {
-        return;
-    };
-    if std::fs::create_dir_all(parent).is_err() {
-        return;
-    }
-    let tmp = path.with_extension("json.tmp");
     let payload = serde_json::json!({
         "session": sanitize_session_name(name),
         "provider": agent.name(),
         "recorded_at": chrono::Utc::now().to_rfc3339(),
     });
-    if serde_json::to_vec_pretty(&payload)
-        .ok()
-        .and_then(|bytes| std::fs::write(&tmp, bytes).ok())
-        .is_some()
-    {
-        let _ = std::fs::rename(tmp, path);
-    }
+    let bytes = serde_json::to_vec_pretty(&payload).context("serializing session provider")?;
+    crate::config::atomic_write_private(&path, &bytes)
+        .with_context(|| format!("recording provider for session {name}"))
 }
 
 fn read_session_provider(name: &str) -> Option<String> {
@@ -285,6 +361,35 @@ impl SessionManager {
         working_dir: Option<&str>,
         command: Option<&str>,
     ) -> Result<Session> {
+        self.create_session_with_environment(name, working_dir, command, &[])
+            .await
+    }
+
+    pub(crate) async fn create_session_with_environment(
+        &self,
+        name: &str,
+        working_dir: Option<&str>,
+        command: Option<&str>,
+        environment: &[(String, String)],
+    ) -> Result<Session> {
+        self.create_session_with_environment_and_policy(
+            name,
+            working_dir,
+            command,
+            environment,
+            EnsureSessionPolicy::CreateOrReuse,
+        )
+        .await
+    }
+
+    async fn create_session_with_environment_and_policy(
+        &self,
+        name: &str,
+        working_dir: Option<&str>,
+        command: Option<&str>,
+        environment: &[(String, String)],
+        policy: EnsureSessionPolicy,
+    ) -> Result<Session> {
         // Defense-in-depth chokepoint: rmux keys every operation (kill, rename,
         // capture) on the session name, and names with spaces, non-ASCII, or
         // punctuation (`:`, `?`, U+202F …) break that lookup — the session
@@ -295,12 +400,23 @@ impl SessionManager {
         let safe = sanitize_session_name(name);
         let session_name = SessionName::new(&safe)?;
         let mut builder = EnsureSession::named(session_name)
-            .policy(EnsureSessionPolicy::CreateOrReuse)
+            .policy(policy)
             .detached(true)
             .size(TerminalSizeSpec::new(200, 50));
 
         if let Some(cmd) = command {
-            builder = builder.process(ProcessSpec::shell(cmd));
+            let mut process = ProcessSpec::shell(cmd);
+            if !environment.is_empty() {
+                process.environment = Some(
+                    environment
+                        .iter()
+                        .map(|(key, value)| format!("{key}={value}"))
+                        .collect(),
+                );
+            }
+            builder = builder.process(process);
+        } else if !environment.is_empty() {
+            anyhow::bail!("session environment requires an explicit process command");
         }
 
         if let Some(dir) = working_dir {
@@ -322,12 +438,10 @@ impl SessionManager {
         agent_command: &str,
         prompt: Option<&str>,
     ) -> Result<Session> {
-        // Invalid or absent provider names follow the current OmegaOS default.
-        let agent = Agent::from_name(agent_command).unwrap_or(Agent::Codex);
-        let cmd = agent.launch_command(prompt);
-        let session = self.create_session(name, Some(working_dir), Some(&cmd)).await?;
-        record_session_provider(name, agent);
-        Ok(session)
+        let agent = resolve_agent_command(agent_command)?;
+        let launch = agent.try_launch(prompt)?;
+        self.create_recorded_agent_session(name, Some(working_dir), agent, launch)
+            .await
     }
 
     pub async fn create_session_with_agent(
@@ -337,15 +451,13 @@ impl SessionManager {
         agent: Agent,
         prompt: Option<&str>,
     ) -> Result<Session> {
-        let cmd = agent.launch_command(prompt);
-        let session = self.create_session(name, working_dir, Some(&cmd)).await?;
-        record_session_provider(name, agent);
-        Ok(session)
+        let launch = agent.try_launch(prompt)?;
+        self.create_recorded_agent_session(name, working_dir, agent, launch)
+            .await
     }
 
-    /// Spawn an agent session with full LaunchOptions — for Claude this
-    /// enables /goal injection, --effort, --max-turns, --max-budget-usd.
-    /// Other providers ignore the Claude-only fields.
+    /// Spawn an agent session with full LaunchOptions. Claude's interactive
+    /// lane intentionally omits its print-only max-turn/max-budget flags.
     pub async fn create_agent_session_with_opts(
         &self,
         name: &str,
@@ -354,10 +466,385 @@ impl SessionManager {
         prompt: Option<&str>,
         opts: crate::agents::LaunchOptions,
     ) -> Result<Session> {
-        let cmd = agent.launch_command_with(prompt, opts);
-        let session = self.create_session(name, Some(working_dir), Some(&cmd)).await?;
-        record_session_provider(name, agent);
+        let launch = agent.try_launch_with(prompt, opts)?;
+        self.create_recorded_agent_session(name, Some(working_dir), agent, launch)
+            .await
+    }
+
+    /// Atomically replace a pane process with a typed agent launch. rmux sends
+    /// credentials through its structured environment field, so repair never
+    /// types secrets into a shell or exposes them in process argv.
+    pub async fn relaunch_agent_session_with_opts(
+        &self,
+        name: &str,
+        working_dir: Option<&str>,
+        agent: Agent,
+        prompt: Option<&str>,
+        opts: crate::agents::LaunchOptions,
+    ) -> Result<()> {
+        let launch = agent.try_launch_with(prompt, opts)?;
+        let session = self.get_session(name).await?;
+        let pane = session.pane(0, 0);
+        let (command, environment) = launch.into_parts();
+        let mut spawn = pane.shell(command).kill_existing(true);
+        if let Some(dir) = working_dir {
+            spawn = spawn.cwd(dir);
+        }
+        for (key, value) in environment {
+            spawn = spawn.env(key, value);
+        }
+        spawn
+            .await
+            .context("Failed to relaunch agent process in session pane")?;
+        record_session_provider(name, agent)?;
+        self.invalidate_pane(name).await;
+        Ok(())
+    }
+
+    pub(crate) async fn create_recorded_agent_session(
+        &self,
+        name: &str,
+        working_dir: Option<&str>,
+        agent: Agent,
+        launch: AgentLaunch,
+    ) -> Result<Session> {
+        // Record only after rmux confirms create-or-reuse. Writing speculative
+        // metadata first would let a failed create delete or overwrite the
+        // provenance of an already-running session with the same name.
+        let (command, environment) = launch.into_parts();
+        let session = self
+            .create_session_with_environment(name, working_dir, Some(&command), &environment)
+            .await?;
+        record_session_provider(name, agent)?;
         Ok(session)
+    }
+
+    /// Create a fresh provider session whose process cannot execute until the
+    /// caller publishes one exact start-barrier digest. This closes the window
+    /// where pane zero can finish before the aggregate runtime is committed.
+    pub async fn create_recorded_agent_session_create_only_gated(
+        &self,
+        name: &str,
+        working_dir: Option<&str>,
+        agent: Agent,
+        launch: AgentLaunch,
+        gate_path: &Path,
+        expected_value: &str,
+    ) -> Result<Session> {
+        let (command, environment) = launch.into_parts();
+        let gated = gated_shell_command(&command, gate_path, expected_value)?;
+        let session = self
+            .create_session_with_environment_and_policy(
+                name,
+                working_dir,
+                Some(&gated),
+                &environment,
+                EnsureSessionPolicy::CreateOnly,
+            )
+            .await?;
+        if let Err(error) = record_session_provider(name, agent) {
+            let rollback = self.kill_session(name).await.err();
+            return Err(error).with_context(|| match rollback {
+                Some(rollback) => format!(
+                    "provider provenance failed after gated create-only session launch; rollback also failed: {rollback}"
+                ),
+                None => {
+                    "provider provenance failed; gated create-only session was rolled back"
+                        .to_string()
+                }
+            });
+        }
+        Ok(session)
+    }
+
+    /// Resolve the stable daemon identity of a newly created worker pane while
+    /// its provider command is still held behind the private start gate.
+    pub async fn observe_worker_process(
+        &self,
+        session: &Session,
+        session_name: &str,
+        expected_working_dir: &Path,
+    ) -> Result<crate::worker_runtime::ObservedWorkerProcess> {
+        let pane = session.pane(0, 0);
+        let pane_id = pane
+            .id()
+            .await
+            .context("reading stable worker pane id")?
+            .ok_or_else(|| anyhow::anyhow!("worker pane disappeared before activation"))?;
+        let snapshot = pane
+            .info()
+            .await
+            .context("reading worker pane activation")?;
+        let info = snapshot
+            .pane(pane_id)
+            .ok_or_else(|| anyhow::anyhow!("rmux info omitted the exact worker pane"))?;
+        let process_pid = match &info.process {
+            PaneProcessState::Running { pid: Some(pid) } if *pid > 0 => *pid,
+            state => anyhow::bail!("worker pane has no observed live pid at activation: {state:?}"),
+        };
+        if info.generation == 0 {
+            anyhow::bail!("worker pane has no observed process generation at activation");
+        }
+        let command = info
+            .command
+            .as_ref()
+            .filter(|command| !command.is_empty())
+            .ok_or_else(|| anyhow::anyhow!("worker pane has no daemon-recorded start command"))?;
+        let working_dir = info.working_directory.as_deref().ok_or_else(|| {
+            anyhow::anyhow!("worker pane has no daemon-recorded working directory")
+        })?;
+        let working_dir = std::fs::canonicalize(working_dir)
+            .with_context(|| format!("canonicalizing activated worker workspace {working_dir}"))?;
+        let expected_working_dir =
+            std::fs::canonicalize(expected_working_dir).with_context(|| {
+                format!(
+                    "canonicalizing expected worker workspace {}",
+                    expected_working_dir.display()
+                )
+            })?;
+        if working_dir != expected_working_dir {
+            anyhow::bail!("worker pane activated in a different workspace");
+        }
+        crate::worker_runtime::ObservedWorkerProcess::new(
+            session_name,
+            pane_id,
+            info.session_id,
+            info.window_id,
+            info.generation,
+            process_pid,
+            blake3::hash(&serde_json::to_vec(command)?)
+                .to_hex()
+                .to_string(),
+            working_dir,
+        )
+    }
+
+    /// Re-resolve one activated worker by stable pane identity and prove that
+    /// every daemon-observed generation field still matches its manifest.
+    pub async fn validate_live_worker_process(
+        &self,
+        expected: &crate::worker_runtime::ObservedWorkerProcess,
+    ) -> Result<Pane> {
+        let session = self
+            .get_session(&expected.session)
+            .await
+            .context("resolving activated worker session")?;
+        let pane = session
+            .pane_by_id(expected.pane_id)
+            .await
+            .with_context(|| format!("resolving stable worker pane {}", expected.pane_id))?;
+        let current = self
+            .observe_worker_process_from_pane(&pane, &expected.session)
+            .await?;
+        if current != *expected {
+            anyhow::bail!(
+                "stable worker pane {} differs from its activated process generation",
+                expected.pane_id
+            );
+        }
+        Ok(pane)
+    }
+
+    /// Kill the exact activated worker process and confirm its stable pane is
+    /// absent. Any probe or close failure is returned so callers retain ledger
+    /// authority instead of claiming a clean rollback.
+    pub async fn contain_worker_process(
+        &self,
+        expected: &crate::worker_runtime::ObservedWorkerProcess,
+    ) -> Result<()> {
+        let live = self
+            .list_sessions()
+            .await
+            .context("probing activated worker session before containment")?
+            .into_iter()
+            .any(|session| session.name == expected.session);
+        if !live {
+            return Ok(());
+        }
+        let session = match self.get_session(&expected.session).await {
+            Ok(session) => session,
+            Err(error) => {
+                let still_live = self
+                    .list_sessions()
+                    .await
+                    .context("rechecking worker session after resolution race")?
+                    .into_iter()
+                    .any(|session| session.name == expected.session);
+                if !still_live {
+                    return Ok(());
+                }
+                return Err(error).context("resolving live worker session for containment");
+            }
+        };
+        let pane = match session.pane_by_id(expected.pane_id).await {
+            Ok(pane) => pane,
+            Err(rmux_sdk::RmuxError::PaneNotFound { .. }) => return Ok(()),
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("resolving stable worker pane {}", expected.pane_id));
+            }
+        };
+        let current = self
+            .observe_worker_process_from_pane(&pane, &expected.session)
+            .await?;
+        if current != *expected {
+            anyhow::bail!(
+                "stable worker pane {} differs from its activated process generation",
+                expected.pane_id
+            );
+        }
+        let probe = pane.clone();
+        pane.close()
+            .await
+            .with_context(|| format!("closing stable worker pane {}", expected.pane_id))?;
+        if probe
+            .exists()
+            .await
+            .with_context(|| format!("confirming stable worker pane {} died", expected.pane_id))?
+        {
+            anyhow::bail!(
+                "stable worker pane {} remained live after containment",
+                expected.pane_id
+            );
+        }
+        self.invalidate_pane(&expected.session).await;
+        Ok(())
+    }
+
+    /// Contain a create-only session before a complete pane observation could
+    /// be recorded, then prove the name is absent from the daemon inventory.
+    pub async fn contain_created_worker_session(&self, session_name: &str) -> Result<()> {
+        let live = self
+            .list_sessions()
+            .await
+            .context("probing create-only worker session for containment")?
+            .into_iter()
+            .any(|session| session.name == session_name);
+        if live {
+            self.kill_session(session_name)
+                .await
+                .context("killing create-only worker session")?;
+        }
+        let still_live = self
+            .list_sessions()
+            .await
+            .context("confirming create-only worker session died")?
+            .into_iter()
+            .any(|session| session.name == session_name);
+        if still_live {
+            anyhow::bail!("worker session {session_name} remained live after containment");
+        }
+        Ok(())
+    }
+
+    /// Contain the complete rmux aggregate reserved by one strict worker
+    /// runtime generation. This is deliberately broader than
+    /// [`Self::contain_worker_process`]: recovery uses it when the stable pane
+    /// exists but its process generation no longer matches the activated
+    /// observation, so adopting or closing that pane as the old process would
+    /// be unsafe.
+    ///
+    /// The manifest, rather than a caller-supplied name, is the authority for
+    /// this operation. Its cryptographic generation suffix makes the rmux name
+    /// a private aggregate owned by that one runtime. Authority and leases must
+    /// remain retained when this method returns an error.
+    pub async fn contain_worker_runtime_session(
+        &self,
+        runtime: &crate::worker_runtime::WorkerRuntimeManifest,
+    ) -> Result<crate::worker_runtime::ConfirmedWorkerAbsence> {
+        let session_name = runtime.session().session.as_str();
+        let generation_suffix = runtime
+            .runtime_id()
+            .get(..20)
+            .ok_or_else(|| anyhow::anyhow!("worker runtime generation is truncated"))?;
+        if !session_name.ends_with(generation_suffix) {
+            anyhow::bail!("worker runtime session is not scoped to its immutable generation");
+        }
+
+        let live = self
+            .list_sessions()
+            .await
+            .context("probing generation-scoped worker session before containment")?
+            .into_iter()
+            .any(|session| session.name == session_name);
+        if live {
+            self.kill_session(session_name)
+                .await
+                .context("killing generation-scoped worker session")?;
+        }
+        let still_live = self
+            .list_sessions()
+            .await
+            .context("confirming generation-scoped worker session died")?
+            .into_iter()
+            .any(|session| session.name == session_name);
+        if still_live {
+            anyhow::bail!(
+                "generation-scoped worker session {session_name} remained live after containment"
+            );
+        }
+        self.invalidate_pane(session_name).await;
+        crate::worker_runtime::ConfirmedWorkerAbsence::new(runtime)
+    }
+
+    /// Freshly prove that a strict worker runtime's generation-scoped rmux
+    /// aggregate is absent without mutating daemon state.
+    pub async fn confirm_worker_runtime_absence(
+        &self,
+        runtime: &crate::worker_runtime::WorkerRuntimeManifest,
+    ) -> Result<crate::worker_runtime::ConfirmedWorkerAbsence> {
+        let session_name = runtime.session().session.as_str();
+        let live = self
+            .list_sessions()
+            .await
+            .context("probing generation-scoped worker session absence")?
+            .into_iter()
+            .any(|session| session.name == session_name);
+        if live {
+            anyhow::bail!("generation-scoped worker session {session_name} is still live");
+        }
+        crate::worker_runtime::ConfirmedWorkerAbsence::new(runtime)
+    }
+
+    async fn observe_worker_process_from_pane(
+        &self,
+        pane: &Pane,
+        session_name: &str,
+    ) -> Result<crate::worker_runtime::ObservedWorkerProcess> {
+        let pane_id = pane
+            .id()
+            .await
+            .context("reading stable worker pane id")?
+            .ok_or_else(|| anyhow::anyhow!("stable worker pane is absent"))?;
+        let snapshot = pane.info().await.context("re-observing worker pane")?;
+        let info = snapshot
+            .pane(pane_id)
+            .ok_or_else(|| anyhow::anyhow!("stable worker pane disappeared during validation"))?;
+        let process_pid = match &info.process {
+            PaneProcessState::Running { pid: Some(pid) } if *pid > 0 => *pid,
+            state => anyhow::bail!("stable worker pane is not a live process: {state:?}"),
+        };
+        let command = info
+            .command
+            .as_ref()
+            .filter(|command| !command.is_empty())
+            .ok_or_else(|| anyhow::anyhow!("stable worker pane lost its launch command"))?;
+        let working_dir = info
+            .working_directory
+            .as_deref()
+            .ok_or_else(|| anyhow::anyhow!("stable worker pane lost its working directory"))?;
+        crate::worker_runtime::ObservedWorkerProcess::new(
+            session_name,
+            pane_id,
+            info.session_id,
+            info.window_id,
+            info.generation,
+            process_pid,
+            blake3::hash(&serde_json::to_vec(command)?)
+                .to_hex()
+                .to_string(),
+            working_dir,
+        )
     }
 
     pub async fn list_sessions(&self) -> Result<Vec<OmegaSession>> {
@@ -459,7 +946,9 @@ impl SessionManager {
         if !status.success() {
             anyhow::bail!("rmux rename-session failed (exit {:?})", status.code());
         }
-        crate::tuilog::log(format!("rename: '{old_name}' → '{safe}' (raw input: '{new_name}')"));
+        crate::tuilog::log(format!(
+            "rename: '{old_name}' → '{safe}' (raw input: '{new_name}')"
+        ));
         // Old name is no longer addressable — drop its cached pane. Also drop
         // any entry under new_name: a stale cache slot left from a prior session
         // of the same name would otherwise point at a now-different daemon pane.
@@ -592,11 +1081,7 @@ impl SessionManager {
     /// The Enter is deliberately NOT inside the retried block: replaying a
     /// submit could duplicate a turn, whereas replaying the paste alone can
     /// only ever re-fill a composer that never received it.
-    pub async fn send_paste_then_submit(
-        &self,
-        session_name: &str,
-        text: &str,
-    ) -> Result<()> {
+    pub async fn send_paste_then_submit(&self, session_name: &str, text: &str) -> Result<()> {
         self.send_paste_block(session_name, text).await?;
         let pane = self.pane_for(session_name).await?;
         match pane.send_key("Enter").await {
@@ -811,11 +1296,7 @@ impl SessionManager {
         Ok(())
     }
 
-    pub async fn split_pane(
-        &self,
-        session_name: &str,
-        command: Option<&str>,
-    ) -> Result<Pane> {
+    pub async fn split_pane(&self, session_name: &str, command: Option<&str>) -> Result<Pane> {
         let pane = self.get_active_pane(session_name).await?;
 
         if let Some(cmd) = command {
@@ -896,8 +1377,12 @@ fn styled_rows_from_snapshot(snapshot: &rmux_sdk::PaneSnapshot) -> Vec<PreviewLi
         let mut cur_underline = false;
         let mut started = false;
         for col in 0..cols {
-            let Some(cell) = snapshot.cell(r, col) else { continue };
-            if cell.glyph.is_padding() { continue; }
+            let Some(cell) = snapshot.cell(r, col) else {
+                continue;
+            };
+            if cell.glyph.is_padding() {
+                continue;
+            }
             let ch = cell.glyph.text.clone();
             let attr_bits = cell.attributes.bits;
             let reverse = attr_bits & rmux_sdk::PaneAttributes::REVERSE.bits != 0;
@@ -910,8 +1395,12 @@ fn styled_rows_from_snapshot(snapshot: &rmux_sdk::PaneSnapshot) -> Vec<PreviewLi
             if reverse {
                 std::mem::swap(&mut fg, &mut bg);
                 // ensure a visible swap even when one side was default
-                if fg.is_none() { fg = Some(PreviewColor::Indexed(0)); }
-                if bg.is_none() { bg = Some(PreviewColor::Indexed(7)); }
+                if fg.is_none() {
+                    fg = Some(PreviewColor::Indexed(0));
+                }
+                if bg.is_none() {
+                    bg = Some(PreviewColor::Indexed(7));
+                }
             }
             let glyph = if ch.is_empty() { " ".to_string() } else { ch };
             if started
@@ -925,7 +1414,15 @@ fn styled_rows_from_snapshot(snapshot: &rmux_sdk::PaneSnapshot) -> Vec<PreviewLi
                 cur_text.push_str(&glyph);
             } else {
                 if started {
-                    line.push(PreviewSpan { text: std::mem::take(&mut cur_text), fg: cur_fg, bg: cur_bg, bold: cur_bold, dim: cur_dim, italic: cur_italic, underline: cur_underline });
+                    line.push(PreviewSpan {
+                        text: std::mem::take(&mut cur_text),
+                        fg: cur_fg,
+                        bg: cur_bg,
+                        bold: cur_bold,
+                        dim: cur_dim,
+                        italic: cur_italic,
+                        underline: cur_underline,
+                    });
                 }
                 cur_fg = fg;
                 cur_bg = bg;
@@ -938,7 +1435,15 @@ fn styled_rows_from_snapshot(snapshot: &rmux_sdk::PaneSnapshot) -> Vec<PreviewLi
             }
         }
         if started && !cur_text.is_empty() {
-            line.push(PreviewSpan { text: cur_text, fg: cur_fg, bg: cur_bg, bold: cur_bold, dim: cur_dim, italic: cur_italic, underline: cur_underline });
+            line.push(PreviewSpan {
+                text: cur_text,
+                fg: cur_fg,
+                bg: cur_bg,
+                bold: cur_bold,
+                dim: cur_dim,
+                italic: cur_italic,
+                underline: cur_underline,
+            });
         }
         // Trim trailing all-blank spans to keep lines tight.
         while line
@@ -971,7 +1476,6 @@ fn pane_color_to_preview(c: &rmux_sdk::PaneColor) -> Option<PreviewColor> {
         _ => None,
     }
 }
-
 
 /// Menu ordering for the session list. Groups by section (Home, project work,
 /// System), then by project, then — within a project — oracles BEFORE their
@@ -1043,13 +1547,13 @@ pub fn styled_rows_from_ansi(input: &str) -> (Vec<PreviewLine>, String) {
         let (mut bold, mut dim, mut italic, mut underline) = (false, false, false, false);
 
         let flush = |cur: &mut String,
-                         line: &mut PreviewLine,
-                         fg: Option<PreviewColor>,
-                         bg: Option<PreviewColor>,
-                         bold: bool,
-                         dim: bool,
-                         italic: bool,
-                         underline: bool| {
+                     line: &mut PreviewLine,
+                     fg: Option<PreviewColor>,
+                     bg: Option<PreviewColor>,
+                     bold: bool,
+                     dim: bool,
+                     italic: bool,
+                     underline: bool| {
             if !cur.is_empty() {
                 line.push(PreviewSpan {
                     text: std::mem::take(cur),
@@ -1085,9 +1589,7 @@ pub fn styled_rows_from_ansi(input: &str) -> (Vec<PreviewLine>, String) {
                     if final_byte != Some('m') {
                         continue; // non-SGR CSI: consumed, never rendered
                     }
-                    flush(
-                        &mut cur, &mut line, fg, bg, bold, dim, italic, underline,
-                    );
+                    flush(&mut cur, &mut line, fg, bg, bold, dim, italic, underline);
                     let nums: Vec<i32> = params
                         .split(';')
                         .map(|p| p.trim().parse::<i32>().unwrap_or(0))
@@ -1173,9 +1675,7 @@ pub fn styled_rows_from_ansi(input: &str) -> (Vec<PreviewLine>, String) {
                 }
             }
         }
-        flush(
-            &mut cur, &mut line, fg, bg, bold, dim, italic, underline,
-        );
+        flush(&mut cur, &mut line, fg, bg, bold, dim, italic, underline);
         rows.push(line);
         plain.push('\n');
     }
@@ -1206,8 +1706,7 @@ mod ansi_parse_tests {
 
     #[test]
     fn parses_truecolor_and_drops_non_sgr_sequences() {
-        let (rows, plain) =
-            styled_rows_from_ansi("\u{1b}[2K\u{1b}[38;2;10;20;30mRGB\u{1b}[m tail");
+        let (rows, plain) = styled_rows_from_ansi("\u{1b}[2K\u{1b}[38;2;10;20;30mRGB\u{1b}[m tail");
         assert_eq!(plain, "RGB tail");
         assert!(matches!(rows[0][0].fg, Some(PreviewColor::Rgb(10, 20, 30))));
         assert!(rows[0][1].fg.is_none());
@@ -1216,8 +1715,9 @@ mod ansi_parse_tests {
 
 #[cfg(test)]
 mod sanitize_tests {
-    use super::sanitize_session_name as s;
     use super::MAX_SESSION_NAME_LEN;
+    use super::{resolve_agent_command, sanitize_session_name as s};
+    use crate::agents::Agent;
 
     #[test]
     fn clean_names_unchanged() {
@@ -1248,9 +1748,13 @@ mod sanitize_tests {
             let out = s(raw);
             assert!(!out.is_empty());
             assert!(out.len() <= MAX_SESSION_NAME_LEN, "too long: {out}");
-            assert!(!out.starts_with('-') && !out.ends_with('-'), "edge dash: {out}");
             assert!(
-                out.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-')),
+                !out.starts_with('-') && !out.ends_with('-'),
+                "edge dash: {out}"
+            );
+            assert!(
+                out.chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-')),
                 "non-slug char survived in {out:?}"
             );
         }
@@ -1274,6 +1778,81 @@ mod sanitize_tests {
         assert_eq!(s("???"), "session"); // empty-after-strip → fallback
         assert_eq!(s(""), "session");
         assert!(s(&"x".repeat(200)).len() <= MAX_SESSION_NAME_LEN);
+    }
+
+    #[test]
+    fn unknown_agent_command_is_rejected_without_codex_fallback() {
+        assert_eq!(resolve_agent_command("codex").unwrap(), Agent::Codex);
+        let error = resolve_agent_command("codxe").unwrap_err();
+        assert!(error.to_string().contains("unknown agent provider"));
+    }
+}
+
+#[cfg(test)]
+mod start_gate_tests {
+    use super::{gated_shell_command, shell_single_quote};
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn command_waits_for_the_exact_generation_digest() {
+        let temp = tempfile::tempdir().unwrap();
+        let directory = temp.path().join("gate with ' quote");
+        std::fs::create_dir_all(&directory).unwrap();
+        let gate = directory.join("start.gate");
+        let marker = directory.join("executed.marker");
+        let expected = blake3::hash(b"exact team generation").to_hex().to_string();
+        let command = format!(
+            "printf ready > {}",
+            shell_single_quote(marker.to_str().unwrap())
+        );
+        let wrapped = gated_shell_command(&command, &gate, &expected).unwrap();
+
+        let mut child = tokio::process::Command::new("bash")
+            .arg("-lc")
+            .arg(wrapped)
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(120)).await;
+        assert!(!marker.exists(), "provider command ran before any barrier");
+
+        std::fs::write(&gate, b"wrong-generation").unwrap();
+        tokio::time::sleep(Duration::from_millis(120)).await;
+        assert!(
+            !marker.exists(),
+            "provider command accepted a different generation"
+        );
+
+        std::fs::write(&gate, expected.as_bytes()).unwrap();
+        let status = tokio::time::timeout(Duration::from_secs(3), child.wait())
+            .await
+            .expect("gated command did not observe the exact barrier")
+            .unwrap();
+        assert!(status.success());
+        assert_eq!(std::fs::read_to_string(marker).unwrap(), "ready");
+    }
+
+    #[test]
+    fn command_gate_rejects_ambiguous_inputs() {
+        let digest = blake3::hash(b"generation").to_hex().to_string();
+        assert!(
+            gated_shell_command("echo ok", std::path::Path::new("relative"), &digest)
+                .unwrap_err()
+                .to_string()
+                .contains("absolute")
+        );
+        assert!(
+            gated_shell_command("echo ok", std::path::Path::new("/tmp/gate"), "ABC")
+                .unwrap_err()
+                .to_string()
+                .contains("lowercase BLAKE3")
+        );
+        assert!(
+            gated_shell_command("\0", std::path::Path::new("/tmp/gate"), &digest)
+                .unwrap_err()
+                .to_string()
+                .contains("NUL")
+        );
     }
 }
 
@@ -1301,8 +1880,8 @@ mod order_tests {
         assert_eq!(
             names,
             vec![
-                "oracle-DentistryGPT-1",        // oracle idx 1 first
-                "oracle-DentistryGPT-2",        // then idx 2
+                "oracle-DentistryGPT-1",             // oracle idx 1 first
+                "oracle-DentistryGPT-2",             // then idx 2
                 "DentistryGPT-worker-agent-actions", // workers after, by name
                 "DentistryGPT-worker-composio-v3",
             ]

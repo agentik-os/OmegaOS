@@ -1,0 +1,79 @@
+{
+  "schema_version": "2.0.0",
+  "id": "decision-os",
+  "num": 9,
+  "name": "Decision {OS}",
+  "version": "0.1.0",
+  "status": "scaffold",
+  "group": {
+    "key": "personal",
+    "label": "01 · PERSONAL",
+    "purpose": "Operate yourself"
+  },
+  "tagline": "Make hard calls well: framing, reversibility, evidence, the decision record.",
+  "inherits_from": null,
+  "commands": [
+    "decide",
+    "frame",
+    "options",
+    "reversibility",
+    "decision-record",
+    "decision-review"
+  ],
+  "dependencies": {
+    "requires": [
+      "context-memory-os"
+    ],
+    "consumes_from": [
+      "alignment-os",
+      "goal-life-strategy-os",
+      "intuitive-os",
+      "mindset-os",
+      "research-os"
+    ],
+    "emits_to": [
+      "execution-os",
+      "journal-os",
+      "goal-life-strategy-os",
+      "review-governance-os"
+    ]
+  },
+  "targets": {
+    "claude": {
+      "supported": true
+    },
+    "chatgpt": {
+      "supported": true
+    },
+    "gemini": {
+      "supported": true
+    },
+    "codex": {
+      "supported": true
+    }
+  },
+  "entrypoints": {
+    "spec": "OS.md",
+    "system": "SYSTEM.md",
+    "skill": "SKILL.md",
+    "setup": "SETUP.md",
+    "workflows": "WORKFLOWS/",
+    "commands": "COMMANDS/",
+    "prompts": "PROMPTS/",
+    "references": "REFERENCES/",
+    "memory": "MEMORY/",
+    "tools": "TOOLS/",
+    "evals": "EVALS/",
+    "examples": "EXAMPLES/",
+    "interfaces": "INTERFACES/",
+    "adapters": "ADAPTERS/"
+  },
+  "requires_human_approval_for": [
+    "recording a call as decided, or changing the choice in an existing decision record",
+    "proceeding with an option classed irreversible, or with any option whose undo cost is unknown",
+    "deciding while the stated evidence threshold is unmet",
+    "handing the decided course of action to Execution {OS}, which starts real commitment of time and money",
+    "sending or exporting a decision record, its evidence or its option table outside the local machine",
+    "overwriting or deleting an existing record or any part of its review history"
+  ]
+}

@@ -17,7 +17,7 @@ Anyone clones this repo, runs `./install.sh`, and gets:
 ```
 Level 1 — Human Interface (Telegram / CLI / Web)
     ↓ intent
-Level 2 — AISB Orchestrator (persistent daemon)
+Level 2 — Atlas Telegram orchestration service (persistent daemon)
     ↓ dispatch
 Level 3 — Oracle (1 per project, strategic)
     ↓ decompose + delegate
@@ -35,7 +35,7 @@ Level 4 — Workers (ephemeral, parallel, file-lock scoped)
 ## Key Patterns
 
 ### Inspired by tmux-claude UX (re-implemented in Rust against the rmux SDK — no tmux runtime dependency)
-- Option+Z session manager menu (fzf-based, grouped, progress bars)
+- Ctrl+Space session-manager popup, with prefix+o and prefix+z aliases
 - Oracle/worker tree hierarchy display
 - Team spawn + layout (N agents in split panes)
 - Session protection, kill history, auto-discovery

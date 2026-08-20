@@ -10,7 +10,7 @@
 
 OmegaOS is a provider-neutral control plane for a fleet of coding agents on one box. New sessions use OpenAI Codex by default, while Claude Code, Gemini, Pi, Hermes, and GLM remain selectable. It
 turns a Linux machine (typically a VPS) into a place where you dispatch work in
-one sentence and a hierarchy of agents — a Master that routes, an oracle per
+one sentence and a hierarchy of agents: the Atlas service routes, an oracle per
 project that plans, ephemeral workers that edit — executes it in parallel under
 a single typed rulebook, verifies it adversarially, and reports back to your
 terminal or your phone. You drive it from three cockpits: a TUI, the `omega`
@@ -22,7 +22,7 @@ Every term below is load-bearing. Missions fail when these get conflated.
 
 | Term | Definition |
 |---|---|
-| **Session** | An rmux PTY with a role: **Master** (the routing brain), **Oracle** (per-project orchestrator), **Worker** (ephemeral editor), **Home** (your own interactive shells, e.g. `claude-1`), **System** (daemons like the Telegram bridge). `omega list` shows them. |
+| **Session** | An rmux PTY with a role: **Oracle** (per-project orchestrator), **Worker** (ephemeral editor), **Home** (your own interactive shells, e.g. `claude-1`), **System** (daemons and viewers). The legacy `aisb-master` name is a read-only Telegram conversation viewer, not a routing agent. `omega list` shows sessions. |
 | **Mission** | A request dispatched to an oracle (`omega dispatch <Project> "<mission>"` or a message in the project's Telegram topic). The SQLite mission ledger is authoritative; JSON, timeline, plan, and Telegram surfaces are projections. |
 | **Oracle** | One per project. It classifies, plans, dispatches workers, runs the quality gate, and reports. It **never edits project code itself** — the grader and the writer are different agents. |
 | **Worker** | Ephemeral, parallel, file-scope-locked editor. Named `<Project>-worker-<task>`. It does ONE task, verifies against runtime, and signals completion with `omega done`. |
@@ -60,7 +60,7 @@ Seven Laws bind every agent, at every level, always. From the registry
 - **L6 — Finish the mission.** Enumerate every deliverable, track it, execute
   through the last item, verify each result, and only then report.
 
-The 47 operational Rules implement the Laws, one
+The operational Rules reported by `omega rules list` implement the Laws, one
 category at a time. One example each:
 
 | Category | Example rule |
@@ -80,15 +80,17 @@ mechanics no longer pollute the universal kernel.
 
 ### 4a. The TUI (`omega`)
 
-Five tabs (cycle with arrow keys; `Tab` toggles focus between panels):
+Seven tabs (cycle with arrow keys; `Tab` toggles focus between panels):
 
 | Tab | What it does |
 |---|---|
 | **Sessions** | Live session list with roles and progress; the right panel mirrors the selected pane and accepts chat input. Codex/OpenAI panes preserve ANSI color, reflow long Unicode input to the visible width, paint the real cursor row, and show the persisted provider identity. Kill, lock, rename, attach. |
+| **Projects** | Registered projects, planner creation, Telegram topic controls, open/dispatch, and guarded deletion. |
+| **OS** | The 24-product operative-system registry with static readiness evidence and MASTER prompt launch. |
 | **Menu** | Launch actions: new Claude/Codex/Gemini/Pi/Hermes/GLM/terminal session, **[N] New Project**, dispatch to an oracle, refresh, protection toggle, kill / kill-all / nuclear cleanup, restart, quit. |
-| **Agentic** | The agentic state: projects (with per-project actions and a 3-tier delete), doctrine info, oracle/worker tree. |
-| **Settings** | Theme gallery (live preview — see [docs/THEMES.md](docs/THEMES.md)), provider/model config, API keys, agent installs, the Monitor group (billing, accounts, bot status, provisioning keys wizard). |
+| **System** | Laws, rules, agent roles, skills, and documentation. |
 | **Help** | Keybindings and usage hints. |
+| **Settings** | Theme gallery (live preview — see [docs/THEMES.md](docs/THEMES.md)), provider/model config, API keys, agent installs, the Monitor group (billing, accounts, bot status, provisioning keys wizard). |
 
 **Scrolling & mouse — know your transport.** Over **plain SSH** the mouse works
 end-to-end: wheel scrolls the session mirror (and the pane scrollback in a
@@ -113,6 +115,7 @@ omega spawn-worker fix-auth "..." --files src/auth.rs --worktree   # worker, sco
 omega done <session> done_clean "what+proof"  # worker completion signal (done_clean|pending|failed|blocked)
 omega progress <session> --plan "audit|fix N+1|merge"              # oracle progress → Telegram card
 omega status <session>                        # session status + pane content
+omega plan-create [dir]                       # open /omg-planner in that project
 omega plan-run [dir]                          # execute .planner/tracker.json (Gate + Guardian)
 omega patrol                                  # session-health watchdog (also runs from cron)
 omega cleanup                                 # prune stray sessions, stale state, /tmp scratch
@@ -138,7 +141,7 @@ The full surface, one line per subcommand (from `omega --help`):
 | `clock` | Print the localized wall-clock for the rmux status bar. |
 | `projects` | Auto-discover projects on this machine. |
 | `install` | Run the official installer for an agent (pi, hermes, codex, gemini, glm, claude). |
-| `master` | Attach to the Master session (auto-spawns if missing). |
+| `aisb-view` | Open the read-only Telegram conversation viewer (`master` and `aisb` are compatibility aliases). |
 | `config` | Get/set provider configuration values. |
 | `monitor` | Show billing / accounts / bot status (one-shot). |
 | `telegram` | Manage the Telegram bridge (setup/run/enable/disable). |
@@ -146,7 +149,7 @@ The full surface, one line per subcommand (from `omega --help`):
 | `rules` | List, export, or manage operational rules. |
 | `audit` | Manage the 23-audit Quality Arsenal (`list` / `select` / `results` / `run`). |
 | `sync` | Symlink OmegaOS config into all LLM config directories. |
-| `install-bindings` | Install Option+Z / Option+/ rmux keybindings. |
+| `install-bindings` | Install Ctrl+Space plus prefix `o` / `z` rmux menu bindings. |
 | `list` | List all sessions. |
 | `attach` | Attach to a session. |
 | `kill` | Kill a session. |
@@ -167,7 +170,7 @@ The full surface, one line per subcommand (from `omega --help`):
 | `timeline` | Replay an oracle's dispatch→done history. |
 | `resurrect` | Re-spawn crashed oracles from persisted state (no arg = all dead ones). |
 | `provision` | Manage provisioning credential groups (per-client accounts). |
-| `aisb-chat` | Interactive Master chat REPL (same brain as Telegram). |
+| `aisb-chat` | Interactive local chat REPL routed through the Telegram orchestration service. |
 | `gate` | Check the quality gate for an oracle. |
 | `scope` | Check scope-claim conflicts. |
 | `status` | Show session status and pane content. |
@@ -178,6 +181,7 @@ The full surface, one line per subcommand (from `omega --help`):
 | `route` | Classify a mission's complexity (SIMPLE/MEDIUM/COMPLEX/EPIC). |
 | `completions` | Generate shell completions. |
 | `init` | Initialize OmegaOS configuration. |
+| `plan-create` | Open `/omg-planner` in a project-scoped agent session. |
 | `plan-status` | Show plan progress from `.planner/tracker.json` (read-only). |
 | `plan-run` | Drive a plan to completion (spawns real workers per step). |
 | `claude-login` / `claude-login-code` | Headless Claude OAuth re-login (start / finish). |

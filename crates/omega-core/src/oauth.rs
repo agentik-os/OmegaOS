@@ -271,28 +271,32 @@ pub async fn handle_code(mgr: &SessionManager, code: &str) -> Result<ReauthResul
 
     // Verify Claude is actually waiting for the code (VPS pattern).
     let pre_capture = mgr.capture_pane(REAUTH_SESSION).await.unwrap_or_default();
-    let waiting_for_code = pre_capture.contains("Paste code here")
-        || pre_capture.contains("Paste your code");
+    let waiting_for_code =
+        pre_capture.contains("Paste code here") || pre_capture.contains("Paste your code");
     if !waiting_for_code {
         tracing::warn!(
             "Claude does not appear to be waiting for code. Last 300 chars: {}",
-            &pre_capture.chars().rev().take(300).collect::<String>().chars().rev().collect::<String>()
+            &pre_capture
+                .chars()
+                .rev()
+                .take(300)
+                .collect::<String>()
+                .chars()
+                .rev()
+                .collect::<String>()
         );
     }
 
     // CRITICAL: paste code WITHOUT Enter, sleep 1s, then send Enter separately.
     // VPS Python pattern: load-buffer + paste-buffer + sleep 1 + send-keys Enter.
     // Without this gap, Claude /login input field rejects the paste.
-    let pane = mgr.get_active_pane(REAUTH_SESSION)
+    let pane = mgr
+        .get_active_pane(REAUTH_SESSION)
         .await
         .context("get reauth pane failed")?;
-    pane.send_text(code)
-        .await
-        .context("paste code failed")?;
+    pane.send_text(code).await.context("paste code failed")?;
     tokio::time::sleep(Duration::from_secs(1)).await;
-    pane.send_key("Enter")
-        .await
-        .context("send Enter failed")?;
+    pane.send_key("Enter").await.context("send Enter failed")?;
 
     // Poll credentials.json for mtime change — up to 20s.
     // Also: Claude shows "Press Enter to continue..." after a successful login
@@ -344,10 +348,7 @@ pub async fn handle_code(mgr: &SessionManager, code: &str) -> Result<ReauthResul
     }
 
     let after_token = read_refresh_token(&creds_path);
-    let pane_tail = mgr
-        .capture_pane(REAUTH_SESSION)
-        .await
-        .unwrap_or_default();
+    let pane_tail = mgr.capture_pane(REAUTH_SESSION).await.unwrap_or_default();
     let pane_tail: String = pane_tail
         .lines()
         .rev()
@@ -363,8 +364,8 @@ pub async fn handle_code(mgr: &SessionManager, code: &str) -> Result<ReauthResul
     // and is not proof on its own: trusting it lets callers assume a valid token
     // when none was persisted. So every success path requires after_token.
     let pane_says_ok = pane_tail.contains("Logged in as");
-    let success = !after_token.is_empty()
-        && (updated || pane_says_ok || after_token != before_token);
+    let success =
+        !after_token.is_empty() && (updated || pane_says_ok || after_token != before_token);
     if pane_says_ok && after_token.is_empty() {
         tracing::warn!(
             "OAuth: pane reported 'Logged in as' but no refresh_token landed on disk — \
@@ -551,7 +552,9 @@ pub fn looks_like_oauth_code(s: &str) -> bool {
 /// after upgrade still works before migration runs.
 pub fn credentials_path() -> PathBuf {
     let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/tmp"));
-    let canonical = crate::config::omega_dir().join("credentials").join("claude.json");
+    let canonical = crate::config::omega_dir()
+        .join("credentials")
+        .join("claude.json");
     let legacy = home.join(".claude").join(".credentials.json");
     // Prefer canonical ONLY if it actually holds a usable refresh_token. A
     // present-but-stale/empty canonical (e.g. a truncated write) must not shadow
@@ -592,7 +595,9 @@ pub fn sync_credentials_to_omega() -> std::io::Result<()> {
     // Use the SAME resolver credentials_path() reads from — honoring $OMEGA_DIR /
     // the consolidated ~/OmegaOS/System layout. A hardcoded ~/.omega here would
     // write fresh OAuth creds where the reader never looks under a relocated root.
-    let canonical = crate::config::omega_dir().join("credentials").join("claude.json");
+    let canonical = crate::config::omega_dir()
+        .join("credentials")
+        .join("claude.json");
 
     // If native is a real file (Claude's atomic write broke the symlink),
     // copy it into omega and re-link.
@@ -624,10 +629,7 @@ pub fn sync_credentials_to_omega() -> std::io::Result<()> {
     let staged = shared_target.with_extension("omega-sync.tmp");
     let _ = std::fs::remove_file(&staged); // clear any stale temp
     std::fs::write(&staged, &bytes)?;
-    let _ = std::fs::set_permissions(
-        &staged,
-        std::os::unix::fs::PermissionsExt::from_mode(0o660),
-    );
+    let _ = std::fs::set_permissions(&staged, std::os::unix::fs::PermissionsExt::from_mode(0o660));
     if let Err(e) = std::fs::rename(&staged, &shared_target) {
         let _ = std::fs::remove_file(&staged); // don't leak the temp
         return Err(e);
@@ -673,10 +675,10 @@ impl CredentialsInfo {
 }
 
 pub fn read_credentials(path: &std::path::Path) -> Result<CredentialsInfo> {
-    let content = std::fs::read_to_string(path)
-        .with_context(|| format!("reading {}", path.display()))?;
-    let v: serde_json::Value = serde_json::from_str(&content)
-        .with_context(|| format!("parsing {}", path.display()))?;
+    let content =
+        std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+    let v: serde_json::Value =
+        serde_json::from_str(&content).with_context(|| format!("parsing {}", path.display()))?;
     let oauth = v
         .get("claudeAiOauth")
         .ok_or_else(|| anyhow::anyhow!("missing claudeAiOauth"))?;
@@ -735,7 +737,9 @@ mod tests {
     #[test]
     fn looks_like_oauth_code_accepts_realistic() {
         assert!(looks_like_oauth_code("abc123_DEF-456_xyz789012345"));
-        assert!(looks_like_oauth_code("abc123_DEF-456_xyz789012345#state_value"));
+        assert!(looks_like_oauth_code(
+            "abc123_DEF-456_xyz789012345#state_value"
+        ));
     }
 
     #[test]

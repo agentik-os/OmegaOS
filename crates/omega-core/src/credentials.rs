@@ -143,7 +143,10 @@ impl CredentialStore {
         {
             use std::os::unix::fs::PermissionsExt;
             let _ = std::fs::set_permissions(&base, std::fs::Permissions::from_mode(0o700));
-            let _ = std::fs::set_permissions(base.join("accounts"), std::fs::Permissions::from_mode(0o700));
+            let _ = std::fs::set_permissions(
+                base.join("accounts"),
+                std::fs::Permissions::from_mode(0o700),
+            );
         }
         Ok(Self {
             base_dir: base,
@@ -168,8 +171,8 @@ impl CredentialStore {
         let path = self.active_path(provider);
         let raw = std::fs::read_to_string(&path)
             .with_context(|| format!("reading {}", path.display()))?;
-        let v: Value = serde_json::from_str(&raw)
-            .with_context(|| format!("parsing {}", path.display()))?;
+        let v: Value =
+            serde_json::from_str(&raw).with_context(|| format!("parsing {}", path.display()))?;
         Ok(v)
     }
 
@@ -219,11 +222,7 @@ impl CredentialStore {
     pub fn switch_account(&self, provider: &str, name: &str) -> Result<()> {
         let from = self.account_path(provider, name);
         if !from.exists() {
-            anyhow::bail!(
-                "account not found: {} (looked at {})",
-                name,
-                from.display()
-            );
+            anyhow::bail!("account not found: {} (looked at {})", name, from.display());
         }
         let to = self.active_path(provider);
         if let Some(parent) = to.parent() {
@@ -291,11 +290,7 @@ impl CredentialStore {
                         std::fs::create_dir_all(p).ok();
                     }
                     std::fs::rename(&legacy, &canonical).with_context(|| {
-                        format!(
-                            "migrating {} -> {}",
-                            legacy.display(),
-                            canonical.display()
-                        )
+                        format!("migrating {} -> {}", legacy.display(), canonical.display())
                     })?;
                 } else {
                     // Both exist. The legacy real file is what the CLI just
@@ -325,11 +320,7 @@ impl CredentialStore {
         if canonical.exists() {
             #[cfg(unix)]
             std::os::unix::fs::symlink(&canonical, &legacy).with_context(|| {
-                format!(
-                    "symlink {} -> {}",
-                    legacy.display(),
-                    canonical.display()
-                )
+                format!("symlink {} -> {}", legacy.display(), canonical.display())
             })?;
             #[cfg(not(unix))]
             std::fs::copy(&canonical, &legacy)?;
@@ -491,9 +482,8 @@ impl CredentialStore {
                     .chain(extra_copy.as_ref().map(|copy| ("candidate-invalid", copy)));
                 for (label, copy) in invalid_copies {
                     if let Some(bytes) = copy.bytes.as_deref() {
-                        let canonical_already_preserves_bytes =
-                            label != "candidate-invalid"
-                                && canonical_copy.bytes.as_deref() == Some(bytes);
+                        let canonical_already_preserves_bytes = label != "candidate-invalid"
+                            && canonical_copy.bytes.as_deref() == Some(bytes);
                         if canonical_already_preserves_bytes
                             || quarantined_contents
                                 .iter()
@@ -597,8 +587,7 @@ impl CredentialStore {
 /// On error the caller must leave the legacy file in place — it may hold the
 /// only copy of the freshest rotated refresh token.
 fn adopt_fresher_legacy(legacy: &Path, canonical: &Path) -> Result<()> {
-    let bytes = std::fs::read(legacy)
-        .with_context(|| format!("reading {}", legacy.display()))?;
+    let bytes = std::fs::read(legacy).with_context(|| format!("reading {}", legacy.display()))?;
     // Corrupt/truncated legacy must never clobber a good canonical.
     if serde_json::from_slice::<Value>(&bytes).is_err() {
         return Ok(());
@@ -615,8 +604,7 @@ fn adopt_fresher_legacy(legacy: &Path, canonical: &Path) -> Result<()> {
     }
     let staged = target.with_extension("json.adopt.tmp");
     let _ = std::fs::remove_file(&staged); // clear any stale temp
-    std::fs::write(&staged, &bytes)
-        .with_context(|| format!("writing {}", staged.display()))?;
+    std::fs::write(&staged, &bytes).with_context(|| format!("writing {}", staged.display()))?;
     // Preserve the target's existing mode (0660 group-shared on multi-user
     // hosts); fall back to owner-only. chmod the TEMP we own, never the
     // target (which may be root-owned → EPERM), then rename(2) — readers
@@ -1211,18 +1199,46 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let (store, _env) = fresh_store(tmp.path());
         // write() — the active-creds path
-        store.write("codex", &json!({"refresh_token": "sk-secret-xyz"})).unwrap();
-        let mode = std::fs::metadata(store.active_path("codex")).unwrap().permissions().mode();
-        assert_eq!(mode & 0o077, 0, "active creds must be 0600, got {:o}", mode & 0o777);
+        store
+            .write("codex", &json!({"refresh_token": "sk-secret-xyz"}))
+            .unwrap();
+        let mode = std::fs::metadata(store.active_path("codex"))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(
+            mode & 0o077,
+            0,
+            "active creds must be 0600, got {:o}",
+            mode & 0o777
+        );
         // save_as_account() — the saved-profile copy
         store.save_as_account("codex", "work").unwrap();
-        let amode = std::fs::metadata(store.account_path("codex", "work")).unwrap().permissions().mode();
-        assert_eq!(amode & 0o077, 0, "saved account must be 0600, got {:o}", amode & 0o777);
+        let amode = std::fs::metadata(store.account_path("codex", "work"))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(
+            amode & 0o077,
+            0,
+            "saved account must be 0600, got {:o}",
+            amode & 0o777
+        );
         // switch_account() — the copy-over-active path
-        store.write("codex", &json!({"refresh_token": "v2"})).unwrap();
+        store
+            .write("codex", &json!({"refresh_token": "v2"}))
+            .unwrap();
         store.switch_account("codex", "work").unwrap();
-        let smode = std::fs::metadata(store.active_path("codex")).unwrap().permissions().mode();
-        assert_eq!(smode & 0o077, 0, "switched creds must be 0600, got {:o}", smode & 0o777);
+        let smode = std::fs::metadata(store.active_path("codex"))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(
+            smode & 0o077,
+            0,
+            "switched creds must be 0600, got {:o}",
+            smode & 0o777
+        );
     }
 
     fn fresh_store(tmp: &Path) -> (CredentialStore, LockedEnvironment) {
@@ -1319,7 +1335,9 @@ mod tests {
     fn ensure_legacy_symlink_creates_link() {
         let tmp = tempfile::tempdir().unwrap();
         let (store, _env) = fresh_store(tmp.path());
-        store.write("claude", &json!({"claudeAiOauth": {}})).unwrap();
+        store
+            .write("claude", &json!({"claudeAiOauth": {}}))
+            .unwrap();
         store.ensure_legacy_symlink("claude").unwrap();
         let legacy = tmp.path().join(".claude").join(".credentials.json");
         let meta = std::fs::symlink_metadata(&legacy).unwrap();
@@ -1383,11 +1401,20 @@ mod tests {
 
         // shared target adopted the fresh content
         let shared_content = std::fs::read_to_string(&shared).unwrap();
-        assert!(shared_content.contains("FRESH"), "shared must hold the fresh token, got: {shared_content}");
+        assert!(
+            shared_content.contains("FRESH"),
+            "shared must hold the fresh token, got: {shared_content}"
+        );
         // canonical→shared symlink untouched
-        assert!(std::fs::symlink_metadata(&canonical).unwrap().file_type().is_symlink());
+        assert!(std::fs::symlink_metadata(&canonical)
+            .unwrap()
+            .file_type()
+            .is_symlink());
         // legacy is a symlink again, and a backup of the real file exists
-        assert!(std::fs::symlink_metadata(&legacy).unwrap().file_type().is_symlink());
+        assert!(std::fs::symlink_metadata(&legacy)
+            .unwrap()
+            .file_type()
+            .is_symlink());
         assert!(legacy.with_extension("json.pre-omega").exists());
     }
 
@@ -1399,7 +1426,10 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let (store, _env) = fresh_store(tmp.path());
         store
-            .write("claude", &json!({"claudeAiOauth": {"refreshToken": "GOOD"}}))
+            .write(
+                "claude",
+                &json!({"claudeAiOauth": {"refreshToken": "GOOD"}}),
+            )
             .unwrap();
         std::fs::create_dir_all(tmp.path().join(".claude")).unwrap();
         let legacy = tmp.path().join(".claude").join(".credentials.json");
@@ -1408,8 +1438,14 @@ mod tests {
         store.ensure_legacy_symlink("claude").unwrap();
 
         let canonical_content = std::fs::read_to_string(store.active_path("claude")).unwrap();
-        assert!(canonical_content.contains("GOOD"), "canonical must keep good creds, got: {canonical_content}");
-        assert!(std::fs::symlink_metadata(&legacy).unwrap().file_type().is_symlink());
+        assert!(
+            canonical_content.contains("GOOD"),
+            "canonical must keep good creds, got: {canonical_content}"
+        );
+        assert!(std::fs::symlink_metadata(&legacy)
+            .unwrap()
+            .file_type()
+            .is_symlink());
     }
 
     #[test]

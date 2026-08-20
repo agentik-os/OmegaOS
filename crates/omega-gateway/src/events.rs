@@ -81,14 +81,19 @@ pub fn diff_missions(
     current
         .iter()
         .filter(|m| prev.get(&m.key).map(|u| u != &m.updated_at).unwrap_or(true))
-        .map(|m| GatewayEvent::MissionUpdated { key: m.key.clone(), updated_at: m.updated_at.clone() })
+        .map(|m| GatewayEvent::MissionUpdated {
+            key: m.key.clone(),
+            updated_at: m.updated_at.clone(),
+        })
         .collect()
 }
 
 /// `cfg.stream_interval_ms` × [`MISSION_POLL_MULTIPLIER`], floored at
 /// [`MISSION_POLL_MIN_MS`].
 fn mission_poll_interval(cfg: &GatewayConfig) -> Duration {
-    Duration::from_millis((cfg.stream_interval_ms * MISSION_POLL_MULTIPLIER).max(MISSION_POLL_MIN_MS))
+    Duration::from_millis(
+        (cfg.stream_interval_ms * MISSION_POLL_MULTIPLIER).max(MISSION_POLL_MIN_MS),
+    )
 }
 
 /// Spawns the two long-lived background loops that keep `hub` alive for
@@ -109,7 +114,9 @@ pub fn spawn_background_emitters(hub: EventHub, cfg: &GatewayConfig) {
     tokio::spawn(async move {
         let mut cache: HashMap<String, String> = HashMap::new();
         loop {
-            let current = tokio::task::spawn_blocking(missions::list).await.unwrap_or_default();
+            let current = tokio::task::spawn_blocking(missions::list)
+                .await
+                .unwrap_or_default();
             for ev in diff_missions(&cache, &current) {
                 if let GatewayEvent::MissionUpdated { key, updated_at } = &ev {
                     cache.insert(key.clone(), updated_at.clone());
@@ -122,7 +129,9 @@ pub fn spawn_background_emitters(hub: EventHub, cfg: &GatewayConfig) {
 
     tokio::spawn(async move {
         loop {
-            hub.emit(GatewayEvent::Heartbeat { ts: chrono::Utc::now().to_rfc3339() });
+            hub.emit(GatewayEvent::Heartbeat {
+                ts: chrono::Utc::now().to_rfc3339(),
+            });
             tokio::time::sleep(HEARTBEAT_INTERVAL).await;
         }
     });
@@ -136,7 +145,10 @@ mod tests {
     async fn subscriber_receives_emitted_alert() {
         let hub = EventHub::new();
         let mut rx = hub.subscribe();
-        hub.emit(GatewayEvent::Alert { message: "boom".into(), ts: "t1".into() });
+        hub.emit(GatewayEvent::Alert {
+            message: "boom".into(),
+            ts: "t1".into(),
+        });
         let ev = rx.recv().await.unwrap();
         match ev {
             GatewayEvent::Alert { message, ts } => {
@@ -211,9 +223,9 @@ mod tests {
         prev.insert("oracle-a".to_string(), "t1".to_string()); // unchanged
         prev.insert("oracle-c".to_string(), "old".to_string()); // changed
         let current = vec![
-            mission("oracle-a", "t1"),   // unchanged: no event
-            mission("oracle-b", "t1"),   // new: event
-            mission("oracle-c", "new"),  // changed: event
+            mission("oracle-a", "t1"),  // unchanged: no event
+            mission("oracle-b", "t1"),  // new: event
+            mission("oracle-c", "new"), // changed: event
         ];
         let mut keys: Vec<String> = diff_missions(&prev, &current)
             .into_iter()

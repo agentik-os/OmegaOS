@@ -2,8 +2,8 @@
 # Source from your ~/.rmux.conf with:
 #   source-file ~/.omega/rmux.conf.omega
 #
-# This adds the Option+Z (Alt+Z) keybinding to launch the OmegaOS
-# session manager as a popup over any rmux session.
+# OmegaOS menu entry points are intentionally one root binding plus two
+# prefix-table aliases: Ctrl+Space, prefix+o, and prefix+z.
 
 # Keep the FULL conversation scrollback for agent sessions. The rmux default
 # (2000 lines) silently discards the top of long chats; OmegaOS lets you
@@ -43,14 +43,14 @@ set-option -g status-right "\"#{=21:pane_title}\" #(omega clock --full 2>/dev/nu
 bind-key -n M-Up   if-shell -F '#{pane_in_mode}' 'send-keys -X scroll-up'   'copy-mode -e ; send-keys -X scroll-up'
 bind-key -n M-Down if-shell -F '#{pane_in_mode}' 'send-keys -X scroll-down' 'copy-mode -e ; send-keys -X scroll-down'
 
-# Option+Z / Alt+Z → OmegaOS session manager popup (full-screen)
-bind-key -n M-z display-popup -E -w 100% -h 100% "omega menu"
-
-# Option+/ → alias for omega menu
-bind-key -n M-/ display-popup -E -w 100% -h 100% "omega menu"
+# Ctrl+Space → OmegaOS session manager popup (full-screen)
+bind-key -n C-Space display-popup -E -w 100% -h 100% "omega menu"
 
 # Prefix + o → omega menu (works even on terminals that swallow Alt)
 bind-key o display-popup -E -w 100% -h 100% "omega menu"
+
+# Prefix + z → equivalent mnemonic alias
+bind-key z display-popup -E -w 100% -h 100% "omega menu"
 
 # Prefix + O → dispatch oracle (interactive)
 bind-key O display-popup -E -w 80% -h 30% "read -p 'Project: ' p && read -p 'Mission: ' m && omega dispatch \"\$p\" \"\$m\""

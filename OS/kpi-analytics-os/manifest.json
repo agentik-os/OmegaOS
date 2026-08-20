@@ -1,0 +1,120 @@
+{
+  "schema_version": "2.0.0",
+  "id": "kpi-analytics-os",
+  "num": 49,
+  "name": "KPI & Analytics {OS}",
+  "version": "0.1.0",
+  "status": "scaffold",
+  "group": {
+    "key": "operate",
+    "label": "05 · OPERATE",
+    "purpose": "Turn chaos into repeatable execution"
+  },
+  "tagline": "Measure the few numbers that actually change decisions.",
+  "inherits_from": null,
+  "commands": [
+    {
+      "name": "/kpi-select",
+      "mode": "SELECT",
+      "summary": "Choose the few numbers that change decisions, and the stop-tracking list."
+    },
+    {
+      "name": "/kpi-define",
+      "mode": "DEFINE",
+      "summary": "Make a metric computable by a stranger, with explicit counting rules."
+    },
+    {
+      "name": "/kpi-threshold",
+      "mode": "DEFINE",
+      "summary": "Attach the threshold and the decision it triggers, agreed before the first reading."
+    },
+    {
+      "name": "/kpi-instrument",
+      "mode": "INSTRUMENT",
+      "summary": "State what must be captured, and hand the requirement to Automation {OS}."
+    },
+    {
+      "name": "/kpi-read",
+      "mode": "READ",
+      "summary": "Run the reading cycle, separating real movement from normal variation."
+    },
+    {
+      "name": "/kpi-decide",
+      "mode": "DECIDE",
+      "summary": "Present the pre-agreed decision on a crossed threshold to its owner."
+    },
+    {
+      "name": "/kpi-audit",
+      "mode": "AUDIT",
+      "summary": "Judge the set on the decisions each metric actually changed."
+    },
+    {
+      "name": "/kpi-reconcile",
+      "mode": "DEFINE",
+      "summary": "Settle two sources reporting the same quantity, and name the authoritative one."
+    }
+  ],
+  "dependencies": {
+    "requires": [
+      "context-memory-os"
+    ],
+    "emits": [
+      "kpi.set.selected",
+      "kpi.metric.defined",
+      "kpi.metric.verified",
+      "kpi.instrumentation.required",
+      "kpi.reading.published",
+      "kpi.threshold.crossed",
+      "kpi.metric.retired"
+    ],
+    "consumes_from": [
+      "revenue-os",
+      "money-os",
+      "operations-os",
+      "project-os",
+      "client-os",
+      "business-strategy-os"
+    ],
+    "emits_to": [
+      "business-strategy-os"
+    ]
+  },
+  "targets": {
+    "claude": {
+      "supported": true
+    },
+    "chatgpt": {
+      "supported": true
+    },
+    "gemini": {
+      "supported": true
+    },
+    "codex": {
+      "supported": true
+    }
+  },
+  "entrypoints": {
+    "spec": "OS.md",
+    "system": "SYSTEM.md",
+    "skill": "SKILL.md",
+    "setup": "SETUP.md",
+    "workflows": "WORKFLOWS/",
+    "commands": "COMMANDS/",
+    "prompts": "PROMPTS/",
+    "references": "REFERENCES/",
+    "memory": "MEMORY/",
+    "tools": "TOOLS/",
+    "evals": "EVALS/",
+    "examples": "EXAMPLES/",
+    "interfaces": "INTERFACES/",
+    "adapters": "ADAPTERS/"
+  },
+  "requires_human_approval_for": [
+    "changing a metric definition that has history attached to it",
+    "retiring a metric anyone is currently reporting or being measured on",
+    "publishing a metric that measures an individual's performance",
+    "setting a threshold that automatically triggers a consequential action",
+    "sharing internal metrics outside the organisation",
+    "pausing a metric"
+  ]
+}

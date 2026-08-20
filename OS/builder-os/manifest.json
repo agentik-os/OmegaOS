@@ -1,0 +1,175 @@
+{
+  "schema_version": "2.0.0",
+  "id": "builder-os",
+  "num": 25,
+  "name": "Builder {OS}",
+  "version": "0.1.0",
+  "status": "scaffold",
+  "group": {
+    "key": "build",
+    "label": "03 · BUILD",
+    "purpose": "Turn evidence into products"
+  },
+  "tagline": "The implementation runtime: steps executed into release-ready code.",
+  "inherits_from": "builder-os",
+  "commands": [
+    {
+      "name": "/build",
+      "surface": "session",
+      "does": "Open the implementation runtime and preflight the session"
+    },
+    {
+      "name": "preflight",
+      "surface": "session",
+      "does": "Check fingerprints, working tree and open attempts without claiming"
+    },
+    {
+      "name": "step <id>",
+      "surface": "session",
+      "does": "Run one full step transaction from claim to done"
+    },
+    {
+      "name": "repair <id>",
+      "surface": "session",
+      "does": "Bounded correction against the printed evidence"
+    },
+    {
+      "name": "resume",
+      "surface": "session",
+      "does": "Reconcile after an interruption and continue from real state"
+    },
+    {
+      "name": "report",
+      "surface": "session",
+      "does": "Evidence-backed build status"
+    },
+    {
+      "name": "omega-builder init",
+      "surface": "cli",
+      "does": "Initialise canonical Builder state"
+    },
+    {
+      "name": "omega-builder validate",
+      "surface": "cli",
+      "does": "Validate structure and semantic invariants"
+    },
+    {
+      "name": "omega-builder status",
+      "surface": "cli",
+      "does": "Evidence-backed status from the ledger"
+    },
+    {
+      "name": "omega-builder sync-step",
+      "surface": "cli",
+      "does": "Import or refresh one Stepper step mirror"
+    },
+    {
+      "name": "omega-builder claim",
+      "surface": "cli",
+      "does": "Claim a READY Stepper step"
+    },
+    {
+      "name": "omega-builder transition",
+      "surface": "cli",
+      "does": "Apply a valid attempt transition"
+    },
+    {
+      "name": "omega-builder record-check",
+      "surface": "cli",
+      "does": "Record deterministic check evidence"
+    },
+    {
+      "name": "omega-builder mark-step",
+      "surface": "cli",
+      "does": "Mirror a Stepper status after an external verifier decision"
+    },
+    {
+      "name": "omega-builder gate",
+      "surface": "cli",
+      "does": "Evaluate the build gates BG01 to BG20"
+    },
+    {
+      "name": "omega-builder checkpoint",
+      "surface": "cli",
+      "does": "Create a recovery checkpoint"
+    },
+    {
+      "name": "omega-builder set-release",
+      "surface": "cli",
+      "does": "Record the frozen candidate and the Stepper release result"
+    },
+    {
+      "name": "omega-builder release-check",
+      "surface": "cli",
+      "does": "Evaluate terminal engineering readiness"
+    },
+    {
+      "name": "omega-builder finalize",
+      "surface": "cli",
+      "does": "Create the frozen final handoff when all gates pass"
+    },
+    {
+      "name": "omega-builder demo",
+      "surface": "cli",
+      "does": "In-memory end-to-end semantic self-test"
+    }
+  ],
+  "dependencies": {
+    "requires": [
+      "stepper-os",
+      "blueprint-os"
+    ],
+    "consumes": [
+      "stepper.graph.build_ready",
+      "stepper.step.done",
+      "blueprint.handoff.frozen",
+      "design.handoff.completed",
+      "prototype.verdict.recorded"
+    ],
+    "emits": [
+      "builder.step.completed",
+      "builder.gate.evaluated",
+      "builder.step.escalated",
+      "builder.decision.requested",
+      "builder.artifact.shipped"
+    ]
+  },
+  "targets": {
+    "claude": {
+      "supported": true
+    },
+    "chatgpt": {
+      "supported": true
+    },
+    "gemini": {
+      "supported": true
+    },
+    "codex": {
+      "supported": true
+    }
+  },
+  "entrypoints": {
+    "spec": "OS.md",
+    "system": "SYSTEM.md",
+    "skill": "SKILL.md",
+    "setup": "SETUP.md",
+    "workflows": "WORKFLOWS/",
+    "commands": "COMMANDS/",
+    "prompts": "PROMPTS/",
+    "references": "REFERENCES/",
+    "memory": "MEMORY/",
+    "tools": "TOOLS/",
+    "evals": "EVALS/",
+    "examples": "EXAMPLES/",
+    "interfaces": "INTERFACES/",
+    "adapters": "ADAPTERS/"
+  },
+  "requires_human_approval_for": [
+    "any destructive or irreversible operation on a repository, database or environment",
+    "a force push, a history rewrite, or discarding uncommitted work",
+    "adding a dependency that changes the licence or supply-chain posture",
+    "writing to any production system, or using production data",
+    "accepting a step whose contract had to change to pass",
+    "finalize, which freezes the engineering handoff"
+  ]
+}

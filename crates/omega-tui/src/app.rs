@@ -278,15 +278,14 @@ pub const NEW_PROJECT_CATEGORIES: &[(&str, &str)] = &[
     ("side-business", "Side business — your own products  (side-business/ under your projects dir)"),
     ("tools", "Tools — internal tooling / libraries  (tools/ under your projects dir)"),
 ];
-/// Stacks by project type. `id` is passed to /omega-new-project (which branches
-/// per id); `label` carries the type hint. Aligned with R-STACK doctrine.
+/// Strategies implemented by the installed `/omega-new-project` skill.
+///
+/// Keep this list deliberately small: an option is only public when the skill
+/// has a real branch for it. `custom` enters the skill's discovery flow rather
+/// than pretending that an unimplemented framework recipe exists.
 pub const NEW_PROJECT_STACKS: &[(&str, &str)] = &[
     ("nextstack", "SaaS — Next.js 16 + Convex + Clerk + Stripe + shadcn"),
-    ("nextstack-content", "Content / multi-user — Next.js 16 + Convex"),
-    ("nextstack-static", "Marketing / landing — Next.js 16 static (no backend)"),
-    ("rust-cli", "CLI / daemon / internal tool — Rust"),
-    ("bun-script", "Script / tooling / DOM — Bun + TypeScript"),
-    ("expo-mobile", "Mobile iOS/Android — Expo + React Native"),
+    ("custom", "Custom — let the project skill discover and specify the stack"),
 ];
 
 /// Provisioning-keys wizard fields (Monitor tab). `(env_key, prompt, masked)` in
@@ -712,13 +711,9 @@ pub fn fields_for_section(
             });
             out.push(SettingsField::Info(String::new())); // spacer
 
-            out.push(SettingsField::Info(format!(
-                "Default AISB agent: {}",
-                config.aisb_agent
-            )));
             out.push(SettingsField::Info(format!("Default model: {}", config.default_model)));
             out.push(SettingsField::Toggle {
-                label: "Auto-spawn Master on launch".to_string(),
+                label: "Auto-open legacy Telegram log viewer".to_string(),
                 config_key: "general.auto_spawn_master".to_string(),
                 current: config.auto_spawn_master,
             });
@@ -884,20 +879,20 @@ pub fn fields_for_section(
         }
         SettingsSection::Aisb => {
             out.push(SettingsField::Info(format!(
-                "Master session name: {}",
+                "Viewer session name: {}",
                 omega_core::aisb::MASTER_SESSION_NAME
             )));
-            out.push(SettingsField::Info(format!(
-                "Current AISB agent: {}",
-                config.aisb_agent
-            )));
+            out.push(SettingsField::Info(
+                "Read-only mirror of the Telegram conversation log; it is not an agent."
+                    .to_string(),
+            ));
             out.push(SettingsField::Action {
-                label: "[Re-spawn Master AISB now]".to_string(),
-                command: "omega master".to_string(),
-                confirm_first: true,
+                label: "[Open AISB conversation viewer]".to_string(),
+                command: "omega aisb-view".to_string(),
+                confirm_first: false,
             });
             out.push(SettingsField::Action {
-                label: "[Kill Master AISB]".to_string(),
+                label: "[Stop AISB conversation viewer]".to_string(),
                 command: format!("omega kill {}", omega_core::aisb::MASTER_SESSION_NAME),
                 confirm_first: true,
             });
@@ -1017,7 +1012,7 @@ impl SettingsSection {
             SettingsSection::Pi => "Pi (earendil-works)",
             SettingsSection::Hermes => "Hermes (Nous Research)",
             SettingsSection::Glm => "GLM (Z.AI)",
-            SettingsSection::Aisb => "AISB Master",
+            SettingsSection::Aisb => "AISB viewer (legacy)",
             SettingsSection::Telegram => "Telegram",
         }
     }
@@ -2174,25 +2169,6 @@ impl App {
             }
         }
 
-        // Master + Telegram unconfigured → replace the bare log-tail mirror
-        // with a guided call-to-action. Pressing Enter here opens the existing
-        // Telegram setup wizard (see the Sessions Enter hook in input.rs).
-        if omega_core::aisb::is_master(&name)
-            && !omega_core::monitor::OmegaTelegramConfig::exists()
-        {
-            self.preview_content = "\n  ★ AISB Master — your Telegram brain\n\n  \
-                Not yet connected. Once you link a Telegram bot, every message you\n  \
-                send it is classified and routed to the right oracle/agent, and the\n  \
-                replies stream here.\n\n  \
-                ▶ Press Enter to run the setup wizard (guided, no command needed).\n"
-                .to_string();
-            self.preview_styled = None;
-            self.preview_cursor = None;
-            self.preview_history_for = None;
-            self.preview_history_styled = None;
-            return Ok(());
-        }
-
         // Cached connection — avoid a fresh rmux daemon socket per refresh.
         let mgr = omega_core::session::SessionManager::connect_cached().await?;
         // Hot tail path stays on the cheap visible-only snapshot. Only when the
@@ -2418,7 +2394,7 @@ impl App {
         let mut group: Vec<&OmegaSession> = Vec::new();
 
         for session in sessions.iter() {
-            if omega_core::aisb::is_master(&session.name) {
+            if omega_core::aisb::is_viewer(&session.name) {
                 continue;
             }
             let section_label = section_for(session);
@@ -3791,5 +3767,27 @@ mod settings_update_tests {
             line
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn aisb_settings_describe_a_read_only_viewer_without_a_provider_selector() {
+        let config = OmegaConfig::default();
+        let providers = omega_core::providers::ProvidersConfig::default();
+        let general = fields_for_section(SettingsSection::General, &providers, &config);
+        let viewer = fields_for_section(SettingsSection::Aisb, &providers, &config);
+        let rendered = general
+            .iter()
+            .chain(viewer.iter())
+            .map(|field| field.label())
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(!rendered.contains("Default AISB agent"));
+        assert!(!rendered.contains("Current AISB agent"));
+        assert!(rendered.contains("read-only") || rendered.contains("Read-only"));
+        assert!(viewer.iter().any(|field| matches!(
+            field,
+            SettingsField::Action { command, .. } if command == "omega aisb-view"
+        )));
     }
 }

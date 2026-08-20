@@ -1,0 +1,24 @@
+version: 3.0.0
+os: builder-os
+capabilities:
+  - id: build.contract
+  - id: domain.frame
+  - id: outcomes.map
+  - id: research.protocol
+  - id: corpus.discover
+  - id: corpus.curate
+  - id: corpus.deep_analysis
+  - id: evidence.expand
+  - id: claims.normalize
+  - id: contradictions.map
+  - id: knowledge.synthesize
+  - id: ontology.build
+  - id: logic.compile
+  - id: architecture.design
+  - id: package.implement
+  - id: quality.evaluate
+  - id: quality.red_team
+  - id: quality.repair
+  - id: docs.generate
+  - id: release.package
+  - id: lifecycle.update

@@ -10,7 +10,13 @@ use std::path::PathBuf;
 
 fn pane_cwd(session_name: &str) -> Option<PathBuf> {
     let out = std::process::Command::new("rmux")
-        .args(["list-panes", "-t", session_name, "-F", "#{pane_current_path}"])
+        .args([
+            "list-panes",
+            "-t",
+            session_name,
+            "-F",
+            "#{pane_current_path}",
+        ])
         .output()
         .ok()?;
     if !out.status.success() {

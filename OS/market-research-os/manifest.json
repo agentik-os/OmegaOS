@@ -1,0 +1,101 @@
+{
+  "schema_version": "2.0.0",
+  "id": "market-research-os",
+  "num": 17,
+  "name": "Market Research {OS}",
+  "version": "0.1.0",
+  "status": "authored",
+  "group": {
+    "key": "discover",
+    "label": "02 · DISCOVER & DECIDE",
+    "purpose": "Find what is worth building"
+  },
+  "tagline": "Market and customer evidence, and the validation that follows.",
+  "inherits_from": "market-research-os",
+  "commands": [
+    "/market-research",
+    "/market-research-os",
+    "/omg-market-research",
+    "/omg-market-research-os",
+    "market_research_os.py init",
+    "market_research_os.py validate",
+    "market_research_os.py status",
+    "market_research_os.py score",
+    "market_research_os.py checkpoint",
+    "market_research_os.py allocate",
+    "market_research_os.py export",
+    "market_research_os.py demo"
+  ],
+  "dependencies": {
+    "requires": [
+      "agentik-runtime",
+      "context-memory-os"
+    ],
+    "consumes": [
+      "brainstorm.concept.selected",
+      "discovery.insight.confirmed",
+      "discovery.segment.profiled",
+      "research.evidence.compiled",
+      "trend.movement.confirmed"
+    ],
+    "emits": [
+      "market.validation.completed",
+      "market.study.audited",
+      "market.primary_research.requested",
+      "market.sizing.modeled"
+    ],
+    "consumes_from": [
+      "brainstorm-os",
+      "customer-discovery-os",
+      "research-os",
+      "trend-opportunity-os"
+    ],
+    "emits_to": [
+      "blueprint-os",
+      "strategy-portfolio-os",
+      "business-model-os",
+      "context-memory-os",
+      "customer-discovery-os"
+    ]
+  },
+  "targets": {
+    "claude": {
+      "supported": true
+    },
+    "chatgpt": {
+      "supported": true
+    },
+    "gemini": {
+      "supported": true
+    },
+    "codex": {
+      "supported": true
+    }
+  },
+  "entrypoints": {
+    "spec": "OS.md",
+    "system": "SYSTEM.md",
+    "skill": "SKILL.md",
+    "setup": "SETUP.md",
+    "workflows": "WORKFLOWS/",
+    "commands": "COMMANDS/",
+    "prompts": "PROMPTS/",
+    "references": "REFERENCES/",
+    "memory": "MEMORY/",
+    "tools": "TOOLS/",
+    "evals": "EVALS/",
+    "examples": "EXAMPLES/",
+    "interfaces": "INTERFACES/",
+    "adapters": "ADAPTERS/"
+  },
+  "requires_human_approval_for": [
+    "any collection touching personal data, including public profiles and attributable reviews, and any retention beyond the stated window",
+    "any scraping, crawling or API use beyond what the approved source preflight covers, including a new endpoint on an already approved source",
+    "paying for a data source, report, panel, survey platform or participant incentive",
+    "contacting real people in any form, which is requested from customer-discovery-os rather than done here",
+    "publishing a study, finding or competitor assessment outside the organisation",
+    "declaring a GO that releases budget, headcount or calendar time",
+    "freezing a research version and emitting a Blueprint Input Manifest",
+    "overwriting rather than superseding a canonical record"
+  ]
+}

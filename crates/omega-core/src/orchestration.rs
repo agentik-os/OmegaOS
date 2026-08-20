@@ -16,14 +16,56 @@ use crate::gate::{
     AdversarialChallenge, ChallengeResult, GateResult, GradeResult, GradeVerdict, GraderLens,
     Rubric, RubricCriterion,
 };
-use crate::mission::{Mission, Outcome, OutcomeStatus, Plan, PlanStrategy, Task, WorkerResult};
+use crate::mission::{
+    Mission, MissionState, Outcome, OutcomeStatus, Plan, PlanContract, PlanStrategy, RetryPolicy,
+    Task, TaskAttemptState, TaskContract, TaskId, VerifierCheck, VerifierCheckKind, WorkerResult,
+    CONTRACT_SCHEMA_VERSION,
+};
+pub use crate::mission_ledger::{
+    mission_gate_fact_digest, mission_gate_result_digest, ChildMissionLink,
+    ChildMissionRuntimeIdentity, ContractVerification, MissionGateCheckObservation,
+    MissionGateLensObservation, MissionGateObservation, MissionIssueResolution,
+    PlanRequirementKind, PlanRequirementObservation, RecordedContractVerification,
+    TaskAcceptanceInvalidation, VerifierObservation, ACCEPTANCE_OBSERVATION_SCHEMA_VERSION,
+};
+use crate::mission_ledger::{
+    AppendEvent, LeaseAssertion, LeaseRecord, LedgerError, MissionLedger, TaskAttemptMutation,
+};
 use crate::routing::{classify_mission, Complexity};
 use crate::scope;
 use crate::session::SessionManager;
-use anyhow::{Context, Result};
-use chrono::Utc;
+use anyhow::{bail, Context, Result};
+use chrono::{DateTime, Duration as ChronoDuration, Utc};
+use serde::{Deserialize, Serialize};
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::Path;
 use std::time::Duration;
 use tokio::time::{timeout, Instant};
+
+const LEDGER_CAS_RETRIES: usize = 8;
+const DONE_CLOCK_SKEW_SECS: i64 = 5;
+const SCOPE_AUTHORITY_SCHEMA_VERSION: u32 = 1;
+const SCOPE_AUTHORITY_ACTOR: &str = "omega-scope-authority";
+const SCOPE_AUTHORITY_EVENT_KIND: &str = "scope_claim_authority_prepared";
+
+/// Compatibility marker written by `omega done` when an orchestrator-managed
+/// Oracle has produced an exact V3 CandidateDone event but cannot honestly
+/// declare itself accepted. The orchestrator removes this marker only from its
+/// in-memory verification view; the on-disk signal remains Pending until the
+/// authoritative task and mission acceptance paths complete.
+pub const V3_ACCEPTANCE_PENDING: &str =
+    "acceptation V3 indépendante en attente; livraison non autorisée";
+
+pub fn provider_family_for_agent(agent: Agent) -> crate::rules::ProviderFamily {
+    match agent {
+        Agent::Claude => crate::rules::ProviderFamily::Claude,
+        Agent::Codex => crate::rules::ProviderFamily::Codex,
+        Agent::Gemini => crate::rules::ProviderFamily::Gemini,
+        Agent::Pi | Agent::Hermes | Agent::Glm | Agent::Kimi | Agent::Shell => {
+            crate::rules::ProviderFamily::Other
+        }
+    }
+}
 
 /// Error type for orchestration operations.
 #[derive(Debug, thiserror::Error)]
@@ -68,6 +110,2061 @@ impl Default for OrchestratorOptions {
     }
 }
 
+/// One task attempt frozen by the V3 ledger before any worker process exists.
+#[derive(Debug, Clone)]
+pub struct AuthoritativeTaskAttempt {
+    pub mission_id: crate::mission::MissionId,
+    pub task_id: String,
+    pub attempt_id: String,
+    pub plan_revision: u64,
+    pub owner: Option<String>,
+    pub leases: Vec<LeaseRecord>,
+    /// Exact immutable-to-file bridge for the compatibility scope claim.
+    /// This receipt is generation-bound and may be reloaded only from its
+    /// unique ledger event after a process restart.
+    pub scope_receipt: Option<AuthoritativeScopeReceipt>,
+}
+
+/// Write-ahead receipt binding one compatibility claim generation to one
+/// immutable V3 attempt identity.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AuthoritativeScopeReceipt {
+    pub schema_version: u32,
+    pub mission_id: crate::mission::MissionId,
+    pub task_id: String,
+    pub attempt_id: String,
+    pub plan_revision: u64,
+    pub owner: String,
+    pub claim: scope::ScopeClaim,
+}
+
+/// Canonical execution identity behind the legacy [`Plan`] / [`Outcome`]
+/// compatibility API.
+#[derive(Debug, Clone)]
+pub struct AuthoritativeExecution {
+    pub mission_id: crate::mission::MissionId,
+    pub plan: PlanContract,
+    pub attempts: Vec<AuthoritativeTaskAttempt>,
+}
+
+impl AuthoritativeExecution {
+    pub fn attempt(&self, task_id: &str) -> Result<&AuthoritativeTaskAttempt> {
+        self.attempts
+            .iter()
+            .find(|attempt| attempt.task_id == task_id)
+            .ok_or_else(|| anyhow::anyhow!("no authoritative attempt for task {task_id}"))
+    }
+
+    pub fn attempt_mut(&mut self, task_id: &str) -> Result<&mut AuthoritativeTaskAttempt> {
+        self.attempts
+            .iter_mut()
+            .find(|attempt| attempt.task_id == task_id)
+            .ok_or_else(|| anyhow::anyhow!("no authoritative attempt for task {task_id}"))
+    }
+}
+
+fn compatibility_task_contract(mission: &Mission, task: &Task) -> TaskContract {
+    TaskContract {
+        schema_version: CONTRACT_SCHEMA_VERSION,
+        task_id: TaskId::new(&task.id),
+        name: task.name.clone(),
+        prompt: task.prompt.clone(),
+        acceptance_criteria: vec![format!(
+            "Complete `{}` against its frozen prompt and produce independently verifiable evidence",
+            task.name
+        )],
+        // The legacy Plan had no verifier field. A real, directly-executable
+        // repository integrity check is frozen here instead of fabricating a
+        // passing receipt. Non-git work consequently fails verification rather
+        // than bypassing the contract.
+        verifier_checks: vec![VerifierCheck {
+            schema_version: CONTRACT_SCHEMA_VERSION,
+            check_id: format!("{}-repository-integrity", task.id),
+            kind: VerifierCheckKind::Command {
+                argv: vec!["git".to_string(), "diff".to_string(), "--check".to_string()],
+                cwd: Some(mission.working_dir.to_string_lossy().to_string()),
+                expected_exit_code: 0,
+            },
+            timeout_secs: 120,
+        }],
+        required_capabilities: vec!["tool_calling".to_string()],
+        scope: task.files_owned.clone(),
+        risk: classify_mission(&task.prompt).risk,
+        retry_policy: RetryPolicy::default(),
+        depends_on: task.depends_on.iter().map(TaskId::new).collect(),
+    }
+}
+
+/// Create the authoritative mission, classification, immutable plan and queued
+/// attempts before any rmux or provider side effect is attempted.
+///
+/// This is shared by `omega orchestrate` and `omega team`; callers cannot get a
+/// runnable identity without a valid plan and one queued attempt per task.
+pub fn prepare_authoritative_execution(
+    ledger: &MissionLedger,
+    mission: &Mission,
+    legacy_plan: &Plan,
+    actor: &str,
+    required_gates: Vec<String>,
+) -> Result<AuthoritativeExecution> {
+    if legacy_plan.mission_id != mission.id {
+        bail!("legacy plan belongs to a different mission");
+    }
+    if legacy_plan.tasks.is_empty() {
+        bail!("orchestration plan has no executable tasks");
+    }
+
+    let created = ledger.create_mission(
+        mission,
+        &format!("orchestration:{}:created", mission.id.as_str()),
+        actor,
+    )?;
+    if created.projection.state != MissionState::Created {
+        bail!(
+            "mission {} already advanced to {:?}; refusing parallel orchestration authority",
+            mission.id.as_str(),
+            created.projection.state
+        );
+    }
+
+    let decision = classify_mission(&mission.text);
+    let mut classified = AppendEvent::new(
+        mission.id.clone(),
+        created.projection.version,
+        format!("orchestration:{}:classified", mission.id.as_str()),
+        actor,
+        "mission_classified",
+    );
+    classified.next_mission_state = Some(MissionState::Classified);
+    classified.payload = serde_json::to_value(&decision)?;
+    let classified = ledger.append(classified)?;
+
+    let contracts = legacy_plan
+        .tasks
+        .iter()
+        .map(|task| compatibility_task_contract(mission, task))
+        .collect();
+    let plan = PlanContract::new(
+        mission.id.clone(),
+        1,
+        classified.projection.version,
+        contracts,
+        required_gates,
+        Vec::new(),
+    )?;
+    let mut planned = AppendEvent::new(
+        mission.id.clone(),
+        classified.projection.version,
+        format!("orchestration:{}:plan:1", mission.id.as_str()),
+        actor,
+        "plan_accepted",
+    );
+    planned.next_mission_state = Some(MissionState::Planned);
+    planned.payload = serde_json::to_value(&plan)?;
+    planned.plan = Some(plan.clone());
+    let mut projection = ledger.append(planned)?.projection;
+
+    let mut attempts = Vec::with_capacity(plan.tasks.len());
+    for task in &plan.tasks {
+        let attempt_id = format!(
+            "attempt-{}-{}-1",
+            mission.id.as_str(),
+            task.task_id.as_str()
+        );
+        let mut queued = AppendEvent::new(
+            mission.id.clone(),
+            projection.version,
+            format!("orchestration:{attempt_id}:queued"),
+            actor,
+            "task_attempt_queued",
+        );
+        queued.task_attempt = Some(TaskAttemptMutation {
+            task_id: task.task_id.as_str().to_string(),
+            attempt_id: attempt_id.clone(),
+            plan_revision: plan.revision,
+            expected_version: 0,
+            next_state: TaskAttemptState::Queued,
+        });
+        queued.payload = serde_json::json!({
+            "task": task.task_id.as_str(),
+            "plan_revision": plan.revision,
+        });
+        projection = ledger.append(queued)?.projection;
+        attempts.push(AuthoritativeTaskAttempt {
+            mission_id: mission.id.clone(),
+            task_id: task.task_id.as_str().to_string(),
+            attempt_id,
+            plan_revision: plan.revision,
+            owner: None,
+            leases: Vec::new(),
+            scope_receipt: None,
+        });
+    }
+
+    Ok(AuthoritativeExecution {
+        mission_id: mission.id.clone(),
+        plan,
+        attempts,
+    })
+}
+
+/// Claim both the compatibility scope file and fenced V3 leases before a
+/// worker starts. A failure rolls back every acquisition made by this call.
+fn validate_scope_receipt_binding(
+    ledger: &MissionLedger,
+    attempt: &AuthoritativeTaskAttempt,
+    event: &crate::mission_ledger::MissionEvent,
+    receipt: &AuthoritativeScopeReceipt,
+) -> Result<()> {
+    if event.actor != SCOPE_AUTHORITY_ACTOR
+        || event.kind != SCOPE_AUTHORITY_EVENT_KIND
+        || event.idempotency_key != format!("orchestration:{}:scope-authority", attempt.attempt_id)
+        || event.plan_revision != Some(attempt.plan_revision)
+        || receipt.schema_version != SCOPE_AUTHORITY_SCHEMA_VERSION
+        || receipt.mission_id != attempt.mission_id
+        || receipt.task_id != attempt.task_id
+        || receipt.attempt_id != attempt.attempt_id
+        || receipt.plan_revision != attempt.plan_revision
+        || receipt.owner != receipt.claim.session
+        || receipt.owner.trim().is_empty()
+        || receipt.claim.workspace_id.is_none()
+        || receipt.claim.claim_id.is_none()
+        || receipt.claim.files_owned.is_empty()
+    {
+        bail!("scope authority receipt is not bound to the exact task attempt");
+    }
+    let mission = ledger
+        .mission(&attempt.mission_id)?
+        .ok_or_else(|| anyhow::anyhow!("scope receipt mission disappeared"))?;
+    let active_revision = mission
+        .active_plan_revision
+        .ok_or_else(|| anyhow::anyhow!("scope receipt mission has no active plan revision"))?;
+    let task_attempt = ledger
+        .task_attempt(&attempt.attempt_id)?
+        .ok_or_else(|| anyhow::anyhow!("scope receipt task attempt disappeared"))?;
+    if task_attempt.mission_id != attempt.mission_id
+        || task_attempt.task_id != attempt.task_id
+        || task_attempt.plan_revision != attempt.plan_revision
+    {
+        bail!("scope receipt task projection differs from immutable authority");
+    }
+    let plan = ledger
+        .active_plan(&attempt.mission_id)?
+        .ok_or_else(|| anyhow::anyhow!("scope receipt mission has no active plan"))?;
+    let task = plan
+        .tasks
+        .iter()
+        .find(|task| task.task_id.as_str() == attempt.task_id)
+        .ok_or_else(|| anyhow::anyhow!("scope receipt task is absent from the active plan"))?;
+    let attempt_plan = ledger
+        .plan_revision(&attempt.mission_id, attempt.plan_revision)?
+        .ok_or_else(|| anyhow::anyhow!("scope receipt attempt plan is missing"))?;
+    let attempt_task = attempt_plan
+        .tasks
+        .iter()
+        .find(|task| task.task_id.as_str() == attempt.task_id)
+        .ok_or_else(|| anyhow::anyhow!("scope receipt task is absent from its attempt plan"))?;
+    if task != attempt_task {
+        bail!(
+            "scope receipt task changed between attempt revision {} and active revision {}",
+            attempt.plan_revision,
+            active_revision
+        );
+    }
+    let normalized_scope = scope::validate_scope_selectors(task.scope.clone())?;
+    if normalized_scope != receipt.claim.files_owned {
+        bail!("scope receipt selectors differ from the immutable task contract");
+    }
+    if receipt.claim.claimed_at > event.recorded_at + ChronoDuration::seconds(DONE_CLOCK_SKEW_SECS)
+    {
+        bail!("scope receipt timestamp is later than its immutable event");
+    }
+    let history = ledger.events(&attempt.mission_id)?;
+    let queued_before = history
+        .iter()
+        .filter(|candidate| {
+            candidate.sequence < event.sequence
+                && candidate
+                    .resulting_task_attempt
+                    .as_ref()
+                    .is_some_and(|projection| {
+                        projection.mission_id == attempt.mission_id
+                            && projection.task_id == attempt.task_id
+                            && projection.attempt_id == attempt.attempt_id
+                            && projection.plan_revision == attempt.plan_revision
+                            && projection.state == TaskAttemptState::Queued
+                    })
+        })
+        .count();
+    if queued_before != 1 {
+        bail!("scope authority must follow one exact immutable Queued attempt event");
+    }
+    if history.iter().any(|candidate| {
+        candidate.sequence <= event.sequence
+            && candidate
+                .resulting_task_attempt
+                .as_ref()
+                .is_some_and(|projection| {
+                    projection.attempt_id == attempt.attempt_id
+                        && projection.state == TaskAttemptState::Running
+                })
+    }) {
+        bail!("scope authority was not persisted before the worker entered Running");
+    }
+    Ok(())
+}
+
+fn load_authoritative_scope_receipt(
+    ledger: &MissionLedger,
+    attempt: &AuthoritativeTaskAttempt,
+) -> Result<Option<AuthoritativeScopeReceipt>> {
+    let mut matches = Vec::new();
+    for event in ledger
+        .events(&attempt.mission_id)?
+        .into_iter()
+        .filter(|event| event.kind == SCOPE_AUTHORITY_EVENT_KIND)
+    {
+        let receipt: AuthoritativeScopeReceipt = serde_json::from_value(event.payload.clone())
+            .with_context(|| {
+                format!("corrupt immutable scope authority event {}", event.event_id)
+            })?;
+        if receipt.attempt_id == attempt.attempt_id {
+            matches.push((event, receipt));
+        }
+    }
+    if matches.len() > 1 {
+        bail!(
+            "attempt {} has duplicate immutable scope authority receipts",
+            attempt.attempt_id
+        );
+    }
+    let Some((event, receipt)) = matches.into_iter().next() else {
+        return Ok(None);
+    };
+    validate_scope_receipt_binding(ledger, attempt, &event, &receipt)?;
+    Ok(Some(receipt))
+}
+
+fn append_scope_authority_receipt(
+    ledger: &MissionLedger,
+    attempt: &AuthoritativeTaskAttempt,
+    receipt: &AuthoritativeScopeReceipt,
+) -> Result<AuthoritativeScopeReceipt> {
+    for _ in 0..LEDGER_CAS_RETRIES {
+        let mission = ledger
+            .mission(&attempt.mission_id)?
+            .ok_or_else(|| anyhow::anyhow!("scope receipt mission disappeared"))?;
+        let mut event = AppendEvent::new(
+            attempt.mission_id.clone(),
+            mission.version,
+            format!("orchestration:{}:scope-authority", attempt.attempt_id),
+            SCOPE_AUTHORITY_ACTOR,
+            SCOPE_AUTHORITY_EVENT_KIND,
+        );
+        event.payload = serde_json::to_value(receipt)?;
+        event.observation_plan_revision = Some(attempt.plan_revision);
+        match ledger.append(event) {
+            Ok(_) => {
+                return load_authoritative_scope_receipt(ledger, attempt)?.ok_or_else(|| {
+                    anyhow::anyhow!("persisted scope authority receipt disappeared")
+                })
+            }
+            Err(LedgerError::VersionConflict { .. }) => continue,
+            Err(LedgerError::IdempotencyConflict { .. }) => {
+                return load_authoritative_scope_receipt(ledger, attempt)?.ok_or_else(|| {
+                    anyhow::anyhow!("scope authority idempotency conflict has no recorded receipt")
+                })
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
+    bail!(
+        "scope authority for attempt {} did not converge after {} compare-and-set retries",
+        attempt.attempt_id,
+        LEDGER_CAS_RETRIES
+    )
+}
+
+fn rollback_scope_acquisition(
+    ledger: &MissionLedger,
+    state_dir: &Path,
+    attempt: &mut AuthoritativeTaskAttempt,
+    receipt: &AuthoritativeScopeReceipt,
+    acquired: Vec<LeaseRecord>,
+    cause: anyhow::Error,
+) -> anyhow::Error {
+    let mut rollback_failures = Vec::new();
+    let mut residual_leases = Vec::new();
+    for lease in acquired {
+        if let Err(error) = ledger.release_lease(&lease.resource_key, lease.fencing_token) {
+            rollback_failures.push(format!("lease {}: {error}", lease.resource_key));
+            residual_leases.push(lease);
+        }
+    }
+    let residual_receipt = if residual_leases.is_empty() {
+        match scope::ScopeClaim::release_exact(state_dir, &receipt.claim) {
+            Ok(()) => None,
+            Err(error) => {
+                rollback_failures.push(format!("compatibility scope {}: {error}", receipt.owner));
+                Some(receipt.clone())
+            }
+        }
+    } else {
+        rollback_failures.push(format!(
+            "compatibility scope {} retained because V3 lease rollback is incomplete",
+            receipt.owner
+        ));
+        Some(receipt.clone())
+    };
+    if rollback_failures.is_empty() {
+        attempt.owner = None;
+        attempt.leases.clear();
+        attempt.scope_receipt = None;
+        cause.context("authoritative scope acquisition rolled back cleanly")
+    } else {
+        attempt.owner = Some(receipt.owner.clone());
+        attempt.leases = residual_leases;
+        attempt.scope_receipt = residual_receipt;
+        anyhow::anyhow!(
+            "{cause}; scope acquisition rollback incomplete: {}",
+            rollback_failures.join("; ")
+        )
+    }
+}
+
+fn scope_lease_resource(workspace_id: &str, normalized_selector: &str) -> String {
+    scope::lease_resource_key(workspace_id, normalized_selector)
+}
+
+pub fn claim_authoritative_scopes(
+    ledger: &MissionLedger,
+    state_dir: &Path,
+    working_dir: &Path,
+    attempt: &mut AuthoritativeTaskAttempt,
+    owner: &str,
+    selectors: &[String],
+    ttl: Duration,
+) -> Result<()> {
+    if attempt.owner.is_some() || !attempt.leases.is_empty() || attempt.scope_receipt.is_some() {
+        bail!("attempt already carries scope authority; explicit release is required first");
+    }
+    let plan = ledger
+        .active_plan(&attempt.mission_id)?
+        .ok_or_else(|| anyhow::anyhow!("scope claim mission has no active plan"))?;
+    let task = plan
+        .tasks
+        .iter()
+        .find(|task| task.task_id.as_str() == attempt.task_id)
+        .ok_or_else(|| anyhow::anyhow!("scope claim task is absent from the active plan"))?;
+    let requested = scope::validate_scope_selectors(selectors.to_vec())?;
+    let contracted = scope::validate_scope_selectors(task.scope.clone())?;
+    if requested != contracted {
+        bail!("requested scope differs from the immutable task contract");
+    }
+    if requested.is_empty() {
+        if load_authoritative_scope_receipt(ledger, attempt)?.is_some() {
+            bail!("read-only task unexpectedly has a persisted writable scope receipt");
+        }
+        if !ledger
+            .active_leases_for_attempt(&attempt.mission_id, &attempt.task_id, &attempt.attempt_id)?
+            .is_empty()
+        {
+            bail!("read-only task unexpectedly has active writable leases");
+        }
+        attempt.owner = Some(owner.to_string());
+        return Ok(());
+    }
+    let desired = scope::prepare_claim_for_workspace(working_dir, owner, requested)?;
+    let receipt = match load_authoritative_scope_receipt(ledger, attempt)? {
+        Some(receipt) => receipt,
+        None => {
+            let prepared = AuthoritativeScopeReceipt {
+                schema_version: SCOPE_AUTHORITY_SCHEMA_VERSION,
+                mission_id: attempt.mission_id.clone(),
+                task_id: attempt.task_id.clone(),
+                attempt_id: attempt.attempt_id.clone(),
+                plan_revision: attempt.plan_revision,
+                owner: owner.to_string(),
+                claim: desired.clone(),
+            };
+            append_scope_authority_receipt(ledger, attempt, &prepared)?
+        }
+    };
+    if receipt.owner != owner
+        || receipt.claim.session != owner
+        || receipt.claim.workspace_id != desired.workspace_id
+        || receipt.claim.files_owned != desired.files_owned
+    {
+        bail!(
+            "persisted scope authority differs from the requested owner, workspace, or selectors"
+        );
+    }
+    if let Err(error) = scope::publish_prepared_claim(state_dir, working_dir, &receipt.claim) {
+        return Err(rollback_scope_acquisition(
+            ledger,
+            state_dir,
+            attempt,
+            &receipt,
+            Vec::new(),
+            error,
+        ));
+    }
+    let mut leases = Vec::new();
+    for normalized in &receipt.claim.files_owned {
+        let workspace_id =
+            receipt.claim.workspace_id.as_deref().ok_or_else(|| {
+                anyhow::anyhow!("scope receipt has no canonical workspace identity")
+            })?;
+        let resource = scope_lease_resource(workspace_id, normalized);
+        match ledger.acquire_lease(
+            &resource,
+            &attempt.mission_id,
+            &attempt.task_id,
+            &attempt.attempt_id,
+            owner,
+            ttl,
+        ) {
+            Ok(lease) => leases.push(lease),
+            Err(error) => {
+                return Err(rollback_scope_acquisition(
+                    ledger,
+                    state_dir,
+                    attempt,
+                    &receipt,
+                    leases,
+                    error.into(),
+                ));
+            }
+        }
+    }
+    attempt.owner = Some(owner.to_string());
+    attempt.leases = leases;
+    attempt.scope_receipt = Some(receipt);
+    Ok(())
+}
+
+/// Advance one task attempt through the ledger. If the task owns scope, every
+/// post-queue mutation is fenced by the first acquired lease and the actor must
+/// be the lease owner.
+fn attempt_has_reached(current: TaskAttemptState, target: TaskAttemptState) -> bool {
+    use TaskAttemptState::*;
+
+    if current == target {
+        return true;
+    }
+    match target {
+        Queued => false,
+        Running => matches!(
+            current,
+            CandidateDone | Verifying | Accepted | CorrectionRequired | Blocked | Failed
+        ),
+        CandidateDone => matches!(
+            current,
+            Verifying | Accepted | CorrectionRequired | Blocked | Failed
+        ),
+        Verifying => matches!(current, Accepted | CorrectionRequired | Blocked | Failed),
+        Accepted | CorrectionRequired | Blocked | Failed | Cancelled => false,
+    }
+}
+
+pub fn transition_authoritative_attempt(
+    ledger: &MissionLedger,
+    attempt: &AuthoritativeTaskAttempt,
+    next: TaskAttemptState,
+    actor: &str,
+) -> Result<()> {
+    let label = format!("{next:?}").to_lowercase();
+    for _ in 0..LEDGER_CAS_RETRIES {
+        let mission = ledger
+            .mission(&attempt.mission_id)?
+            .ok_or_else(|| anyhow::anyhow!("authoritative mission disappeared"))?;
+        let task = ledger
+            .task_attempt(&attempt.attempt_id)?
+            .ok_or_else(|| anyhow::anyhow!("authoritative task attempt disappeared"))?;
+        if next == TaskAttemptState::Running {
+            let owner = attempt
+                .owner
+                .as_deref()
+                .ok_or_else(|| anyhow::anyhow!("Running transition requires a claimed owner"))?;
+            if actor != owner {
+                bail!("Running transition actor differs from the claimed attempt owner");
+            }
+        }
+        if attempt_has_reached(task.state, next) {
+            return Ok(());
+        }
+        if !task.state.can_transition_to(next) {
+            bail!(
+                "attempt {} cannot advance from {:?} to {:?}; refusing a backward or branch-changing transition",
+                attempt.attempt_id,
+                task.state,
+                next
+            );
+        }
+
+        let mut event = AppendEvent::new(
+            attempt.mission_id.clone(),
+            mission.version,
+            format!("orchestration:{}:{label}", attempt.attempt_id),
+            actor,
+            format!("task_attempt_{label}"),
+        );
+        event.task_attempt = Some(TaskAttemptMutation {
+            task_id: attempt.task_id.clone(),
+            attempt_id: attempt.attempt_id.clone(),
+            plan_revision: attempt.plan_revision,
+            expected_version: task.version,
+            next_state: next,
+        });
+        event.lease_assertions = attempt.leases.iter().map(LeaseAssertion::from).collect();
+        match ledger.append(event) {
+            Ok(_) => return Ok(()),
+            Err(
+                LedgerError::VersionConflict { .. } | LedgerError::AttemptVersionConflict { .. },
+            ) => continue,
+            Err(error) => return Err(error.into()),
+        }
+    }
+    bail!(
+        "attempt {} did not converge after {} compare-and-set retries",
+        attempt.attempt_id,
+        LEDGER_CAS_RETRIES
+    )
+}
+
+fn ensure_attempt_verifying(
+    ledger: &MissionLedger,
+    attempt: &AuthoritativeTaskAttempt,
+    actor: &str,
+) -> Result<()> {
+    transition_authoritative_attempt(ledger, attempt, TaskAttemptState::CandidateDone, actor)?;
+    transition_authoritative_attempt(ledger, attempt, TaskAttemptState::Verifying, actor)
+}
+
+pub fn release_authoritative_scopes(
+    ledger: &MissionLedger,
+    state_dir: &Path,
+    attempt: &AuthoritativeTaskAttempt,
+) -> Result<()> {
+    let plan = ledger
+        .active_plan(&attempt.mission_id)?
+        .ok_or_else(|| anyhow::anyhow!("scope release mission has no active plan"))?;
+    let task = plan
+        .tasks
+        .iter()
+        .find(|task| task.task_id.as_str() == attempt.task_id)
+        .ok_or_else(|| anyhow::anyhow!("scope release task is absent from the active plan"))?;
+    let contracted = scope::validate_scope_selectors(task.scope.clone())?;
+    if contracted.is_empty() {
+        if attempt.owner.as_deref().is_none_or(str::is_empty)
+            || attempt.scope_receipt.is_some()
+            || load_authoritative_scope_receipt(ledger, attempt)?.is_some()
+            || !attempt.leases.is_empty()
+            || !ledger
+                .active_leases_for_attempt(
+                    &attempt.mission_id,
+                    &attempt.task_id,
+                    &attempt.attempt_id,
+                )?
+                .is_empty()
+        {
+            bail!("read-only task carries unexpected writable scope authority");
+        }
+        return Ok(());
+    }
+    let persisted = load_authoritative_scope_receipt(ledger, attempt)?.ok_or_else(|| {
+        anyhow::anyhow!(
+            "attempt {} has no immutable scope authority receipt",
+            attempt.attempt_id
+        )
+    })?;
+    if attempt
+        .scope_receipt
+        .as_ref()
+        .is_some_and(|receipt| receipt != &persisted)
+    {
+        bail!("in-memory scope receipt differs from immutable ledger authority");
+    }
+    if attempt.owner.as_deref() != Some(persisted.owner.as_str()) {
+        bail!("attempt owner differs from immutable scope authority");
+    }
+    let active = ledger.active_leases_for_attempt(
+        &attempt.mission_id,
+        &attempt.task_id,
+        &attempt.attempt_id,
+    )?;
+    let current = scope::ScopeClaim::read_strict(state_dir, &persisted.owner)?;
+    match current {
+        Some(ref current) if current == &persisted.claim => {}
+        Some(_) => bail!(
+            "stale scope release refused for {}: mutable claim differs from immutable receipt",
+            persisted.owner
+        ),
+        None if active.is_empty() => return Ok(()),
+        None => bail!(
+            "compatibility scope {} disappeared while V3 leases remain active",
+            persisted.owner
+        ),
+    }
+    for lease in &active {
+        if lease.owner != persisted.owner
+            || !attempt.leases.iter().any(|presented| {
+                presented.resource_key == lease.resource_key
+                    && presented.fencing_token == lease.fencing_token
+                    && presented.owner == lease.owner
+            })
+        {
+            bail!(
+                "active lease {} is absent from the exact release authority",
+                lease.resource_key
+            );
+        }
+    }
+    let mut failures = Vec::new();
+    for lease in &active {
+        if let Err(error) = ledger.release_lease(&lease.resource_key, lease.fencing_token) {
+            failures.push(format!("{}: {error}", lease.resource_key));
+        }
+    }
+    if !failures.is_empty() {
+        bail!(
+            "scope release incomplete; compatibility claim retained: {}",
+            failures.join("; ")
+        );
+    }
+    scope::ScopeClaim::release_exact(state_dir, &persisted.claim)
+        .with_context(|| format!("releasing exact compatibility scope {}", persisted.owner))
+}
+
+/// Advance the mission lifecycle with a fresh compare-and-set version.
+fn mission_has_reached(current: MissionState, target: MissionState) -> bool {
+    use MissionState::*;
+
+    if current == target {
+        return true;
+    }
+    match target {
+        Created | Classified | Planned => false,
+        Running => matches!(
+            current,
+            Verifying | Accepted | CorrectionRequired | Blocked | Failed | Reporting | Delivered
+        ),
+        Verifying => matches!(
+            current,
+            Accepted | CorrectionRequired | Blocked | Failed | Reporting | Delivered
+        ),
+        Accepted => matches!(current, Reporting | Delivered),
+        Reporting => matches!(current, Delivered),
+        CorrectionRequired | Blocked | Failed | Delivered | Cancelled => false,
+    }
+}
+
+pub fn transition_authoritative_mission(
+    ledger: &MissionLedger,
+    mission_id: &crate::mission::MissionId,
+    next: MissionState,
+    actor: &str,
+) -> Result<()> {
+    let label = format!("{next:?}").to_lowercase();
+    for _ in 0..LEDGER_CAS_RETRIES {
+        let current = ledger
+            .mission(mission_id)?
+            .ok_or_else(|| anyhow::anyhow!("authoritative mission disappeared"))?;
+        if mission_has_reached(current.state, next) {
+            if matches!(
+                next,
+                MissionState::Accepted | MissionState::Reporting | MissionState::Delivered
+            ) {
+                ledger.validate_mission_acceptance(mission_id)?;
+            }
+            propagate_child_nonclean_state(ledger, mission_id, next, actor)?;
+            return Ok(());
+        }
+        if !current.state.can_transition_to(next) {
+            bail!(
+                "mission {} cannot advance from {:?} to {:?}; refusing a backward or branch-changing transition",
+                mission_id.as_str(),
+                current.state,
+                next
+            );
+        }
+        let mut event = AppendEvent::new(
+            mission_id.clone(),
+            current.version,
+            format!("orchestration:{}:mission:{label}", mission_id.as_str()),
+            actor,
+            format!("mission_{label}"),
+        );
+        event.next_mission_state = Some(next);
+        match ledger.append(event) {
+            Ok(_) => {
+                propagate_child_nonclean_state(ledger, mission_id, next, actor)?;
+                return Ok(());
+            }
+            Err(LedgerError::VersionConflict { .. }) => continue,
+            Err(error) => return Err(error.into()),
+        }
+    }
+    bail!(
+        "mission {} did not converge after {} compare-and-set retries",
+        mission_id.as_str(),
+        LEDGER_CAS_RETRIES
+    )
+}
+
+fn propagate_child_nonclean_state(
+    ledger: &MissionLedger,
+    child_mission_id: &crate::mission::MissionId,
+    child_state: MissionState,
+    actor: &str,
+) -> Result<()> {
+    let desired = match child_state {
+        MissionState::Blocked => MissionState::Blocked,
+        MissionState::Failed | MissionState::Cancelled => MissionState::Failed,
+        _ => return Ok(()),
+    };
+    let Some(link) = ledger.parent_link_for_child(child_mission_id)? else {
+        return Ok(());
+    };
+    let parent_id = crate::mission::MissionId(link.parent_mission_id);
+    let parent = ledger
+        .mission(&parent_id)?
+        .ok_or_else(|| anyhow::anyhow!("linked parent mission disappeared"))?;
+    match parent.state {
+        state if state == desired => Ok(()),
+        MissionState::Planned => {
+            transition_authoritative_mission(ledger, &parent_id, MissionState::Cancelled, actor)
+        }
+        MissionState::Running => {
+            transition_authoritative_mission(ledger, &parent_id, MissionState::Verifying, actor)?;
+            transition_authoritative_mission(ledger, &parent_id, desired, actor)
+        }
+        MissionState::CorrectionRequired => {
+            transition_authoritative_mission(ledger, &parent_id, MissionState::Running, actor)?;
+            transition_authoritative_mission(ledger, &parent_id, MissionState::Verifying, actor)?;
+            transition_authoritative_mission(ledger, &parent_id, desired, actor)
+        }
+        MissionState::Verifying => {
+            transition_authoritative_mission(ledger, &parent_id, desired, actor)
+        }
+        MissionState::Blocked if desired == MissionState::Failed => {
+            transition_authoritative_mission(ledger, &parent_id, MissionState::Failed, actor)
+        }
+        MissionState::Blocked => Ok(()),
+        MissionState::Failed | MissionState::Cancelled => Ok(()),
+        state => bail!(
+            "linked child {} became {:?} but parent {} is irreversibly {:?}",
+            child_mission_id.as_str(),
+            child_state,
+            parent_id.as_str(),
+            state
+        ),
+    }
+}
+
+/// Freeze one dynamic worker as a child-mission edge before any runtime
+/// effect. The parent's active plan is never amended; acceptance recursively
+/// requires every exact linked child to reach independently validated
+/// Delivered state.
+pub fn link_authoritative_child_mission(
+    ledger: &MissionLedger,
+    parent_mission_id: &crate::mission::MissionId,
+    child_mission_id: &crate::mission::MissionId,
+    runtime_session: &str,
+    runtime_manifest_digest: &str,
+    linked_by: &str,
+) -> Result<ChildMissionLink> {
+    if parent_mission_id == child_mission_id {
+        bail!("a mission cannot link itself as a child");
+    }
+    scope::validate_session_identity(runtime_session)?;
+    if linked_by.trim().is_empty() {
+        bail!("child mission link has no accountable linker");
+    }
+    if runtime_manifest_digest.len() != 64
+        || !runtime_manifest_digest
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit())
+    {
+        bail!("child runtime manifest digest must be one exact 64-character hex digest");
+    }
+    let parent = ledger
+        .mission_record(parent_mission_id)?
+        .ok_or_else(|| anyhow::anyhow!("parent mission disappeared"))?;
+    let child = ledger
+        .mission_record(child_mission_id)?
+        .ok_or_else(|| anyhow::anyhow!("child mission disappeared"))?;
+    if parent.project != child.project {
+        bail!("parent and child missions must share one immutable project");
+    }
+    let child_plan = ledger
+        .active_plan(child_mission_id)?
+        .ok_or_else(|| anyhow::anyhow!("child mission has no active plan"))?;
+    if child_plan.tasks.len() != 1 {
+        bail!("dynamic child mission must freeze exactly one runtime task");
+    }
+    let workspace = scope::canonical_workspace_identity(&child.working_dir)?;
+    let runtime = ChildMissionRuntimeIdentity {
+        runtime_session: runtime_session.to_string(),
+        runtime_manifest_digest: runtime_manifest_digest.to_ascii_lowercase(),
+        project: child.project,
+        canonical_workspace_id: workspace,
+        runtime_owner: runtime_session.to_string(),
+        runtime_task_id: child_plan.tasks[0].task_id.as_str().to_string(),
+    };
+    Ok(ledger.link_child_mission_atomic(
+        parent_mission_id,
+        child_mission_id,
+        &runtime,
+        linked_by,
+    )?)
+}
+
+/// Independently rerun every verifier frozen in the task contract.
+///
+/// Each immutable verifier executes exactly once. Worker claims matching a
+/// frozen verifier reuse that observation; they never trigger a second command
+/// or HTTP request. Additional non-executable artifacts are grounded separately,
+/// while undeclared command and HTTP claims fail closed without execution.
+fn verifier_matches_artifact(check: &VerifierCheck, artifact: &crate::done::DoneArtifact) -> bool {
+    match (&check.kind, artifact) {
+        (
+            VerifierCheckKind::Command {
+                argv,
+                expected_exit_code,
+                ..
+            },
+            crate::done::DoneArtifact::Command { cmd, exit_code },
+        ) => argv.join(" ") == *cmd && expected_exit_code == exit_code,
+        (
+            VerifierCheckKind::Http {
+                url,
+                expected_status,
+            },
+            crate::done::DoneArtifact::Url {
+                url: claimed_url,
+                expected_status: claimed_status,
+            },
+        ) => url == claimed_url && expected_status == claimed_status,
+        (
+            VerifierCheckKind::FileExists { path },
+            crate::done::DoneArtifact::FilePath { path: claimed_path },
+        ) => path == claimed_path,
+        (
+            VerifierCheckKind::GitObject { sha },
+            crate::done::DoneArtifact::GitSha {
+                sha: claimed_sha, ..
+            },
+        ) => sha == claimed_sha,
+        _ => false,
+    }
+}
+
+pub fn independently_verify_task_contract(
+    done: &DoneSignal,
+    repo_root: &Path,
+    contract: &TaskContract,
+) -> ContractVerification {
+    let mut independent = DoneSignal::new(
+        "omega-independent-verifier",
+        DoneStatus::DoneClean,
+        "immutable task verifier rerun",
+    );
+    independent.todos_total = 1;
+    independent.todos_completed = 1;
+    independent.corroboration = vec![
+        crate::done::CorroborationSource::IndependentAuditor,
+        crate::done::CorroborationSource::CiExitCode,
+    ];
+    independent.artifacts = contract
+        .verifier_checks
+        .iter()
+        .map(|check| match &check.kind {
+            VerifierCheckKind::Command {
+                argv,
+                expected_exit_code,
+                ..
+            } => crate::done::DoneArtifact::Command {
+                cmd: argv.join(" "),
+                exit_code: *expected_exit_code,
+            },
+            VerifierCheckKind::Http {
+                url,
+                expected_status,
+            } => crate::done::DoneArtifact::Url {
+                url: url.clone(),
+                expected_status: *expected_status,
+            },
+            VerifierCheckKind::FileExists { path } => {
+                crate::done::DoneArtifact::FilePath { path: path.clone() }
+            }
+            VerifierCheckKind::GitObject { sha } => crate::done::DoneArtifact::GitSha {
+                sha: sha.clone(),
+                branch: None,
+            },
+        })
+        .collect();
+    let independent_verdict = crate::done::verify_done_against_contract(
+        &independent,
+        Some(repo_root),
+        &contract.verifier_checks,
+    );
+
+    let observations = contract
+        .verifier_checks
+        .iter()
+        .zip(&independent_verdict.checks)
+        .map(|(check, result)| VerifierObservation {
+            check_id: check.check_id.clone(),
+            passed: result.passed,
+            detail: result.detail.clone(),
+        })
+        .collect::<Vec<_>>();
+    let exact_coverage = observations.len() == contract.verifier_checks.len()
+        && observations.iter().all(|observation| observation.passed);
+    let mut failures = Vec::new();
+    if done.status != DoneStatus::DoneClean {
+        failures.push(format!(
+            "worker evidence: status is {:?}, not done_clean",
+            done.status
+        ));
+    }
+    if done.session.trim().is_empty() {
+        failures.push("worker evidence: empty session identity".to_string());
+    }
+    if done.todos_total == 0 {
+        failures.push("worker evidence: the 0/0 task count proves no work".to_string());
+    } else if done.todos_completed != done.todos_total {
+        failures.push(format!(
+            "worker evidence: completed {}/{} declared tasks",
+            done.todos_completed, done.todos_total
+        ));
+    }
+    if !done.pending_actions.is_empty() {
+        failures.push(format!(
+            "worker evidence: {} pending action(s) remain",
+            done.pending_actions.len()
+        ));
+    }
+    if !done.not_done.is_empty() {
+        failures.push(format!(
+            "worker evidence: {} item(s) explicitly not done",
+            done.not_done.len()
+        ));
+    }
+    if done.artifacts.is_empty() && done.is_single_source() {
+        failures.push(
+            "worker evidence: zero artifacts and no validated independent provenance; worker narration is inadmissible"
+                .to_string(),
+        );
+    }
+
+    let mut supplemental = done.clone();
+    supplemental.artifacts.clear();
+    for artifact in &done.artifacts {
+        if let Some((index, check)) = contract
+            .verifier_checks
+            .iter()
+            .enumerate()
+            .find(|(_, check)| verifier_matches_artifact(check, artifact))
+        {
+            let observation = observations.get(index);
+            if !observation.is_some_and(|observation| observation.passed) {
+                failures.push(format!(
+                    "worker evidence: claim for frozen verifier `{}` was not corroborated",
+                    check.check_id
+                ));
+            }
+            continue;
+        }
+        match artifact {
+            crate::done::DoneArtifact::Command { cmd, .. } => failures.push(format!(
+                "worker evidence: undeclared command was not executed: `{cmd}`"
+            )),
+            crate::done::DoneArtifact::Url { url, .. } => failures.push(format!(
+                "worker evidence: undeclared URL was not requested: {url}"
+            )),
+            _ => supplemental.artifacts.push(artifact.clone()),
+        }
+    }
+    if !supplemental.artifacts.is_empty() {
+        let supplemental_verdict =
+            crate::done::verify_done_against_repo(&supplemental, Some(repo_root));
+        failures.extend(
+            supplemental_verdict
+                .failures
+                .into_iter()
+                .map(|failure| format!("worker evidence: {failure}")),
+        );
+    }
+    failures.extend(
+        independent_verdict
+            .failures
+            .into_iter()
+            .map(|failure| format!("independent verifier: {failure}")),
+    );
+    if observations.len() != contract.verifier_checks.len() {
+        failures.push(format!(
+            "independent verifier coverage {}/{}",
+            observations.len(),
+            contract.verifier_checks.len()
+        ));
+    }
+    ContractVerification {
+        passed: failures.is_empty() && independent_verdict.passes && exact_coverage,
+        observations,
+        failures,
+    }
+}
+
+fn done_signal_digest(done: &DoneSignal) -> Result<String> {
+    Ok(blake3::hash(&serde_json::to_vec(done)?)
+        .to_hex()
+        .to_string())
+}
+
+fn append_bound_observation(
+    ledger: &MissionLedger,
+    attempt: &AuthoritativeTaskAttempt,
+    actor: &str,
+    kind: &str,
+    key_label: &str,
+    payload: serde_json::Value,
+) -> Result<()> {
+    let payload_digest = blake3::hash(&serde_json::to_vec(&payload)?)
+        .to_hex()
+        .to_string();
+    for _ in 0..LEDGER_CAS_RETRIES {
+        let mission = ledger
+            .mission(&attempt.mission_id)?
+            .ok_or_else(|| anyhow::anyhow!("authoritative mission disappeared"))?;
+        let mut event = AppendEvent::new(
+            attempt.mission_id.clone(),
+            mission.version,
+            format!(
+                "orchestration:{}:{key_label}:{payload_digest}",
+                attempt.attempt_id
+            ),
+            actor,
+            kind,
+        );
+        event.payload = payload.clone();
+        match ledger.append(event) {
+            Ok(_) => return Ok(()),
+            Err(LedgerError::VersionConflict { .. }) => continue,
+            Err(error) => return Err(error.into()),
+        }
+    }
+    bail!(
+        "observation for attempt {} did not converge after {} compare-and-set retries",
+        attempt.attempt_id,
+        LEDGER_CAS_RETRIES
+    )
+}
+
+fn append_mission_observation(
+    ledger: &MissionLedger,
+    mission_id: &crate::mission::MissionId,
+    actor: &str,
+    kind: &str,
+    key_label: &str,
+    payload: serde_json::Value,
+) -> Result<crate::mission_ledger::MissionEvent> {
+    let payload_digest = blake3::hash(&serde_json::to_vec(&payload)?)
+        .to_hex()
+        .to_string();
+    for _ in 0..LEDGER_CAS_RETRIES {
+        let mission = ledger
+            .mission(mission_id)?
+            .ok_or_else(|| anyhow::anyhow!("authoritative mission disappeared"))?;
+        let mut event = AppendEvent::new(
+            mission_id.clone(),
+            mission.version,
+            format!(
+                "orchestration:{}:{key_label}:{payload_digest}",
+                mission_id.as_str()
+            ),
+            actor,
+            kind,
+        );
+        event.payload = payload.clone();
+        match ledger.append(event) {
+            Ok(outcome) => return Ok(outcome.event),
+            Err(LedgerError::VersionConflict { .. }) => continue,
+            Err(error) => return Err(error.into()),
+        }
+    }
+    bail!(
+        "mission observation for {} did not converge after {} compare-and-set retries",
+        mission_id.as_str(),
+        LEDGER_CAS_RETRIES
+    )
+}
+
+pub fn record_plan_requirement_observation(
+    ledger: &MissionLedger,
+    mission_id: &crate::mission::MissionId,
+    kind: PlanRequirementKind,
+    requirement: &str,
+    passed: bool,
+    observed_by: &str,
+    evidence_event_ids: Vec<String>,
+) -> Result<crate::mission_ledger::MissionEvent> {
+    let plan = ledger
+        .active_plan(mission_id)?
+        .ok_or_else(|| anyhow::anyhow!("mission has no active immutable plan"))?;
+    plan.verify_integrity()
+        .map_err(|error| anyhow::anyhow!("active plan integrity failed: {error}"))?;
+    let declared = match kind {
+        PlanRequirementKind::Gate => &plan.required_gates,
+        PlanRequirementKind::Approval => &plan.required_approvals,
+    };
+    if !declared.iter().any(|item| item == requirement) {
+        bail!("plan does not declare required {:?} `{requirement}`", kind);
+    }
+    if observed_by.trim().is_empty() || evidence_event_ids.is_empty() {
+        bail!("plan requirement observation needs an observer and event evidence");
+    }
+    let observation = PlanRequirementObservation {
+        schema_version: ACCEPTANCE_OBSERVATION_SCHEMA_VERSION,
+        mission_id: mission_id.as_str().to_string(),
+        plan_revision: plan.revision,
+        plan_digest: plan.content_digest,
+        requirement: requirement.to_string(),
+        kind,
+        passed,
+        observed_by: observed_by.to_string(),
+        evidence_event_ids,
+    };
+    let (event_kind, key_label) = match kind {
+        PlanRequirementKind::Gate => ("plan_gate_observed", "plan-gate"),
+        PlanRequirementKind::Approval => ("plan_approval_observed", "plan-approval"),
+    };
+    append_mission_observation(
+        ledger,
+        mission_id,
+        observed_by,
+        event_kind,
+        key_label,
+        serde_json::to_value(observation)?,
+    )
+}
+
+pub fn record_mission_gate_observation(
+    ledger: &MissionLedger,
+    mission_id: &crate::mission::MissionId,
+    actor: &str,
+    observation: &MissionGateObservation,
+) -> Result<crate::mission_ledger::MissionEvent> {
+    let plan = ledger
+        .active_plan(mission_id)?
+        .ok_or_else(|| anyhow::anyhow!("mission has no active immutable plan"))?;
+    if observation.schema_version != ACCEPTANCE_OBSERVATION_SCHEMA_VERSION
+        || observation.mission_id != mission_id.as_str()
+        || observation.plan_revision != plan.revision
+        || observation.plan_digest != plan.content_digest
+    {
+        bail!("mission gate observation is not bound to the exact active plan");
+    }
+    append_mission_observation(
+        ledger,
+        mission_id,
+        actor,
+        "mission_gate_observed",
+        "mission-gate",
+        serde_json::to_value(observation)?,
+    )
+}
+
+fn record_contract_verification(
+    ledger: &MissionLedger,
+    attempt: &AuthoritativeTaskAttempt,
+    plan_digest: &str,
+    done: &DoneSignal,
+    verification: &ContractVerification,
+) -> Result<RecordedContractVerification> {
+    let record = RecordedContractVerification {
+        schema_version: ACCEPTANCE_OBSERVATION_SCHEMA_VERSION,
+        mission_id: attempt.mission_id.as_str().to_string(),
+        task_id: attempt.task_id.clone(),
+        attempt_id: attempt.attempt_id.clone(),
+        plan_revision: attempt.plan_revision,
+        plan_digest: plan_digest.to_string(),
+        worker_signal_digest: done_signal_digest(done)?,
+        verification: verification.clone(),
+    };
+    append_bound_observation(
+        ledger,
+        attempt,
+        "omega-independent-verifier",
+        "task_verifier_observations_recorded",
+        "independent-verification",
+        serde_json::to_value(&record)?,
+    )?;
+    Ok(record)
+}
+
+fn exact_verification_is_recorded(
+    ledger: &MissionLedger,
+    attempt: &AuthoritativeTaskAttempt,
+    expected: &RecordedContractVerification,
+) -> Result<bool> {
+    Ok(ledger
+        .events(&attempt.mission_id)?
+        .into_iter()
+        .any(|event| {
+            event.kind == "task_verifier_observations_recorded"
+                && serde_json::from_value::<RecordedContractVerification>(event.payload)
+                    .is_ok_and(|recorded| recorded == *expected)
+        }))
+}
+
+fn record_acceptance_invalidation(
+    ledger: &MissionLedger,
+    attempt: &AuthoritativeTaskAttempt,
+    actor: &str,
+    reason: &str,
+) -> Result<()> {
+    let mission = ledger
+        .mission(&attempt.mission_id)?
+        .ok_or_else(|| anyhow::anyhow!("authoritative mission disappeared"))?;
+    if matches!(
+        mission.state,
+        MissionState::Accepted | MissionState::Reporting | MissionState::Delivered
+    ) {
+        append_mission_observation(
+            ledger,
+            &attempt.mission_id,
+            actor,
+            "mission_acceptance_invalidated",
+            "late-acceptance-invalidation",
+            serde_json::json!({
+                "schema_version": ACCEPTANCE_OBSERVATION_SCHEMA_VERSION,
+                "mission_id": attempt.mission_id.as_str(),
+                "task_id": attempt.task_id,
+                "attempt_id": attempt.attempt_id,
+                "plan_revision": attempt.plan_revision,
+                "previous_mission_state": mission.state,
+                "reason": reason,
+            }),
+        )?;
+        bail!(
+            "late contradiction invalidated mission acceptance in {:?}; explicit mission correction/reopen is required",
+            mission.state
+        );
+    }
+    append_bound_observation(
+        ledger,
+        attempt,
+        actor,
+        "task_acceptance_invalidated",
+        "acceptance-invalidated",
+        serde_json::to_value(TaskAcceptanceInvalidation {
+            schema_version: ACCEPTANCE_OBSERVATION_SCHEMA_VERSION,
+            mission_id: attempt.mission_id.as_str().to_string(),
+            task_id: attempt.task_id.clone(),
+            attempt_id: attempt.attempt_id.clone(),
+            plan_revision: attempt.plan_revision,
+            reason: reason.to_string(),
+        })?,
+    )
+}
+
+fn finalize_contract_verification(
+    ledger: &MissionLedger,
+    attempt: &AuthoritativeTaskAttempt,
+    actor: &str,
+    record: &RecordedContractVerification,
+) -> Result<bool> {
+    if !exact_verification_is_recorded(ledger, attempt, record)? {
+        bail!(
+            "attempt {} has no exact ledger-bound independent verification observation",
+            attempt.attempt_id
+        );
+    }
+
+    for _ in 0..LEDGER_CAS_RETRIES {
+        let current = ledger
+            .task_attempt(&attempt.attempt_id)?
+            .ok_or_else(|| anyhow::anyhow!("authoritative task attempt disappeared"))?;
+        if record.verification.passed {
+            match current.state {
+                TaskAttemptState::Running | TaskAttemptState::CandidateDone => {
+                    ensure_attempt_verifying(ledger, attempt, actor)?;
+                }
+                TaskAttemptState::Verifying => {
+                    if transition_authoritative_attempt(
+                        ledger,
+                        attempt,
+                        TaskAttemptState::Accepted,
+                        actor,
+                    )
+                    .is_err()
+                    {
+                        continue;
+                    }
+                }
+                TaskAttemptState::Accepted => return Ok(true),
+                TaskAttemptState::Queued
+                | TaskAttemptState::CorrectionRequired
+                | TaskAttemptState::Blocked
+                | TaskAttemptState::Failed
+                | TaskAttemptState::Cancelled => return Ok(false),
+            }
+        } else {
+            match current.state {
+                TaskAttemptState::Running | TaskAttemptState::CandidateDone => {
+                    ensure_attempt_verifying(ledger, attempt, actor)?;
+                }
+                TaskAttemptState::Verifying => {
+                    if transition_authoritative_attempt(
+                        ledger,
+                        attempt,
+                        TaskAttemptState::CorrectionRequired,
+                        actor,
+                    )
+                    .is_err()
+                    {
+                        continue;
+                    }
+                    return Ok(false);
+                }
+                TaskAttemptState::Accepted => {
+                    record_acceptance_invalidation(
+                        ledger,
+                        attempt,
+                        actor,
+                        "accepted attempt was refuted by the exact independent verifier observation",
+                    )?;
+                    return Ok(false);
+                }
+                TaskAttemptState::Queued
+                | TaskAttemptState::CorrectionRequired
+                | TaskAttemptState::Blocked
+                | TaskAttemptState::Failed
+                | TaskAttemptState::Cancelled => return Ok(false),
+            }
+        }
+    }
+    bail!(
+        "attempt {} finalization did not converge after {} retries",
+        attempt.attempt_id,
+        LEDGER_CAS_RETRIES
+    )
+}
+
+#[derive(Debug, Clone)]
+pub struct CandidateVerificationOutcome {
+    pub accepted: bool,
+    pub attempt_state: TaskAttemptState,
+    pub plan_digest: String,
+    pub worker_signal_digest: String,
+    pub verification: ContractVerification,
+}
+
+/// Load, independently verify, record and finalize one exact CandidateDone.
+///
+/// This is the sole public candidate acceptance path shared by the native
+/// orchestrator and Patrol. Authority drift fails before verifier execution;
+/// a verifier failure is recorded and moves the attempt to
+/// `CorrectionRequired`. Scope release remains the caller's responsibility and
+/// is only legal after `accepted == true` is durably observed.
+#[allow(clippy::too_many_arguments)]
+pub fn verify_and_finalize_candidate(
+    ledger: &MissionLedger,
+    mission_id: &crate::mission::MissionId,
+    task_id: &str,
+    attempt_id: &str,
+    plan_revision: u64,
+    expected_owner: &str,
+    done: &DoneSignal,
+    repo_root: &Path,
+) -> Result<CandidateVerificationOutcome> {
+    if done.session != expected_owner {
+        bail!(
+            "candidate owner mismatch: expected {}, signal belongs to {}",
+            expected_owner,
+            done.session
+        );
+    }
+    let plan = ledger
+        .active_plan(mission_id)?
+        .ok_or_else(|| anyhow::anyhow!("mission has no active immutable plan"))?;
+    plan.verify_integrity()
+        .map_err(|error| anyhow::anyhow!("active plan integrity failed: {error}"))?;
+    if plan.revision != plan_revision {
+        bail!(
+            "candidate revision {} differs from active plan revision {}",
+            plan_revision,
+            plan.revision
+        );
+    }
+    let contract = plan
+        .tasks
+        .iter()
+        .find(|task| task.task_id.as_str() == task_id)
+        .ok_or_else(|| anyhow::anyhow!("task {task_id} is absent from active plan"))?;
+    let projection = ledger
+        .task_attempt(attempt_id)?
+        .ok_or_else(|| anyhow::anyhow!("candidate task attempt is missing"))?;
+    if projection.mission_id != *mission_id
+        || projection.task_id != task_id
+        || projection.attempt_id != attempt_id
+        || projection.plan_revision != plan_revision
+    {
+        bail!("candidate task-attempt identity differs from ledger authority");
+    }
+    if !matches!(
+        projection.state,
+        TaskAttemptState::CandidateDone | TaskAttemptState::Verifying
+    ) {
+        bail!(
+            "attempt {attempt_id} is {:?}, not an independently verifiable candidate",
+            projection.state
+        );
+    }
+
+    let events = ledger.events(mission_id)?;
+    let running_owner = events.iter().rev().find_map(|event| {
+        event
+            .resulting_task_attempt
+            .as_ref()
+            .filter(|attempt| {
+                attempt.attempt_id == attempt_id && attempt.state == TaskAttemptState::Running
+            })
+            .map(|_| event.actor.as_str())
+    });
+    if running_owner != Some(expected_owner) {
+        bail!(
+            "candidate owner {} differs from the exact running-attempt owner {:?}",
+            expected_owner,
+            running_owner
+        );
+    }
+    let leases = ledger.active_leases_for_attempt(mission_id, task_id, attempt_id)?;
+    if leases.iter().any(|lease| lease.owner != expected_owner) {
+        bail!("one or more active attempt leases belong to a different owner");
+    }
+
+    let provenance = done
+        .projection
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("candidate has no V3 ledger provenance"))?;
+    let oracle_signal = expected_owner.starts_with("oracle-");
+    let attempt = AuthoritativeTaskAttempt {
+        mission_id: mission_id.clone(),
+        task_id: task_id.to_string(),
+        attempt_id: attempt_id.to_string(),
+        plan_revision,
+        owner: Some(expected_owner.to_string()),
+        leases,
+        scope_receipt: None,
+    };
+    let completion_event =
+        validate_done_projection(ledger, &attempt, expected_owner, provenance, oracle_signal)
+            .map_err(|error| anyhow::anyhow!(error))?;
+    validate_done_payload_binding(done, &completion_event, oracle_signal)
+        .map_err(|error| anyhow::anyhow!(error))?;
+    let earliest = done.finished_at - ChronoDuration::seconds(DONE_CLOCK_SKEW_SECS);
+    let latest = done.finished_at + ChronoDuration::seconds(DONE_CLOCK_SKEW_SECS);
+    if completion_event.recorded_at < earliest || completion_event.recorded_at > latest {
+        bail!("candidate timestamp is not bound to its immutable completion event");
+    }
+
+    ensure_attempt_verifying(ledger, &attempt, "omega-independent-verifier")?;
+    let verification = independently_verify_task_contract(done, repo_root, contract);
+    let worker_signal_digest = done_signal_digest(done)?;
+    let record =
+        record_contract_verification(ledger, &attempt, &plan.content_digest, done, &verification)?;
+    let accepted =
+        finalize_contract_verification(ledger, &attempt, "omega-independent-verifier", &record)?;
+    let attempt_state = ledger
+        .task_attempt(attempt_id)?
+        .ok_or_else(|| anyhow::anyhow!("finalized attempt disappeared"))?
+        .state;
+    Ok(CandidateVerificationOutcome {
+        accepted,
+        attempt_state,
+        plan_digest: plan.content_digest,
+        worker_signal_digest,
+        verification,
+    })
+}
+
+fn finalize_nonclean_attempt(
+    ledger: &MissionLedger,
+    attempt: &AuthoritativeTaskAttempt,
+    actor: &str,
+    target: TaskAttemptState,
+) -> Result<()> {
+    for _ in 0..LEDGER_CAS_RETRIES {
+        let current = ledger
+            .task_attempt(&attempt.attempt_id)?
+            .ok_or_else(|| anyhow::anyhow!("authoritative task attempt disappeared"))?;
+        match current.state {
+            TaskAttemptState::Running | TaskAttemptState::CandidateDone => {
+                ensure_attempt_verifying(ledger, attempt, actor)?;
+            }
+            TaskAttemptState::Verifying => {
+                if transition_authoritative_attempt(ledger, attempt, target, actor).is_err() {
+                    continue;
+                }
+                return Ok(());
+            }
+            state if state == target => return Ok(()),
+            TaskAttemptState::Accepted => {
+                record_acceptance_invalidation(
+                    ledger,
+                    attempt,
+                    actor,
+                    "accepted attempt contradicted by a non-clean completion signal",
+                )?;
+                return Ok(());
+            }
+            TaskAttemptState::Queued
+            | TaskAttemptState::CorrectionRequired
+            | TaskAttemptState::Blocked
+            | TaskAttemptState::Failed
+            | TaskAttemptState::Cancelled => return Ok(()),
+        }
+    }
+    bail!(
+        "non-clean attempt {} finalization did not converge after {} retries",
+        attempt.attempt_id,
+        LEDGER_CAS_RETRIES
+    )
+}
+
+/// Settle a non-clean compatibility signal through one exact V3 authority
+/// path. The immutable completion event, task identity, owner, plan revision
+/// and complete lease set are all reloaded before any transition.
+#[allow(clippy::too_many_arguments)]
+pub fn finalize_nonclean_candidate(
+    ledger: &MissionLedger,
+    mission_id: &crate::mission::MissionId,
+    task_id: &str,
+    attempt_id: &str,
+    plan_revision: u64,
+    expected_owner: &str,
+    done: &DoneSignal,
+    target: TaskAttemptState,
+) -> Result<TaskAttemptState> {
+    if !matches!(target, TaskAttemptState::Blocked | TaskAttemptState::Failed) {
+        bail!("non-clean finalizer only permits Blocked or Failed");
+    }
+    if done.session != expected_owner || done.status == DoneStatus::DoneClean {
+        bail!("non-clean signal identity or status is incompatible with finalization");
+    }
+    let plan = ledger
+        .active_plan(mission_id)?
+        .ok_or_else(|| anyhow::anyhow!("mission has no active immutable plan"))?;
+    plan.verify_integrity()
+        .map_err(|error| anyhow::anyhow!("active plan integrity failed: {error}"))?;
+    if plan.revision != plan_revision
+        || !plan
+            .tasks
+            .iter()
+            .any(|task| task.task_id.as_str() == task_id)
+    {
+        bail!("non-clean signal is not bound to the exact active plan task");
+    }
+    let projection = ledger
+        .task_attempt(attempt_id)?
+        .ok_or_else(|| anyhow::anyhow!("non-clean task attempt is missing"))?;
+    if projection.mission_id != *mission_id
+        || projection.task_id != task_id
+        || projection.plan_revision != plan_revision
+    {
+        bail!("non-clean task-attempt identity differs from ledger authority");
+    }
+    let events = ledger.events(mission_id)?;
+    let running_owner = events.iter().rev().find_map(|event| {
+        event.resulting_task_attempt.as_ref().and_then(|attempt| {
+            (attempt.attempt_id == attempt_id && attempt.state == TaskAttemptState::Running)
+                .then_some(event.actor.as_str())
+        })
+    });
+    if running_owner != Some(expected_owner) {
+        bail!("non-clean signal owner differs from the Running attempt owner");
+    }
+    let leases = ledger.active_leases_for_attempt(mission_id, task_id, attempt_id)?;
+    if leases.iter().any(|lease| lease.owner != expected_owner) {
+        bail!("one or more active attempt leases belong to a different owner");
+    }
+    let attempt = AuthoritativeTaskAttempt {
+        mission_id: mission_id.clone(),
+        task_id: task_id.to_string(),
+        attempt_id: attempt_id.to_string(),
+        plan_revision,
+        owner: Some(expected_owner.to_string()),
+        leases,
+        scope_receipt: None,
+    };
+    let provenance = done
+        .projection
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("non-clean signal has no V3 ledger provenance"))?;
+    let oracle_signal = expected_owner.starts_with("oracle-");
+    let completion_event =
+        validate_done_projection(ledger, &attempt, expected_owner, provenance, oracle_signal)
+            .map_err(|error| anyhow::anyhow!(error))?;
+    validate_done_payload_binding(done, &completion_event, oracle_signal)
+        .map_err(|error| anyhow::anyhow!(error))?;
+    finalize_nonclean_attempt(ledger, &attempt, "omega-independent-verifier", target)?;
+    Ok(ledger
+        .task_attempt(attempt_id)?
+        .ok_or_else(|| anyhow::anyhow!("finalized non-clean attempt disappeared"))?
+        .state)
+}
+
+fn validate_done_identity_and_freshness(
+    signal: &DoneSignal,
+    expected_session: &str,
+    dispatched_at: DateTime<Utc>,
+    now: DateTime<Utc>,
+) -> Result<(), OrchestrationError> {
+    if signal.session != expected_session {
+        return Err(OrchestrationError::Other(anyhow::anyhow!(
+            "completion identity mismatch: expected {}, received {}",
+            expected_session,
+            signal.session
+        )));
+    }
+    let earliest = dispatched_at - ChronoDuration::seconds(DONE_CLOCK_SKEW_SECS);
+    let latest = now + ChronoDuration::seconds(DONE_CLOCK_SKEW_SECS);
+    if signal.finished_at < earliest {
+        return Err(OrchestrationError::Other(anyhow::anyhow!(
+            "stale completion for {}: finished at {} before dispatch {}",
+            expected_session,
+            signal.finished_at,
+            dispatched_at
+        )));
+    }
+    if signal.finished_at > latest {
+        return Err(OrchestrationError::Other(anyhow::anyhow!(
+            "impossible future completion for {}: finished at {}",
+            expected_session,
+            signal.finished_at
+        )));
+    }
+    Ok(())
+}
+
+fn validate_done_projection(
+    ledger: &MissionLedger,
+    attempt: &AuthoritativeTaskAttempt,
+    expected_session: &str,
+    projection: &crate::done::ProjectionProvenance,
+    oracle_signal: bool,
+) -> Result<crate::mission_ledger::MissionEvent, OrchestrationError> {
+    if projection.source != "mission-engine-v3.sqlite3" {
+        return Err(OrchestrationError::Other(anyhow::anyhow!(
+            "completion cites unsupported authority source {}",
+            projection.source
+        )));
+    }
+    let events = ledger
+        .events(&attempt.mission_id)
+        .map_err(|error| OrchestrationError::Other(error.into()))?;
+    let event = events
+        .iter()
+        .find(|event| {
+            event.event_id == projection.event_id && event.sequence == projection.event_sequence
+        })
+        .ok_or_else(|| {
+            OrchestrationError::Other(anyhow::anyhow!(
+                "completion provenance event {}#{} does not exist",
+                projection.event_id,
+                projection.event_sequence
+            ))
+        })?;
+    let kind_is_completion = is_worker_completion_candidate_kind(&event.kind)
+        || (oracle_signal && event.kind == "legacy_oracle_completion_candidate");
+    if event.actor != expected_session || !kind_is_completion {
+        return Err(OrchestrationError::Other(anyhow::anyhow!(
+            "completion provenance is not bound to session {} and its completion lifecycle",
+            expected_session
+        )));
+    }
+    if event.task_id.as_deref() != Some(attempt.task_id.as_str())
+        || event.attempt_id.as_deref() != Some(attempt.attempt_id.as_str())
+        || event.plan_revision != Some(attempt.plan_revision)
+        || event
+            .resulting_task_attempt
+            .as_ref()
+            .is_none_or(|projection| {
+                projection.mission_id != attempt.mission_id
+                    || projection.task_id != attempt.task_id
+                    || projection.attempt_id != attempt.attempt_id
+                    || projection.plan_revision != attempt.plan_revision
+                    || projection.state != TaskAttemptState::CandidateDone
+            })
+    {
+        return Err(OrchestrationError::Other(anyhow::anyhow!(
+            "completion provenance is not the exact CandidateDone event for task {} attempt {} revision {}",
+            attempt.task_id,
+            attempt.attempt_id,
+            attempt.plan_revision
+        )));
+    }
+    let historical = ledger
+        .projection_at(&attempt.mission_id, projection.event_sequence)
+        .map_err(|error| OrchestrationError::Other(error.into()))?
+        .ok_or_else(|| {
+            OrchestrationError::Other(anyhow::anyhow!(
+                "completion provenance sequence {} is not replayable",
+                projection.event_sequence
+            ))
+        })?;
+    if historical.version != projection.mission_version
+        || historical.projection_hash != projection.projection_hash
+    {
+        return Err(OrchestrationError::Other(anyhow::anyhow!(
+            "completion provenance does not match the exact historical ledger projection"
+        )));
+    }
+    Ok(event.clone())
+}
+
+fn is_worker_completion_candidate_kind(kind: &str) -> bool {
+    matches!(
+        kind,
+        "worker_runtime_completion_candidate" | "legacy_worker_completion_candidate"
+    )
+}
+
+fn validate_done_payload_binding(
+    signal: &DoneSignal,
+    event: &crate::mission_ledger::MissionEvent,
+    oracle_signal: bool,
+) -> Result<(), OrchestrationError> {
+    if oracle_signal {
+        let recorded: crate::done::OracleDoneSignal = serde_json::from_value(event.payload.clone())
+            .map_err(|error| {
+                OrchestrationError::Other(anyhow::anyhow!(
+                    "oracle completion event payload is corrupt: {error}"
+                ))
+            })?;
+        let mut bridged_pending = recorded.pending_actions.clone();
+        bridged_pending.retain(|action| action != V3_ACCEPTANCE_PENDING);
+        let exact =
+            recorded.status == signal.status && recorded.pending_actions == signal.pending_actions;
+        let exact_bridge = recorded.status == DoneStatus::Pending
+            && recorded
+                .pending_actions
+                .iter()
+                .any(|action| action == V3_ACCEPTANCE_PENDING)
+            && signal.status == DoneStatus::DoneClean
+            && bridged_pending == signal.pending_actions;
+        if recorded.oracle.strip_prefix("oracle-") != signal.session.strip_prefix("oracle-")
+            || (!exact && !exact_bridge)
+            || recorded.summary != signal.summary
+            || recorded.finished_at != signal.finished_at
+        {
+            return Err(OrchestrationError::Other(anyhow::anyhow!(
+                "oracle completion file differs from its immutable CandidateDone event payload"
+            )));
+        }
+    } else {
+        let mut without_projection = signal.clone();
+        without_projection.projection = None;
+        let expected = serde_json::to_value(without_projection).map_err(|error| {
+            OrchestrationError::Other(anyhow::anyhow!(
+                "cannot canonicalize worker completion payload: {error}"
+            ))
+        })?;
+        if event.payload != expected {
+            return Err(OrchestrationError::Other(anyhow::anyhow!(
+                "worker completion file differs from its immutable CandidateDone event payload"
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Validate an Oracle completion file against the exact immutable
+/// CandidateDone event of the current mission. This prevents a recycled
+/// oracle name or legacy done file from closing/curating a different Delivered
+/// mission.
+pub fn validate_oracle_done_signal_authority(
+    ledger: &MissionLedger,
+    mission_id: &crate::mission::MissionId,
+    expected_oracle: &str,
+    signal: &crate::done::OracleDoneSignal,
+) -> Result<()> {
+    if signal.oracle.strip_prefix("oracle-") != expected_oracle.strip_prefix("oracle-") {
+        bail!("oracle completion identity differs from the live oracle");
+    }
+    let provenance = signal
+        .projection
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("oracle completion has no V3 provenance"))?;
+    if provenance.source != "mission-engine-v3.sqlite3" {
+        bail!("oracle completion cites an unsupported authority source");
+    }
+    let event = ledger
+        .events(mission_id)?
+        .into_iter()
+        .find(|event| {
+            event.event_id == provenance.event_id && event.sequence == provenance.event_sequence
+        })
+        .ok_or_else(|| anyhow::anyhow!("oracle completion provenance event is absent"))?;
+    if event.kind != "legacy_oracle_completion_candidate"
+        || event.actor != expected_oracle
+        || event.mission_id != *mission_id
+    {
+        bail!("oracle completion event is not owned by the exact live oracle mission");
+    }
+    let resulting = event
+        .resulting_task_attempt
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("oracle completion event has no task result"))?;
+    if resulting.state != TaskAttemptState::CandidateDone
+        || event.task_id.as_deref() != Some(resulting.task_id.as_str())
+        || event.attempt_id.as_deref() != Some(resulting.attempt_id.as_str())
+        || event.plan_revision != Some(resulting.plan_revision)
+    {
+        bail!("oracle completion event is not an exact CandidateDone transition");
+    }
+    let plan = ledger
+        .active_plan(mission_id)?
+        .ok_or_else(|| anyhow::anyhow!("oracle mission has no active plan"))?;
+    if plan.revision != resulting.plan_revision
+        || !plan
+            .tasks
+            .iter()
+            .any(|task| task.task_id.as_str() == resulting.task_id)
+    {
+        bail!("oracle completion task is not in the exact active plan");
+    }
+    let current = ledger
+        .task_attempt(&resulting.attempt_id)?
+        .ok_or_else(|| anyhow::anyhow!("oracle completion task attempt is missing"))?;
+    if current.mission_id != *mission_id
+        || current.task_id != resulting.task_id
+        || current.plan_revision != resulting.plan_revision
+        || current.state != TaskAttemptState::Accepted
+    {
+        bail!("oracle completion task is not exactly Accepted");
+    }
+    let historical = ledger
+        .projection_at(mission_id, provenance.event_sequence)?
+        .ok_or_else(|| anyhow::anyhow!("oracle completion projection is not replayable"))?;
+    if historical.version != provenance.mission_version
+        || historical.projection_hash != provenance.projection_hash
+    {
+        bail!("oracle completion projection hash/version differs from ledger");
+    }
+    let mut recorded_signal = signal.clone();
+    recorded_signal.projection = None;
+    if serde_json::to_value(recorded_signal)? != event.payload {
+        bail!("oracle completion file differs from its immutable event payload");
+    }
+    Ok(())
+}
+
+fn bridge_v3_oracle_candidate(signal: &mut DoneSignal, exact_provenance_validated: bool) -> bool {
+    if !exact_provenance_validated
+        || signal.status != DoneStatus::Pending
+        || !signal
+            .pending_actions
+            .iter()
+            .any(|action| action == V3_ACCEPTANCE_PENDING)
+    {
+        return false;
+    }
+    signal.status = DoneStatus::DoneClean;
+    signal.todos_completed = signal.todos_total;
+    signal
+        .pending_actions
+        .retain(|action| action != V3_ACCEPTANCE_PENDING);
+    true
+}
+
+pub fn build_authoritative_rubric(mission: &Mission, plan: &PlanContract) -> Rubric {
+    let mut criteria = vec![
+        RubricCriterion {
+            id: "F1".to_string(),
+            description: "Core mission objective satisfied".to_string(),
+            weight: 3.0,
+            category: crate::gate::CriterionCategory::Functional,
+        },
+        RubricCriterion {
+            id: "Q1".to_string(),
+            description: "No regressions introduced".to_string(),
+            weight: 2.0,
+            category: crate::gate::CriterionCategory::Quality,
+        },
+    ];
+    if plan.tasks.len() > 1 {
+        criteria.push(RubricCriterion {
+            id: "Q2".to_string(),
+            description: "All sub-workers reported done_clean".to_string(),
+            weight: 2.0,
+            category: crate::gate::CriterionCategory::Quality,
+        });
+    }
+    let mission_text = mission.text.to_lowercase();
+    if mission_text.contains("security") || mission_text.contains("auth") {
+        criteria.push(RubricCriterion {
+            id: "S1".to_string(),
+            description: "No security regressions or new vulnerabilities".to_string(),
+            weight: 3.0,
+            category: crate::gate::CriterionCategory::Security,
+        });
+    }
+    Rubric::new(&mission.text, criteria)
+}
+
+fn rollback_killed_worker_authority(
+    ledger: &MissionLedger,
+    state_dir: &Path,
+    session_name: &str,
+    attempt: &AuthoritativeTaskAttempt,
+) -> Vec<String> {
+    let mut failures = Vec::new();
+    if let Err(error) =
+        transition_authoritative_attempt(ledger, attempt, TaskAttemptState::Cancelled, session_name)
+    {
+        failures.push(format!(
+            "attempt {} -> Cancelled: {error}",
+            attempt.attempt_id
+        ));
+    }
+    if let Err(error) = release_authoritative_scopes(ledger, state_dir, attempt) {
+        failures.push(format!("scope release for {}: {error}", attempt.attempt_id));
+    }
+    failures
+}
+
+fn persist_dispatch_failure_state(
+    ledger: &MissionLedger,
+    mission_id: &crate::mission::MissionId,
+    rollback_incomplete: bool,
+) -> Vec<String> {
+    let mut failures = Vec::new();
+    if let Err(error) = transition_authoritative_mission(
+        ledger,
+        mission_id,
+        MissionState::Verifying,
+        "omega-orchestrate",
+    ) {
+        failures.push(format!("mission -> Verifying: {error}"));
+        return failures;
+    }
+    let target = if rollback_incomplete {
+        MissionState::Blocked
+    } else {
+        MissionState::Failed
+    };
+    if let Err(error) =
+        transition_authoritative_mission(ledger, mission_id, target, "omega-orchestrate")
+    {
+        failures.push(format!("mission -> {target:?}: {error}"));
+    }
+    failures
+}
+
 /// The Orchestrator owns the full mission lifecycle.
 pub struct Orchestrator {
     config: OmegaConfig,
@@ -76,14 +2173,65 @@ pub struct Orchestrator {
 }
 
 impl Orchestrator {
+    async fn kill_and_confirm_session_absent(&self, session_name: &str) -> Result<()> {
+        let before = self
+            .mgr
+            .list_sessions()
+            .await
+            .with_context(|| format!("listing sessions before containing {session_name}"))?;
+        if before.iter().any(|session| session.name == session_name) {
+            self.mgr
+                .kill_session(session_name)
+                .await
+                .with_context(|| format!("killing exact runtime {session_name}"))?;
+        }
+        let after = self
+            .mgr
+            .list_sessions()
+            .await
+            .with_context(|| format!("confirming exact runtime {session_name} is absent"))?;
+        if after.iter().any(|session| session.name == session_name) {
+            bail!("runtime {session_name} remains live after kill acknowledgement");
+        }
+        Ok(())
+    }
+
+    async fn rollback_started_workers(
+        &self,
+        ledger: &MissionLedger,
+        workers: &[(Task, String, AuthoritativeTaskAttempt, DateTime<Utc>)],
+    ) -> Vec<String> {
+        let mut failures = Vec::new();
+        for (_, session_name, attempt, _) in workers.iter().rev() {
+            match self.kill_and_confirm_session_absent(session_name).await {
+                Ok(()) => failures.extend(rollback_killed_worker_authority(
+                    ledger,
+                    &self.config.state_dir,
+                    session_name,
+                    attempt,
+                )),
+                Err(error) => failures.push(format!(
+                    "kill previously started worker {session_name}: {error}; authority retained"
+                )),
+            }
+        }
+        failures
+    }
+
     pub async fn new(config: OmegaConfig, options: OrchestratorOptions) -> Result<Self> {
         config.ensure_dirs()?;
         let mgr = SessionManager::connect().await?;
-        Ok(Self { config, options, mgr })
+        Ok(Self {
+            config,
+            options,
+            mgr,
+        })
     }
 
     pub async fn from_default_config() -> Result<Self> {
-        let config = OmegaConfig::load().unwrap_or_default();
+        let config = OmegaConfig::load().context(
+            "cannot load OmegaOS config for orchestrator; refusing default authority fallback",
+        )?;
         Self::new(config, OrchestratorOptions::default()).await
     }
 
@@ -106,19 +2254,214 @@ impl Orchestrator {
             "Mission planned"
         );
 
+        // The legacy Plan is now only a compatibility view. Freeze it into the
+        // canonical V3 contract and queue every attempt before any provider or
+        // rmux side effect can occur.
+        let ledger = MissionLedger::open(crate::oracle_lifecycle::mission_ledger_path(
+            &self.config.state_dir,
+        ))?;
+        let required_gates = if self.options.enforce_gate {
+            vec!["independent_verification".to_string()]
+        } else {
+            Vec::new()
+        };
+        let mut authority = prepare_authoritative_execution(
+            &ledger,
+            &mission,
+            &plan,
+            "omega-orchestrate",
+            required_gates,
+        )?;
         // 2. Build rubric for quality gate (saved upfront, evaluated later)
         let rubric = self.build_rubric(&mission, &plan);
-        if let Err(e) = rubric.write(&self.config.state_dir, &mission.id.0) {
-            tracing::warn!(error = %e, "Failed to persist rubric");
+        if let Err(error) = rubric.write(&self.config.state_dir, &mission.id.0) {
+            // No provider/rmux/scope effect has happened yet. Still record a
+            // typed terminal lifecycle rather than warning and dispatching an
+            // execution whose acceptance contract cannot be reproduced.
+            transition_authoritative_mission(
+                &ledger,
+                &mission.id,
+                MissionState::Running,
+                "omega-orchestrate",
+            )?;
+            let persistence_failures = persist_dispatch_failure_state(&ledger, &mission.id, false);
+            if !persistence_failures.is_empty() {
+                bail!(
+                    "rubric persistence failed before dispatch: {error}; mission failure persistence also failed: {}",
+                    persistence_failures.join("; ")
+                );
+            }
+            return Err(error).context("persisting authoritative rubric before dispatch");
         }
+        transition_authoritative_mission(
+            &ledger,
+            &mission.id,
+            MissionState::Running,
+            "omega-orchestrate",
+        )?;
 
         // 3. Dispatch workers per plan
         let mut workers = Vec::with_capacity(plan.tasks.len());
         for task in &plan.tasks {
+            let session_name = self.session_name_for(&mission, task);
+            {
+                let attempt = authority.attempt_mut(&task.id)?;
+                if let Err(error) = claim_authoritative_scopes(
+                    &ledger,
+                    &self.config.state_dir,
+                    &mission.working_dir,
+                    attempt,
+                    &session_name,
+                    &task.files_owned,
+                    self.options.worker_timeout,
+                ) {
+                    let primary =
+                        error.context(format!("claiming authoritative scope for {}", task.id));
+                    let mut rollback_failures =
+                        self.rollback_started_workers(&ledger, &workers).await;
+                    if attempt.owner.is_some() {
+                        match self.kill_and_confirm_session_absent(&session_name).await {
+                            Ok(()) => rollback_failures.extend(rollback_killed_worker_authority(
+                                &ledger,
+                                &self.config.state_dir,
+                                &session_name,
+                                attempt,
+                            )),
+                            Err(kill_error) => rollback_failures.push(format!(
+                                "scope acquisition failed but runtime absence could not be proved for {session_name}: {kill_error:#}; authority retained"
+                            )),
+                        }
+                    }
+                    let rollback_incomplete = !rollback_failures.is_empty();
+                    rollback_failures.extend(persist_dispatch_failure_state(
+                        &ledger,
+                        &mission.id,
+                        rollback_incomplete,
+                    ));
+                    if rollback_failures.is_empty() {
+                        return Err(primary);
+                    }
+                    return Err(anyhow::anyhow!(
+                        "{primary:#}; authority failure-state persistence incomplete: {}",
+                        rollback_failures.join("; ")
+                    ));
+                }
+            }
+            let attempt = authority.attempt(&task.id)?.clone();
+            if let Err(error) = transition_authoritative_attempt(
+                &ledger,
+                &attempt,
+                TaskAttemptState::Running,
+                &session_name,
+            ) {
+                let primary = error.context(
+                    "worker dispatch refused because its V3 Running write-ahead transition failed",
+                );
+                let mut rollback_failures = self.rollback_started_workers(&ledger, &workers).await;
+                match self.kill_and_confirm_session_absent(&session_name).await {
+                    Ok(()) => rollback_failures.extend(rollback_killed_worker_authority(
+                        &ledger,
+                        &self.config.state_dir,
+                        &session_name,
+                        &attempt,
+                    )),
+                    Err(kill_error) => rollback_failures.push(format!(
+                        "Running transition failed and runtime absence could not be proved for {session_name}: {kill_error:#}; authority retained"
+                    )),
+                }
+                let rollback_incomplete = !rollback_failures.is_empty();
+                rollback_failures.extend(persist_dispatch_failure_state(
+                    &ledger,
+                    &mission.id,
+                    rollback_incomplete,
+                ));
+                if rollback_failures.is_empty() {
+                    return Err(primary);
+                }
+                return Err(anyhow::anyhow!(
+                    "{primary:#}; pre-dispatch rollback incomplete: {}",
+                    rollback_failures.join("; ")
+                ));
+            }
+            let dispatched_at = Utc::now();
             match self.dispatch_task(&mission, task).await {
-                Ok(session_name) => workers.push((task.clone(), session_name)),
+                Ok(spawned_session) => {
+                    if spawned_session != session_name {
+                        let primary = anyhow::anyhow!(
+                            "worker identity drift: authority={}, spawned={}",
+                            session_name,
+                            spawned_session
+                        );
+                        let mut rollback_failures =
+                            self.rollback_started_workers(&ledger, &workers).await;
+                        let killed =
+                            match self.kill_and_confirm_session_absent(&spawned_session).await {
+                                Ok(()) => true,
+                                Err(error) => {
+                                    rollback_failures.push(format!(
+                                        "kill unexpected session {spawned_session}: {error}"
+                                    ));
+                                    false
+                                }
+                            };
+                        if killed {
+                            match self.kill_and_confirm_session_absent(&session_name).await {
+                                Ok(()) => rollback_failures.extend(
+                                    rollback_killed_worker_authority(
+                                        &ledger,
+                                        &self.config.state_dir,
+                                        &session_name,
+                                        &attempt,
+                                    ),
+                                ),
+                                Err(error) => rollback_failures.push(format!(
+                                    "authority runtime {session_name} could not be proved absent after identity drift: {error:#}; authority retained"
+                                )),
+                            }
+                        }
+                        let rollback_incomplete = !rollback_failures.is_empty();
+                        rollback_failures.extend(persist_dispatch_failure_state(
+                            &ledger,
+                            &mission.id,
+                            rollback_incomplete,
+                        ));
+                        if rollback_failures.is_empty() {
+                            return Err(primary);
+                        }
+                        return Err(anyhow::anyhow!(
+                            "{primary}; spawn rollback incomplete: {}",
+                            rollback_failures.join("; ")
+                        ));
+                    }
+                    workers.push((task.clone(), session_name, attempt, dispatched_at));
+                }
                 Err(e) => {
                     tracing::error!(task = %task.id, error = %e, "Dispatch failed");
+                    let mut rollback_failures =
+                        self.rollback_started_workers(&ledger, &workers).await;
+                    match self.kill_and_confirm_session_absent(&session_name).await {
+                        Ok(()) => rollback_failures.extend(rollback_killed_worker_authority(
+                            &ledger,
+                            &self.config.state_dir,
+                            &session_name,
+                            &attempt,
+                        )),
+                        Err(error) => rollback_failures.push(format!(
+                            "dispatch returned error but runtime absence could not be proved for {session_name}: {error:#}; authority retained"
+                        )),
+                    }
+                    let rollback_incomplete = !rollback_failures.is_empty();
+                    rollback_failures.extend(persist_dispatch_failure_state(
+                        &ledger,
+                        &mission.id,
+                        rollback_incomplete,
+                    ));
+                    if !rollback_failures.is_empty() {
+                        return Err(anyhow::anyhow!(
+                            "dispatch failed: {e:#}; rollback incomplete: {}",
+                            rollback_failures.join("; ")
+                        ));
+                    }
                     return Ok(Outcome {
                         mission_id: mission.id.clone(),
                         status: OutcomeStatus::Failed,
@@ -135,26 +2478,105 @@ impl Orchestrator {
 
         // 4. Monitor each worker for completion (event-driven)
         let mut results = Vec::with_capacity(workers.len());
-        for (task, session) in &workers {
+        for (task, session, attempt, dispatched_at) in &workers {
             let started = Instant::now();
             let result = self
-                .wait_for_worker_done(session, self.options.worker_timeout)
+                .wait_for_worker_done(
+                    &ledger,
+                    attempt,
+                    session,
+                    *dispatched_at,
+                    self.options.worker_timeout,
+                )
                 .await;
             let duration_secs = started.elapsed().as_secs();
 
             match result {
                 Ok(done) => {
+                    if let Err(kill_error) = self.kill_and_confirm_session_absent(session).await {
+                        // A narrated completion never authorizes terminal state
+                        // while its writer can still execute. Fence it on the
+                        // nonterminal Blocked branch and preserve all scopes.
+                        ensure_attempt_verifying(&ledger, attempt, session)?;
+                        finalize_nonclean_attempt(
+                            &ledger,
+                            attempt,
+                            session,
+                            TaskAttemptState::Blocked,
+                        )?;
+                        results.push(WorkerResult {
+                            task_id: task.id.clone(),
+                            session_name: session.clone(),
+                            status: DoneStatus::Blocked,
+                            summary: format!(
+                                "Completion held because runtime containment failed: {kill_error:#}"
+                            ),
+                            commit: done.commit.clone(),
+                            duration_secs,
+                        });
+                        continue;
+                    }
+                    ensure_attempt_verifying(&ledger, attempt, session)?;
+                    let mut effective_status = done.status;
+                    let mut effective_summary = done.summary.clone();
+                    let mut accepted_persisted = false;
+                    let mut failed_persisted = false;
+                    match done.status {
+                        DoneStatus::DoneClean => {
+                            let outcome = verify_and_finalize_candidate(
+                                &ledger,
+                                &attempt.mission_id,
+                                &attempt.task_id,
+                                &attempt.attempt_id,
+                                attempt.plan_revision,
+                                session,
+                                &done,
+                                &mission.working_dir,
+                            )?;
+                            if !outcome.accepted {
+                                effective_status = DoneStatus::Pending;
+                                effective_summary = format!(
+                                    "{}; independent verification rejected: {}",
+                                    done.summary,
+                                    if outcome.verification.failures.is_empty() {
+                                        "attempt was already finalized on a non-acceptable branch"
+                                            .to_string()
+                                    } else {
+                                        outcome.verification.failures.join(" | ")
+                                    }
+                                );
+                            } else if outcome.attempt_state == TaskAttemptState::Accepted {
+                                accepted_persisted = true;
+                            }
+                        }
+                        DoneStatus::Failed => {
+                            finalize_nonclean_attempt(
+                                &ledger,
+                                attempt,
+                                session,
+                                TaskAttemptState::Failed,
+                            )?;
+                            failed_persisted = true;
+                        }
+                        DoneStatus::Blocked | DoneStatus::Pending => finalize_nonclean_attempt(
+                            &ledger,
+                            attempt,
+                            session,
+                            TaskAttemptState::Blocked,
+                        )?,
+                    }
                     results.push(WorkerResult {
                         task_id: task.id.clone(),
                         session_name: session.clone(),
-                        status: done.status,
-                        summary: done.summary.clone(),
+                        status: effective_status,
+                        summary: effective_summary,
                         commit: done.commit.clone(),
                         duration_secs,
                     });
 
-                    if self.options.auto_ack && done.status == DoneStatus::DoneClean {
-                        let _ = scope::ScopeClaim::release(&self.config.state_dir, session);
+                    if accepted_persisted || failed_persisted {
+                        release_authoritative_scopes(&ledger, &self.config.state_dir, attempt)
+                            .context("releasing scopes after contained terminal task state")?;
                     }
                 }
                 Err(e) => {
@@ -172,23 +2594,60 @@ impl Orchestrator {
                             format!("Monitoring error: {}", e)
                         }
                     };
-                    results.push(WorkerResult {
-                        task_id: task.id.clone(),
-                        session_name: session.clone(),
-                        status: DoneStatus::Failed,
-                        summary,
-                        commit: None,
-                        duration_secs,
-                    });
+                    match self.kill_and_confirm_session_absent(session).await {
+                        Ok(()) => {
+                            ensure_attempt_verifying(&ledger, attempt, session)?;
+                            finalize_nonclean_attempt(
+                                &ledger,
+                                attempt,
+                                session,
+                                TaskAttemptState::Failed,
+                            )?;
+                            release_authoritative_scopes(&ledger, &self.config.state_dir, attempt)
+                                .context("releasing scopes after contained monitor failure")?;
+                            results.push(WorkerResult {
+                                task_id: task.id.clone(),
+                                session_name: session.clone(),
+                                status: DoneStatus::Failed,
+                                summary,
+                                commit: None,
+                                duration_secs,
+                            });
+                        }
+                        Err(kill_error) => {
+                            ensure_attempt_verifying(&ledger, attempt, session)?;
+                            finalize_nonclean_attempt(
+                                &ledger,
+                                attempt,
+                                session,
+                                TaskAttemptState::Blocked,
+                            )?;
+                            results.push(WorkerResult {
+                                task_id: task.id.clone(),
+                                session_name: session.clone(),
+                                status: DoneStatus::Blocked,
+                                summary: format!(
+                                    "{summary}; runtime containment failed: {kill_error:#}"
+                                ),
+                                commit: None,
+                                duration_secs,
+                            });
+                        }
+                    }
                 }
             }
         }
 
+        transition_authoritative_mission(
+            &ledger,
+            &mission.id,
+            MissionState::Verifying,
+            "omega-orchestrate",
+        )?;
+
         // 5. Compute outcome status
-        let all_clean = !results.is_empty()
-            && results
-                .iter()
-                .all(|r| r.status == DoneStatus::DoneClean);
+        let all_clean =
+            !results.is_empty() && results.iter().all(|r| r.status == DoneStatus::DoneClean);
         let any_failed = results.iter().any(|r| r.status == DoneStatus::Failed);
         let status = if results.is_empty() {
             // Zero workers dispatched means the mission was never executed.
@@ -203,20 +2662,23 @@ impl Orchestrator {
             OutcomeStatus::PartialSuccess
         };
 
-        // 6. Quality gate. Always COMPUTE it when the run reached Success so the
-        // verdict is recorded in the Outcome for observability — even when the
-        // orchestrator is configured not to ENFORCE it (a misconfigured audit
-        // mission would otherwise ship with no gate and no warning). Enforcement
-        // (downgrading Success → PartialSuccess on a failing gate) is applied later
-        // only when `enforce_gate` is set.
+        // 6. Quality gate. Every successful execution computes and persists the
+        // exact plan-bound gate before mission acceptance is attempted.
         let gate = if status == OutcomeStatus::Success {
             if !self.options.enforce_gate {
                 tracing::warn!(
                     mission_id = %mission.id.0,
-                    "enforce_gate=false; quality gate computed for observability but NOT enforced"
+                    "enforce_gate=false affects plan requirements only; authoritative mission acceptance still requires the quality gate"
                 );
             }
-            Some(self.run_quality_gate(&mission, &rubric, &results))
+            Some(Self::run_quality_gate(
+                &self.config.state_dir,
+                &ledger,
+                &mission,
+                &authority.plan,
+                &rubric,
+                &results,
+            )?)
         } else {
             None
         };
@@ -238,15 +2700,68 @@ impl Orchestrator {
             );
         }
 
-        // 7. Build final outcome. A failing gate downgrades Success only when the
-        // gate is ENFORCED — when enforce_gate=false the gate is recorded for
-        // observability (above) but must not alter the outcome status.
+        // 7. A failed authoritative gate can never ship, including through the
+        // compatibility `enforce_gate=false` option.
         let final_status = match (&gate, status) {
-            (Some(g), OutcomeStatus::Success) if self.options.enforce_gate && !g.overall_pass => {
-                OutcomeStatus::PartialSuccess
-            }
+            (Some(g), OutcomeStatus::Success) if !g.overall_pass => OutcomeStatus::PartialSuccess,
             (_, s) => s,
         };
+
+        match final_status {
+            OutcomeStatus::Success => {
+                transition_authoritative_mission(
+                    &ledger,
+                    &mission.id,
+                    MissionState::Accepted,
+                    "omega-orchestrate",
+                )?;
+                transition_authoritative_mission(
+                    &ledger,
+                    &mission.id,
+                    MissionState::Reporting,
+                    "omega-orchestrate",
+                )?;
+                transition_authoritative_mission(
+                    &ledger,
+                    &mission.id,
+                    MissionState::Delivered,
+                    "omega-orchestrate",
+                )?;
+            }
+            OutcomeStatus::PartialSuccess => {
+                let target = if results.iter().any(|result| {
+                    matches!(result.status, DoneStatus::Blocked | DoneStatus::Pending)
+                }) {
+                    MissionState::Blocked
+                } else {
+                    MissionState::CorrectionRequired
+                };
+                transition_authoritative_mission(
+                    &ledger,
+                    &mission.id,
+                    target,
+                    "omega-orchestrate",
+                )?;
+            }
+            OutcomeStatus::Failed => {
+                transition_authoritative_mission(
+                    &ledger,
+                    &mission.id,
+                    MissionState::Failed,
+                    "omega-orchestrate",
+                )?;
+            }
+            OutcomeStatus::Aborted => {
+                // There is no Verifying -> Cancelled edge: once effects ran,
+                // an abort is a failed verification, not a pre-run cancel.
+                transition_authoritative_mission(
+                    &ledger,
+                    &mission.id,
+                    MissionState::Failed,
+                    "omega-orchestrate",
+                )?;
+            }
+        }
 
         let summary = self.summarize(&mission, &plan, &results, gate.as_ref());
 
@@ -266,10 +2781,7 @@ impl Orchestrator {
     /// Routes through the classifier and decomposes by complexity.
     pub async fn plan(&self, mission: &Mission) -> Result<Plan> {
         let decision = classify_mission(&mission.text);
-        let agent = self
-            .config
-            .agent_command
-            .clone();
+        let agent = self.config.agent_command.clone();
 
         let strategy = match decision.complexity {
             Complexity::Simple => PlanStrategy::Direct,
@@ -284,7 +2796,11 @@ impl Orchestrator {
                     id: format!("{}-t1", mission.id.0),
                     name: "main".to_string(),
                     prompt: mission.text.clone(),
-                    files_owned: Vec::new(),
+                    // A direct coding worker owns the repository by default.
+                    // The legacy empty scope was an unfenced write bypass: two
+                    // direct missions could edit the same checkout concurrently
+                    // while both claimed to satisfy R-SCOPE.
+                    files_owned: vec!["**/*".to_string()],
                     depends_on: Vec::new(),
                     agent: agent.clone(),
                     estimated_minutes: decision.complexity.estimated_minutes(),
@@ -324,17 +2840,22 @@ impl Orchestrator {
         })
     }
 
-    /// Dispatch a single task as a worker session.
-    async fn dispatch_task(&self, mission: &Mission, task: &Task) -> Result<String> {
+    fn session_name_for(&self, mission: &Mission, task: &Task) -> String {
         // Include the mission id so session names are globally unique, not just
         // per-project: two concurrent missions for the SAME project would otherwise
         // collide on identical names (clobbering each other's panes + done.json).
         // The id stays deterministic within a mission, so resumability is preserved.
-        let session_name = if task.name == "oracle" {
+        if task.name == "oracle" {
             format!("oracle-{}-{}", mission.project, mission.id.0)
         } else {
             format!("{}-worker-{}-{}", mission.project, task.name, mission.id.0)
-        };
+        }
+    }
+
+    /// Dispatch a single task as a worker session. The caller must already
+    /// have frozen and queued its V3 attempt and acquired every scope lease.
+    async fn dispatch_task(&self, mission: &Mission, task: &Task) -> Result<String> {
+        let session_name = self.session_name_for(mission, task);
 
         // Clear any STALE done.json from a prior mission. Session names are
         // deterministic per project (oracle-<project> / <project>-worker-<name>),
@@ -342,26 +2863,20 @@ impl Orchestrator {
         // wait_for_worker_done return that OLD result instantly — reporting the
         // previous mission's outcome as this one's. Remove it before dispatch so
         // the wait only ever observes a fresh signal from THIS mission.
-        let done_path = self
-            .config
-            .state_dir
-            .join(format!("worker-{}.done.json", session_name));
-        let _ = std::fs::remove_file(&done_path);
-
-        // Claim file scope upfront — fail fast if conflict
-        if !task.files_owned.is_empty() {
-            scope::claim_or_reject(
-                &self.config.state_dir,
-                &session_name,
-                task.files_owned.clone(),
-            )
-            .map_err(|e| OrchestrationError::ScopeConflict {
-                worker: session_name.clone(),
-                detail: e.to_string(),
-            })?;
+        DoneSignal::remove(&self.config.state_dir, &session_name)
+            .context("clearing stale worker completion authority before dispatch")?;
+        if session_name.starts_with("oracle-") {
+            crate::done::OracleDoneSignal::clear_strict(&self.config.state_dir, &session_name)
+                .context("clearing stale oracle completion authority before dispatch")?;
         }
 
-        let agent = Agent::from_name(&task.agent).unwrap_or(Agent::Codex);
+        let agent = Agent::from_name(&task.agent).ok_or_else(|| {
+            anyhow::anyhow!(
+                "task {} declares unknown agent `{}`; refusing implicit provider fallback",
+                task.id,
+                task.agent
+            )
+        })?;
 
         // THE FUNNEL — inject the role-scoped Laws + operational rules. The
         // `omega orchestrate` dispatch path previously spawned oracles AND workers
@@ -374,10 +2889,22 @@ impl Orchestrator {
             crate::rules::RuleScope::Worker
         };
         let mut full_prompt = task.prompt.clone();
-        let ctx = crate::rules::agent_context_block_for_mission(scope, &full_prompt);
-        if !ctx.is_empty() {
+        let compiled = crate::rules::compile_rule_context_for_provider(
+            scope,
+            Some(&full_prompt),
+            provider_family_for_agent(agent),
+        )
+        .map_err(|error| {
+            anyhow::anyhow!(
+                "cannot compile policy context for {} task {}: {}",
+                agent.name(),
+                task.id,
+                error
+            )
+        })?;
+        if !compiled.markdown.is_empty() {
             full_prompt.push_str("\n\n");
-            full_prompt.push_str(&ctx);
+            full_prompt.push_str(&compiled.markdown);
         }
 
         self.mgr
@@ -397,42 +2924,114 @@ impl Orchestrator {
     /// to detect pane death + filesystem polling for the done.json marker.
     async fn wait_for_worker_done(
         &self,
+        ledger: &MissionLedger,
+        attempt: &AuthoritativeTaskAttempt,
         session_name: &str,
+        dispatched_at: DateTime<Utc>,
         max_wait: Duration,
     ) -> Result<DoneSignal, OrchestrationError> {
-        let done_path = self
-            .config
-            .state_dir
-            .join(format!("worker-{}.done.json", session_name));
         let is_oracle = session_name.starts_with("oracle-");
+        let renewal_ttl = max_wait.max(Duration::from_secs(60));
 
         let deadline = Instant::now() + max_wait;
         let mut interval = tokio::time::interval(self.options.poll_interval);
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
         loop {
+            for lease in &attempt.leases {
+                ledger
+                    .renew_lease(
+                        &lease.resource_key,
+                        &lease.owner,
+                        lease.fencing_token,
+                        renewal_ttl,
+                    )
+                    .map_err(|error| {
+                        OrchestrationError::Other(anyhow::anyhow!(
+                            "renewing exact lease {} for {} failed: {}",
+                            lease.resource_key,
+                            session_name,
+                            error
+                        ))
+                    })?;
+            }
             if is_oracle {
-                if let Ok(Some(oracle_done)) =
-                    crate::done::OracleDoneSignal::read(&self.config.state_dir, session_name)
-                {
-                    let mut signal = DoneSignal::new(
-                        session_name,
-                        oracle_done.status,
-                        &oracle_done.summary,
-                    );
-                    signal.todos_total = 1;
-                    signal.todos_completed =
-                        u32::from(oracle_done.status == DoneStatus::DoneClean);
-                    signal.pending_actions = oracle_done.pending_actions;
-                    signal.finished_at = oracle_done.finished_at;
-                    return Ok(signal);
+                match crate::done::OracleDoneSignal::read(&self.config.state_dir, session_name) {
+                    Ok(Some(oracle_done)) => {
+                        if oracle_done.oracle.strip_prefix("oracle-")
+                            != session_name.strip_prefix("oracle-")
+                        {
+                            return Err(OrchestrationError::Other(anyhow::anyhow!(
+                                "oracle completion identity mismatch: expected {}, received {}",
+                                session_name,
+                                oracle_done.oracle
+                            )));
+                        }
+                        let mut signal =
+                            DoneSignal::new(session_name, oracle_done.status, &oracle_done.summary);
+                        signal.todos_total = 1;
+                        signal.todos_completed =
+                            u32::from(oracle_done.status == DoneStatus::DoneClean);
+                        signal.pending_actions = oracle_done.pending_actions;
+                        signal.finished_at = oracle_done.finished_at;
+                        signal.projection = oracle_done.projection;
+                        validate_done_identity_and_freshness(
+                            &signal,
+                            session_name,
+                            dispatched_at,
+                            Utc::now(),
+                        )?;
+                        let projection = signal.projection.as_ref().ok_or_else(|| {
+                            OrchestrationError::Other(anyhow::anyhow!(
+                                "oracle completion {} has no V3 ledger provenance",
+                                session_name
+                            ))
+                        })?;
+                        let completion_event = validate_done_projection(
+                            ledger,
+                            attempt,
+                            session_name,
+                            projection,
+                            true,
+                        )?;
+                        validate_done_payload_binding(&signal, &completion_event, true)?;
+                        bridge_v3_oracle_candidate(&mut signal, true);
+                        // OracleDoneSignal predates the worker artifact schema. Its
+                        // exact ledger provenance establishes signal identity only;
+                        // the immutable task verifier still supplies content proof.
+                        signal
+                            .corroboration
+                            .push(crate::done::CorroborationSource::Other(
+                                "validated_ledger_provenance".to_string(),
+                            ));
+                        return Ok(signal);
+                    }
+                    Ok(None) => {}
+                    Err(error) => {
+                        return Err(OrchestrationError::Other(error.context(format!(
+                            "reading strict oracle completion authority for {session_name}"
+                        ))));
+                    }
                 }
             }
-            if done_path.exists() {
-                let content = std::fs::read_to_string(&done_path)
-                    .map_err(|e| OrchestrationError::Other(e.into()))?;
-                let signal: DoneSignal = serde_json::from_str(&content)
-                    .map_err(|e| OrchestrationError::Other(e.into()))?;
+            if let Some(signal) = DoneSignal::read(&self.config.state_dir, session_name)
+                .map_err(OrchestrationError::Other)?
+            {
+                validate_done_identity_and_freshness(
+                    &signal,
+                    session_name,
+                    dispatched_at,
+                    Utc::now(),
+                )?;
+                let projection = signal.projection.as_ref().ok_or_else(|| {
+                    OrchestrationError::Other(anyhow::anyhow!(
+                        "worker completion {} has no V3 ledger provenance",
+                        session_name
+                    ))
+                })?;
+                let completion_event =
+                    validate_done_projection(ledger, attempt, session_name, projection, false)?;
+                validate_done_payload_binding(&signal, &completion_event, false)?;
                 return Ok(signal);
             }
 
@@ -490,141 +3089,486 @@ impl Orchestrator {
         Rubric::new(&mission.text, criteria)
     }
 
-    /// Execute the quality gate over the worker results.
+    /// Execute and persist a ledger-derived quality gate.
     ///
-    /// Wires the REAL adversarial pipeline (`gate::QualityGate::run`) into the
-    /// orchestrate path: a per-criterion rubric grade, a 3-lens multi-grader
-    /// consensus (R-21, ≥2/3 must agree), the Popper falsifier over adversarial
-    /// challenges (R-30, ≥12 cited challenges), the regression detector against
-    /// the prior persisted gate (R-22), the token-budget check (R-28), and the
-    /// citation enforcer (R-35). Each lens reads a DIFFERENT real signal from the
-    /// worker results so consensus is genuinely multi-angle, not one grader cloned
-    /// three times.
-    ///
-    /// HONEST SCOPE: the orchestrator only has worker METADATA here (done-status,
-    /// commit hash, summary, duration) — not file:line forensic evidence. The real
-    /// enforcers therefore judge that metadata truthfully: Popper requires ≥12
-    /// cited challenges and citations must reference real artifacts, so a metadata-
-    /// only run will surface those as honestly-not-passed rather than fabricating a
-    /// green. This is the truthful state and strictly better than the prior
-    /// hardcoded `Inconclusive` + `true` flags. When a forensic challenger worker is
-    /// dispatched (future work), its cited findings flow through this same path.
-    fn run_quality_gate(
-        &self,
+    /// Each challenge is a distinct, falsifiable assertion over the immutable
+    /// mission event stream. Its citation names the exact event id and sequence;
+    /// the acceptance transaction later recomputes every fact digest against that
+    /// same event. The three lenses deliberately consume different fact sets.
+    pub fn run_quality_gate(
+        state_dir: &Path,
+        ledger: &MissionLedger,
         mission: &Mission,
+        plan: &PlanContract,
         rubric: &Rubric,
         results: &[WorkerResult],
-    ) -> GateResult {
+    ) -> Result<GateResult> {
         let oracle = format!("mission-{}", mission.id.0);
-        let clean = results
+        if plan
+            .required_gates
             .iter()
-            .filter(|r| r.status == DoneStatus::DoneClean)
-            .count();
-        let with_commit = results.iter().filter(|r| r.commit.is_some()).count();
+            .any(|gate| gate == "independent_verification")
+        {
+            let evidence_by_task: BTreeMap<String, String> = ledger
+                .events(&mission.id)?
+                .into_iter()
+                .filter(|event| event.kind == "task_verifier_observations_recorded")
+                .filter_map(|event| {
+                    serde_json::from_value::<RecordedContractVerification>(event.payload.clone())
+                        .ok()
+                        .filter(|record| {
+                            record.mission_id == mission.id.as_str()
+                                && record.plan_revision == plan.revision
+                                && record.plan_digest == plan.content_digest
+                                && record.verification.passed
+                        })
+                        .map(|record| (record.task_id, event.event_id))
+                })
+                .collect();
+            let evidence = evidence_by_task.into_values().collect::<Vec<_>>();
+            let passed = evidence.len() == plan.tasks.len();
+            record_plan_requirement_observation(
+                ledger,
+                &mission.id,
+                PlanRequirementKind::Gate,
+                "independent_verification",
+                passed,
+                "omega-quality-gate",
+                evidence,
+            )?;
+        }
+        let before_start = ledger.events(&mission.id)?;
+        let head = before_start
+            .last()
+            .ok_or_else(|| anyhow::anyhow!("mission event stream is empty"))?;
+        let start_event = append_mission_observation(
+            ledger,
+            &mission.id,
+            "omega-quality-gate",
+            "quality_gate_started",
+            "quality-gate-start",
+            serde_json::json!({
+                "schema_version": ACCEPTANCE_OBSERVATION_SCHEMA_VERSION,
+                "mission_id": mission.id.as_str(),
+                "plan_revision": plan.revision,
+                "plan_digest": plan.content_digest,
+                "evidence_head_event_id": head.event_id,
+                "evidence_head_sequence": head.sequence,
+                "worker_results_digest": blake3::hash(&serde_json::to_vec(results)?).to_hex().to_string(),
+            }),
+        )?;
+        let events = ledger.events(&mission.id)?;
+        let projection = ledger
+            .mission(&mission.id)?
+            .ok_or_else(|| anyhow::anyhow!("mission projection disappeared"))?;
+        let immutable = ledger
+            .mission_record(&mission.id)?
+            .ok_or_else(|| anyhow::anyhow!("immutable mission record disappeared"))?;
+        let attempts = ledger.task_attempts(&mission.id)?;
+        let replayed_attempts = ledger.replay_task_attempts(&mission.id)?;
+        let replayed_projection = ledger.replay(&mission.id)?;
 
-        // Per-criterion grades from real worker outcomes, each carrying a cited
-        // evidence string (the worker's commit hash when present, else its session).
+        let find_event = |predicate: &dyn Fn(&crate::mission_ledger::MissionEvent) -> bool| {
+            events.iter().find(|event| predicate(event))
+        };
+        let event_for_state = |state: TaskAttemptState| {
+            find_event(&|event| {
+                event
+                    .resulting_task_attempt
+                    .as_ref()
+                    .is_some_and(|attempt| attempt.state == state)
+            })
+        };
+        let accepted_sequences: BTreeMap<_, _> = events
+            .iter()
+            .filter_map(|event| {
+                event.resulting_task_attempt.as_ref().and_then(|attempt| {
+                    (attempt.state == TaskAttemptState::Accepted)
+                        .then_some((attempt.task_id.as_str(), event.sequence))
+                })
+            })
+            .collect();
+        let all_dependencies_ordered = plan.tasks.iter().all(|task| {
+            accepted_sequences
+                .get(task.task_id.as_str())
+                .is_some_and(|task_sequence| {
+                    task.depends_on.iter().all(|dependency| {
+                        accepted_sequences
+                            .get(dependency.as_str())
+                            .is_some_and(|dependency_sequence| dependency_sequence < task_sequence)
+                    })
+                })
+        });
+        let exact_result_tasks: BTreeSet<_> = results
+            .iter()
+            .map(|result| result.task_id.as_str())
+            .collect();
+        let planned_tasks: BTreeSet<_> = plan
+            .tasks
+            .iter()
+            .map(|task| task.task_id.as_str())
+            .collect();
+        let exact_worker_results = exact_result_tasks.len() == results.len()
+            && exact_result_tasks == planned_tasks
+            && results
+                .iter()
+                .all(|result| result.status == DoneStatus::DoneClean);
+        let latest_attempt_ids: BTreeMap<_, _> =
+            plan.tasks
+                .iter()
+                .filter_map(|task| {
+                    attempts
+                        .iter()
+                        .filter(|attempt| {
+                            attempt.plan_revision == plan.revision
+                                && attempt.task_id == task.task_id.as_str()
+                        })
+                        .max_by_key(|attempt| {
+                            events
+                                .iter()
+                                .filter(|event| {
+                                    event.resulting_task_attempt.as_ref().is_some_and(|result| {
+                                        result.attempt_id == attempt.attempt_id
+                                    })
+                                })
+                                .map(|event| event.sequence)
+                                .max()
+                                .unwrap_or(0)
+                        })
+                        .map(|attempt| (task.task_id.as_str(), attempt.attempt_id.as_str()))
+                })
+                .collect();
+        let exact_attempt_coverage = plan.tasks.iter().all(|task| {
+            let task_attempts: Vec<_> = attempts
+                .iter()
+                .filter(|attempt| {
+                    attempt.plan_revision == plan.revision
+                        && attempt.task_id == task.task_id.as_str()
+                })
+                .collect();
+            let Some(latest_id) = latest_attempt_ids.get(task.task_id.as_str()) else {
+                return false;
+            };
+            task_attempts.iter().all(|attempt| {
+                if attempt.attempt_id == **latest_id {
+                    attempt.state == TaskAttemptState::Accepted
+                } else {
+                    attempt.state.is_terminal()
+                }
+            })
+        });
+        let running_owners_match = plan.tasks.iter().all(|task| {
+            let latest_id = latest_attempt_ids.get(task.task_id.as_str()).copied();
+            let owner = events.iter().rev().find_map(|event| {
+                event.resulting_task_attempt.as_ref().and_then(|attempt| {
+                    (attempt.plan_revision == plan.revision
+                        && attempt.task_id == task.task_id.as_str()
+                        && Some(attempt.attempt_id.as_str()) == latest_id
+                        && attempt.state == TaskAttemptState::Running)
+                        .then_some(event.actor.as_str())
+                })
+            });
+            owner.is_some_and(|owner| {
+                results.iter().any(|result| {
+                    result.task_id == task.task_id.as_str() && result.session_name == owner
+                })
+            })
+        });
+        let exact_candidate_provenance = plan.tasks.iter().all(|task| {
+            let latest_id = latest_attempt_ids.get(task.task_id.as_str()).copied();
+            events.iter().any(|event| {
+                (is_worker_completion_candidate_kind(&event.kind)
+                    || event.kind == "legacy_oracle_completion_candidate")
+                    && event
+                    .resulting_task_attempt
+                    .as_ref()
+                    .is_some_and(|attempt| {
+                        attempt.plan_revision == plan.revision
+                            && attempt.task_id == task.task_id.as_str()
+                            && Some(attempt.attempt_id.as_str()) == latest_id
+                            && attempt.state == TaskAttemptState::CandidateDone
+                    })
+            })
+        });
+        let exact_verifier_records = plan.tasks.iter().all(|task| {
+            let latest_id = latest_attempt_ids.get(task.task_id.as_str()).copied();
+            events.iter().any(|event| {
+                event.kind == "task_verifier_observations_recorded"
+                    && serde_json::from_value::<RecordedContractVerification>(event.payload.clone())
+                        .is_ok_and(|record| {
+                            record.schema_version == ACCEPTANCE_OBSERVATION_SCHEMA_VERSION
+                                && record.mission_id == mission.id.as_str()
+                                && record.task_id == task.task_id.as_str()
+                                && Some(record.attempt_id.as_str()) == latest_id
+                                && record.plan_revision == plan.revision
+                                && record.plan_digest == plan.content_digest
+                                && record.verification.passed
+                                && record.verification.failures.is_empty()
+                                && record.verification.observations.len()
+                                    == task.verifier_checks.len()
+                        })
+            })
+        });
+        let no_active_leases = attempts.iter().all(|attempt| {
+            ledger
+                .active_leases_for_attempt(&mission.id, &attempt.task_id, &attempt.attempt_id)
+                .is_ok_and(|leases| leases.is_empty())
+        });
+        let no_unresolved_issues = events
+            .iter()
+            .filter(|event| {
+                matches!(
+                    event.kind.as_str(),
+                    "mission_acceptance_invalidated" | "mission_blocker_recorded"
+                ) && event
+                    .plan_revision
+                    .is_none_or(|revision| revision == plan.revision)
+            })
+            .all(|issue| {
+                let expected_kind = if issue.kind == "mission_acceptance_invalidated" {
+                    "mission_acceptance_revalidated"
+                } else {
+                    "mission_blocker_resolved"
+                };
+                events.iter().any(|event| {
+                    event.kind == expected_kind
+                        && event.sequence > issue.sequence
+                        && event.sequence < start_event.sequence
+                        && serde_json::from_value::<MissionIssueResolution>(event.payload.clone())
+                            .is_ok_and(|resolution| {
+                                resolution.schema_version == ACCEPTANCE_OBSERVATION_SCHEMA_VERSION
+                                    && resolution.mission_id == mission.id.as_str()
+                                    && resolution.plan_revision == plan.revision
+                                    && resolution.plan_digest == plan.content_digest
+                                    && resolution.issue_event_id == issue.event_id
+                                    && !resolution.resolved_by.trim().is_empty()
+                                    && !resolution.detail.trim().is_empty()
+                            })
+                })
+            });
+        let contiguous_events = events.iter().enumerate().all(|(index, event)| {
+            event.sequence == u64::try_from(index).unwrap_or(u64::MAX) + 1
+                && event.mission_id == mission.id
+        });
+        let replay_matches = replayed_projection == projection && replayed_attempts == attempts;
+
+        struct RawFact<'a> {
+            id: &'static str,
+            passed: bool,
+            detail: String,
+            event: Option<&'a crate::mission_ledger::MissionEvent>,
+        }
+        let raw = vec![
+            RawFact {
+                id: "immutable_mission_identity",
+                passed: serde_json::to_value(&immutable)? == serde_json::to_value(mission)?,
+                detail: "immutable mission row and mission_created payload match the execution input".to_string(),
+                event: find_event(&|event| event.kind == "mission_created"),
+            },
+            RawFact {
+                id: "contiguous_event_stream",
+                passed: contiguous_events,
+                detail: "event sequence is contiguous and every event belongs to the exact mission".to_string(),
+                event: find_event(&|event| event.kind == "mission_classified"),
+            },
+            RawFact {
+                id: "active_plan_integrity",
+                passed: plan.verify_integrity().is_ok()
+                    && projection.active_plan_revision == Some(plan.revision),
+                detail: "active immutable plan digest and revision verify".to_string(),
+                event: find_event(&|event| event.activated_plan_revision == Some(plan.revision)),
+            },
+            RawFact {
+                id: "task_attempt_coverage",
+                passed: exact_attempt_coverage && all_dependencies_ordered,
+                detail: "every planned task has one accepted attempt and dependencies were accepted first".to_string(),
+                event: event_for_state(TaskAttemptState::Queued),
+            },
+            RawFact {
+                id: "mission_execution_started",
+                passed: events.iter().any(|event| event.resulting_mission_state == Some(MissionState::Running)),
+                detail: "mission reached Running through the authoritative ledger".to_string(),
+                event: find_event(&|event| event.resulting_mission_state == Some(MissionState::Running)),
+            },
+            RawFact {
+                id: "worker_ownership_binding",
+                passed: running_owners_match,
+                detail: "each worker result is bound to the actor that owned its Running attempt".to_string(),
+                event: event_for_state(TaskAttemptState::Running),
+            },
+            RawFact {
+                id: "candidate_provenance",
+                passed: exact_candidate_provenance && exact_worker_results,
+                detail: "every clean worker result has an exact immutable CandidateDone provenance event".to_string(),
+                event: event_for_state(TaskAttemptState::CandidateDone),
+            },
+            RawFact {
+                id: "independent_verification_phase",
+                passed: plan.tasks.iter().all(|task| attempts.iter().any(|attempt| attempt.task_id == task.task_id.as_str() && attempt.version >= 4)),
+                detail: "every task crossed the independently-owned Verifying phase".to_string(),
+                event: event_for_state(TaskAttemptState::Verifying),
+            },
+            RawFact {
+                id: "verifier_observation_coverage",
+                passed: exact_verifier_records,
+                detail: "every frozen verifier set has one exact passing plan-bound observation record".to_string(),
+                event: find_event(&|event| event.kind == "task_verifier_observations_recorded"),
+            },
+            RawFact {
+                id: "accepted_task_authority",
+                passed: exact_attempt_coverage,
+                detail: "every authoritative task projection is exactly Accepted".to_string(),
+                event: event_for_state(TaskAttemptState::Accepted),
+            },
+            RawFact {
+                id: "mission_verification_barrier",
+                passed: projection.state == MissionState::Verifying && replay_matches,
+                detail: "mission is Verifying and replay matches all materialized projections".to_string(),
+                event: find_event(&|event| event.resulting_mission_state == Some(MissionState::Verifying)),
+            },
+            RawFact {
+                id: "release_and_issue_barrier",
+                passed: no_active_leases && no_unresolved_issues,
+                detail: "no active task leases or unresolved mission-level issues remain".to_string(),
+                event: Some(&start_event),
+            },
+        ];
+
+        let mut checks = Vec::new();
+        for fact in raw {
+            let Some(evidence) = fact.event else {
+                continue;
+            };
+            checks.push(MissionGateCheckObservation {
+                check_id: fact.id.to_string(),
+                fact_digest: mission_gate_fact_digest(
+                    fact.id,
+                    fact.passed,
+                    &fact.detail,
+                    evidence,
+                )?,
+                passed: fact.passed,
+                evidence_event_id: evidence.event_id.clone(),
+                evidence_sequence: evidence.sequence,
+                detail: fact.detail,
+            });
+        }
+        let check_pass = |id: &str| {
+            checks
+                .iter()
+                .find(|check| check.check_id == id)
+                .is_some_and(|check| check.passed)
+        };
+        let lens_specs = [
+            (
+                "code_reviewer",
+                vec![
+                    "immutable_mission_identity",
+                    "active_plan_integrity",
+                    "task_attempt_coverage",
+                    "verifier_observation_coverage",
+                    "accepted_task_authority",
+                ],
+            ),
+            (
+                "debugger",
+                vec![
+                    "contiguous_event_stream",
+                    "mission_execution_started",
+                    "independent_verification_phase",
+                    "mission_verification_barrier",
+                    "release_and_issue_barrier",
+                ],
+            ),
+            (
+                "general_purpose",
+                vec![
+                    "immutable_mission_identity",
+                    "worker_ownership_binding",
+                    "candidate_provenance",
+                    "accepted_task_authority",
+                    "release_and_issue_barrier",
+                ],
+            ),
+        ];
+        let lenses: Vec<MissionGateLensObservation> = lens_specs
+            .iter()
+            .map(|(lens, ids)| MissionGateLensObservation {
+                lens: (*lens).to_string(),
+                passed: ids.iter().all(|id| check_pass(id)),
+                fact_ids: ids.iter().map(|id| (*id).to_string()).collect(),
+            })
+            .collect();
+        let event_citation = |event_id: &str, sequence: u64| {
+            format!(
+                "log:mission-ledger:{} event {}#{}",
+                mission.id.as_str(),
+                event_id,
+                sequence
+            )
+        };
+        let grade_citation = checks
+            .iter()
+            .find(|check| check.check_id == "verifier_observation_coverage")
+            .or_else(|| checks.first())
+            .map(|check| event_citation(&check.evidence_event_id, check.evidence_sequence))
+            .unwrap_or_else(|| format!("log:mission-ledger:{} empty", mission.id.as_str()));
         let grades: Vec<GradeResult> = rubric
             .criteria
             .iter()
             .map(|criterion| {
-                let verdict = if results.iter().all(|r| r.status == DoneStatus::DoneClean) {
+                let verdict = if checks.len() >= 12 && checks.iter().all(|check| check.passed) {
                     GradeVerdict::Satisfied
-                } else if results.iter().any(|r| r.status == DoneStatus::Failed) {
-                    GradeVerdict::Unmet
                 } else {
-                    GradeVerdict::NeedsRevision
+                    GradeVerdict::Unmet
                 };
                 GradeResult {
                     criterion_id: criterion.id.clone(),
                     verdict,
-                    confidence: 0.7,
-                    evidence: format!(
-                        "{}/{} workers clean, {} committed",
-                        clean,
-                        results.len(),
-                        with_commit
-                    ),
+                    confidence: 1.0,
+                    evidence: grade_citation.clone(),
                 }
             })
             .collect();
-
-        // 3 independent verification lenses (R-21) — each grades a DIFFERENT real
-        // signal so the consensus is genuinely multi-angle:
-        //   • CodeReviewer — did workers actually produce commits?
-        //   • Debugger     — are there any Failed/Pending workers?
-        //   • GeneralPurpose — overall clean ratio.
-        let reviewer_verdict = if with_commit == results.len() && !results.is_empty() {
-            GradeVerdict::Satisfied
-        } else {
-            GradeVerdict::NeedsRevision
-        };
-        let debugger_verdict = if results.iter().any(|r| r.status == DoneStatus::Failed) {
-            GradeVerdict::Unmet
-        } else if results.iter().any(|r| r.status == DoneStatus::Pending) {
-            GradeVerdict::NeedsRevision
-        } else {
-            GradeVerdict::Satisfied
-        };
-        let general_verdict = if clean == results.len() && !results.is_empty() {
-            GradeVerdict::Satisfied
-        } else {
-            GradeVerdict::NeedsRevision
-        };
-        let grader_submissions: Vec<(GraderLens, GradeVerdict, f32, String)> = vec![
-            (
-                GraderLens::CodeReviewer,
-                reviewer_verdict,
-                0.7,
-                format!("{}/{} workers produced a commit", with_commit, results.len()),
-            ),
-            (
-                GraderLens::Debugger,
-                debugger_verdict,
-                0.7,
-                format!(
-                    "{} failed, {} pending",
-                    results.iter().filter(|r| r.status == DoneStatus::Failed).count(),
-                    results.iter().filter(|r| r.status == DoneStatus::Pending).count(),
-                ),
-            ),
-            (
-                GraderLens::GeneralPurpose,
-                general_verdict,
-                0.7,
-                format!("{}/{} workers reported done_clean", clean, results.len()),
-            ),
-        ];
-
-        // Adversarial challenges (R-30) — derived from real worker artifacts. Each
-        // challenge cites the worker's commit (or session) so the Popper falsifier
-        // and citation enforcer can judge them honestly. The DefectFound verdict is
-        // raised only on a real negative signal (Failed status / missing commit).
-        let challenges: Vec<AdversarialChallenge> = results
+        let grader_submissions: Vec<(GraderLens, GradeVerdict, f32, String)> = lenses
             .iter()
-            .map(|r| {
-                let cite = r
-                    .commit
-                    .as_deref()
-                    .map(|c| format!("commit {}", c))
-                    .unwrap_or_else(|| format!("session {}", r.session_name));
-                let result = match r.status {
-                    DoneStatus::Failed => ChallengeResult::DefectFound,
-                    DoneStatus::DoneClean if r.commit.is_some() => ChallengeResult::NoDefect,
-                    _ => ChallengeResult::Inconclusive,
-                };
-                AdversarialChallenge {
-                    challenge: format!(
-                        "Did task {} actually satisfy its objective?",
-                        r.task_id
-                    ),
-                    result,
-                    evidence: format!("worker {} — {}", r.session_name, cite),
-                }
+            .enumerate()
+            .map(|(index, lens)| {
+                let typed_lens = [
+                    GraderLens::CodeReviewer,
+                    GraderLens::Debugger,
+                    GraderLens::GeneralPurpose,
+                ][index];
+                let evidence = lens
+                    .fact_ids
+                    .first()
+                    .and_then(|id| checks.iter().find(|check| check.check_id == *id))
+                    .map(|check| event_citation(&check.evidence_event_id, check.evidence_sequence))
+                    .unwrap_or_else(|| grade_citation.clone());
+                (
+                    typed_lens,
+                    if lens.passed {
+                        GradeVerdict::Satisfied
+                    } else {
+                        GradeVerdict::Unmet
+                    },
+                    1.0,
+                    evidence,
+                )
             })
             .collect();
-
-        // Citations passed to the enforcer (R-35) — the per-worker evidence strings.
+        let challenges: Vec<AdversarialChallenge> = checks
+            .iter()
+            .map(|check| AdversarialChallenge {
+                challenge: format!("Falsify ledger assertion `{}`", check.check_id),
+                result: if check.passed {
+                    ChallengeResult::NoDefect
+                } else {
+                    ChallengeResult::DefectFound
+                },
+                evidence: event_citation(&check.evidence_event_id, check.evidence_sequence),
+            })
+            .collect();
         let claim_strings: Vec<String> = challenges
             .iter()
             .map(|c| c.evidence.clone())
@@ -632,15 +3576,11 @@ impl Orchestrator {
             .collect();
         let claims: Vec<&str> = claim_strings.iter().map(String::as_str).collect();
 
-        // Token spend (R-28): sum of worker durations as a coarse proxy until real
-        // per-worker token accounting is threaded through the done signal.
         let tokens_spent: u64 = results.iter().map(|r| r.duration_secs).sum();
+        let prior_gate = GateResult::read(state_dir, &oracle).ok().flatten();
 
-        // Prior gate for regression detection (R-22) — read from the state dir.
-        let prior_gate = GateResult::read(&self.config.state_dir, &oracle).ok().flatten();
-
-        let qg = crate::gate::QualityGate::with_default_cap(self.config.state_dir.clone());
-        qg.run(
+        let qg = crate::gate::QualityGate::with_default_cap(state_dir.to_path_buf());
+        let gate_result = qg.run(
             &oracle,
             rubric,
             grades,
@@ -649,7 +3589,43 @@ impl Orchestrator {
             prior_gate.as_ref(),
             tokens_spent,
             &claims,
-        )
+        );
+        let mut observation = MissionGateObservation {
+            schema_version: ACCEPTANCE_OBSERVATION_SCHEMA_VERSION,
+            mission_id: mission.id.as_str().to_string(),
+            plan_revision: plan.revision,
+            plan_digest: plan.content_digest.clone(),
+            gate_result_digest: String::new(),
+            overall_pass: gate_result.overall_pass
+                && checks.len() >= 12
+                && checks.iter().all(|check| check.passed)
+                && lenses.iter().all(|lens| lens.passed),
+            checks,
+            lenses,
+        };
+        observation.gate_result_digest = mission_gate_result_digest(&observation)?;
+        let gate_event = record_mission_gate_observation(
+            ledger,
+            &mission.id,
+            "omega-quality-gate",
+            &observation,
+        )?;
+        if plan
+            .required_gates
+            .iter()
+            .any(|gate| gate == "quality_gate")
+        {
+            record_plan_requirement_observation(
+                ledger,
+                &mission.id,
+                PlanRequirementKind::Gate,
+                "quality_gate",
+                observation.overall_pass,
+                "omega-quality-gate",
+                vec![gate_event.event_id],
+            )?;
+        }
+        Ok(gate_result)
     }
 
     fn summarize(
@@ -672,9 +3648,18 @@ impl Orchestrator {
         s.push_str(&format!(
             "Workers: {} dispatched, {} clean, {} pending, {} failed\n",
             results.len(),
-            results.iter().filter(|r| r.status == DoneStatus::DoneClean).count(),
-            results.iter().filter(|r| r.status == DoneStatus::Pending).count(),
-            results.iter().filter(|r| r.status == DoneStatus::Failed).count(),
+            results
+                .iter()
+                .filter(|r| r.status == DoneStatus::DoneClean)
+                .count(),
+            results
+                .iter()
+                .filter(|r| r.status == DoneStatus::Pending)
+                .count(),
+            results
+                .iter()
+                .filter(|r| r.status == DoneStatus::Failed)
+                .count(),
         ));
         if let Some(g) = gate {
             s.push_str(&format!(
@@ -717,6 +3702,2205 @@ mod tests {
         assert!(Priority::Low < Priority::Normal);
         assert!(Priority::Normal < Priority::High);
         assert!(Priority::High < Priority::Urgent);
+    }
+
+    #[test]
+    fn orchestration_prepares_plan_and_attempts_before_execution() {
+        let ledger = MissionLedger::open_in_memory().unwrap();
+        let mission = Mission::new(
+            "OmegaOS",
+            "implement and verify the authority path",
+            PathBuf::from("/tmp/omega-authority"),
+        );
+        let plan = Plan {
+            mission_id: mission.id.clone(),
+            complexity: Complexity::Complex,
+            strategy: PlanStrategy::Parallel,
+            tasks: vec![Task {
+                id: "authority".to_string(),
+                name: "authority".to_string(),
+                prompt: "Implement the ledger authority".to_string(),
+                files_owned: vec!["src/authority.rs".to_string()],
+                depends_on: Vec::new(),
+                agent: "codex".to_string(),
+                estimated_minutes: 30,
+            }],
+            created_at: Utc::now(),
+        };
+
+        let prepared = prepare_authoritative_execution(
+            &ledger,
+            &mission,
+            &plan,
+            "test-orchestrator",
+            vec!["independent_verification".to_string()],
+        )
+        .unwrap();
+
+        let projection = ledger.mission(&mission.id).unwrap().unwrap();
+        assert_eq!(projection.state, MissionState::Planned);
+        assert_eq!(projection.active_plan_revision, Some(1));
+        let active = ledger.active_plan(&mission.id).unwrap().unwrap();
+        assert_eq!(active.content_digest, prepared.plan.content_digest);
+        assert_eq!(active.tasks.len(), 1);
+        let attempt = ledger
+            .task_attempt(&prepared.attempts[0].attempt_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(attempt.state, TaskAttemptState::Queued);
+        assert_eq!(attempt.plan_revision, active.revision);
+    }
+
+    #[test]
+    fn orchestration_refuses_a_hollow_plan_instead_of_bypassing_contracts() {
+        let ledger = MissionLedger::open_in_memory().unwrap();
+        let mission = Mission::new("OmegaOS", "empty", PathBuf::from("/tmp"));
+        let plan = Plan {
+            mission_id: mission.id.clone(),
+            complexity: Complexity::Simple,
+            strategy: PlanStrategy::Direct,
+            tasks: Vec::new(),
+            created_at: Utc::now(),
+        };
+        assert!(prepare_authoritative_execution(
+            &ledger,
+            &mission,
+            &plan,
+            "test-orchestrator",
+            Vec::new(),
+        )
+        .is_err());
+        assert!(ledger.mission(&mission.id).unwrap().is_none());
+    }
+
+    fn direct_plan(mission: &Mission, task_id: &str) -> Plan {
+        Plan {
+            mission_id: mission.id.clone(),
+            complexity: Complexity::Simple,
+            strategy: PlanStrategy::Direct,
+            tasks: vec![Task {
+                id: task_id.to_string(),
+                name: "main".to_string(),
+                prompt: "Implement the change".to_string(),
+                files_owned: vec!["**/*".to_string()],
+                depends_on: Vec::new(),
+                agent: "codex".to_string(),
+                estimated_minutes: 10,
+            }],
+            created_at: Utc::now(),
+        }
+    }
+
+    fn running_attempt(
+        ledger: &MissionLedger,
+        mission: &Mission,
+        task_id: &str,
+    ) -> AuthoritativeExecution {
+        let mut execution = prepare_authoritative_execution(
+            ledger,
+            mission,
+            &direct_plan(mission, task_id),
+            "test",
+            Vec::new(),
+        )
+        .unwrap();
+        transition_authoritative_mission(ledger, &mission.id, MissionState::Running, "test")
+            .unwrap();
+        let state = tempfile::TempDir::new().unwrap();
+        let scope = execution.plan.tasks[0].scope.clone();
+        claim_authoritative_scopes(
+            ledger,
+            state.path(),
+            &mission.working_dir,
+            &mut execution.attempts[0],
+            "worker",
+            &scope,
+            Duration::from_secs(60),
+        )
+        .unwrap();
+        transition_authoritative_attempt(
+            ledger,
+            &execution.attempts[0],
+            TaskAttemptState::Running,
+            "worker",
+        )
+        .unwrap();
+        execution
+    }
+
+    #[test]
+    fn monitor_converges_when_done_writer_already_marked_candidate_done() {
+        let ledger = MissionLedger::open_in_memory().unwrap();
+        let mission = Mission::new("OmegaOS", "race", PathBuf::from("/tmp"));
+        let execution = running_attempt(&ledger, &mission, "race");
+        let attempt = &execution.attempts[0];
+
+        transition_authoritative_attempt(
+            &ledger,
+            attempt,
+            TaskAttemptState::CandidateDone,
+            "worker",
+        )
+        .unwrap();
+        ensure_attempt_verifying(&ledger, attempt, "worker").unwrap();
+
+        assert_eq!(
+            ledger
+                .task_attempt(&attempt.attempt_id)
+                .unwrap()
+                .unwrap()
+                .state,
+            TaskAttemptState::Verifying
+        );
+    }
+
+    #[test]
+    fn concurrent_candidate_done_transitions_converge_idempotently() {
+        let ledger = std::sync::Arc::new(MissionLedger::open_in_memory().unwrap());
+        let mission = Mission::new("OmegaOS", "race", PathBuf::from("/tmp"));
+        let execution = running_attempt(&ledger, &mission, "race");
+        let attempt = std::sync::Arc::new(execution.attempts[0].clone());
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(8));
+        let handles = (0..8)
+            .map(|_| {
+                let ledger = std::sync::Arc::clone(&ledger);
+                let attempt = std::sync::Arc::clone(&attempt);
+                let barrier = std::sync::Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    transition_authoritative_attempt(
+                        &ledger,
+                        &attempt,
+                        TaskAttemptState::CandidateDone,
+                        "worker",
+                    )
+                })
+            })
+            .collect::<Vec<_>>();
+        for handle in handles {
+            handle.join().unwrap().unwrap();
+        }
+        assert_eq!(
+            ledger
+                .task_attempt(&attempt.attempt_id)
+                .unwrap()
+                .unwrap()
+                .state,
+            TaskAttemptState::CandidateDone
+        );
+    }
+
+    #[test]
+    fn accepted_attempt_without_exact_verification_record_is_not_trusted() {
+        let ledger = MissionLedger::open_in_memory().unwrap();
+        let mission = Mission::new("OmegaOS", "acceptance", PathBuf::from("/tmp"));
+        let execution = running_attempt(&ledger, &mission, "acceptance");
+        let attempt = &execution.attempts[0];
+        ensure_attempt_verifying(&ledger, attempt, "worker").unwrap();
+        transition_authoritative_attempt(&ledger, attempt, TaskAttemptState::Accepted, "worker")
+            .unwrap();
+        let record = RecordedContractVerification {
+            schema_version: ACCEPTANCE_OBSERVATION_SCHEMA_VERSION,
+            mission_id: mission.id.as_str().to_string(),
+            task_id: attempt.task_id.clone(),
+            attempt_id: attempt.attempt_id.clone(),
+            plan_revision: attempt.plan_revision,
+            plan_digest: execution.plan.content_digest.clone(),
+            worker_signal_digest: "not-recorded".to_string(),
+            verification: ContractVerification {
+                passed: true,
+                observations: Vec::new(),
+                failures: Vec::new(),
+            },
+        };
+
+        assert!(!exact_verification_is_recorded(&ledger, attempt, &record).unwrap());
+        assert!(finalize_contract_verification(&ledger, attempt, "worker", &record).is_err());
+    }
+
+    #[test]
+    fn completion_identity_and_timestamp_are_bounded() {
+        let dispatched_at = Utc::now();
+        let now = dispatched_at + ChronoDuration::seconds(1);
+        let mut signal = DoneSignal::new("other-worker", DoneStatus::DoneClean, "done");
+        signal.finished_at = now;
+        assert!(validate_done_identity_and_freshness(
+            &signal,
+            "expected-worker",
+            dispatched_at,
+            now
+        )
+        .is_err());
+
+        signal.session = "expected-worker".to_string();
+        signal.finished_at = dispatched_at - ChronoDuration::seconds(DONE_CLOCK_SKEW_SECS + 1);
+        assert!(validate_done_identity_and_freshness(
+            &signal,
+            "expected-worker",
+            dispatched_at,
+            now
+        )
+        .is_err());
+
+        signal.finished_at = now + ChronoDuration::seconds(DONE_CLOCK_SKEW_SECS + 1);
+        assert!(validate_done_identity_and_freshness(
+            &signal,
+            "expected-worker",
+            dispatched_at,
+            now
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn completion_projection_must_match_exact_historical_ledger_event() {
+        let ledger = MissionLedger::open_in_memory().unwrap();
+        let mission = Mission::new("OmegaOS", "provenance", PathBuf::from("/tmp"));
+        let execution = running_attempt(&ledger, &mission, "provenance");
+        let attempt = &execution.attempts[0];
+        let mission_projection = ledger.mission(&mission.id).unwrap().unwrap();
+        let task_projection = ledger.task_attempt(&attempt.attempt_id).unwrap().unwrap();
+        let mut event = AppendEvent::new(
+            mission.id.clone(),
+            mission_projection.version,
+            "test:worker-completion",
+            "worker",
+            "legacy_worker_completion_candidate",
+        );
+        event.task_attempt = Some(TaskAttemptMutation {
+            task_id: attempt.task_id.clone(),
+            attempt_id: attempt.attempt_id.clone(),
+            plan_revision: attempt.plan_revision,
+            expected_version: task_projection.version,
+            next_state: TaskAttemptState::CandidateDone,
+        });
+        event.lease_assertions = attempt.leases.iter().map(LeaseAssertion::from).collect();
+        let outcome = ledger.append(event).unwrap();
+        let provenance = crate::done::ProjectionProvenance {
+            source: "mission-engine-v3.sqlite3".to_string(),
+            event_id: outcome.event.event_id,
+            event_sequence: outcome.event.sequence,
+            mission_version: outcome.projection.version,
+            projection_hash: outcome.projection.projection_hash,
+        };
+        validate_done_projection(&ledger, attempt, "worker", &provenance, false).unwrap();
+
+        let mut forged = provenance;
+        forged.projection_hash = "forged".to_string();
+        assert!(validate_done_projection(&ledger, attempt, "worker", &forged, false).is_err());
+    }
+
+    #[test]
+    fn runtime_completion_projection_is_accepted_by_the_v3_gate() {
+        let ledger = MissionLedger::open_in_memory().unwrap();
+        let mission = Mission::new("OmegaOS", "runtime provenance", PathBuf::from("/tmp"));
+        let execution = running_attempt(&ledger, &mission, "runtime-provenance");
+        let attempt = &execution.attempts[0];
+        let mission_projection = ledger.mission(&mission.id).unwrap().unwrap();
+        let task_projection = ledger.task_attempt(&attempt.attempt_id).unwrap().unwrap();
+        let mut event = AppendEvent::new(
+            mission.id.clone(),
+            mission_projection.version,
+            "test:worker-runtime-completion",
+            "worker",
+            "worker_runtime_completion_candidate",
+        );
+        event.task_attempt = Some(TaskAttemptMutation {
+            task_id: attempt.task_id.clone(),
+            attempt_id: attempt.attempt_id.clone(),
+            plan_revision: attempt.plan_revision,
+            expected_version: task_projection.version,
+            next_state: TaskAttemptState::CandidateDone,
+        });
+        event.lease_assertions = attempt.leases.iter().map(LeaseAssertion::from).collect();
+        let outcome = ledger.append(event).unwrap();
+        let provenance = crate::done::ProjectionProvenance {
+            source: "mission-engine-v3.sqlite3".to_string(),
+            event_id: outcome.event.event_id,
+            event_sequence: outcome.event.sequence,
+            mission_version: outcome.projection.version,
+            projection_hash: outcome.projection.projection_hash,
+        };
+
+        validate_done_projection(&ledger, attempt, "worker", &provenance, false).unwrap();
+        assert!(is_worker_completion_candidate_kind(
+            "worker_runtime_completion_candidate"
+        ));
+    }
+
+    fn append_worker_candidate(
+        ledger: &MissionLedger,
+        attempt: &AuthoritativeTaskAttempt,
+        owner: &str,
+        mut done: DoneSignal,
+    ) -> DoneSignal {
+        let mission = ledger.mission(&attempt.mission_id).unwrap().unwrap();
+        let task = ledger.task_attempt(&attempt.attempt_id).unwrap().unwrap();
+        let mut event = AppendEvent::new(
+            attempt.mission_id.clone(),
+            mission.version,
+            format!("test:candidate:{}", attempt.attempt_id),
+            owner,
+            "legacy_worker_completion_candidate",
+        );
+        event.payload = serde_json::to_value(&done).unwrap();
+        event.task_attempt = Some(TaskAttemptMutation {
+            task_id: attempt.task_id.clone(),
+            attempt_id: attempt.attempt_id.clone(),
+            plan_revision: attempt.plan_revision,
+            expected_version: task.version,
+            next_state: TaskAttemptState::CandidateDone,
+        });
+        event.lease_assertions = attempt.leases.iter().map(LeaseAssertion::from).collect();
+        let appended = ledger.append(event).unwrap();
+        done.projection = Some(crate::done::ProjectionProvenance {
+            source: "mission-engine-v3.sqlite3".to_string(),
+            event_id: appended.event.event_id,
+            event_sequence: appended.event.sequence,
+            mission_version: appended.projection.version,
+            projection_hash: appended.projection.projection_hash,
+        });
+        done
+    }
+
+    struct AcceptanceFixture {
+        _temp: tempfile::TempDir,
+        state_dir: PathBuf,
+        ledger: MissionLedger,
+        mission: Mission,
+        execution: AuthoritativeExecution,
+        results: Vec<WorkerResult>,
+        rubric: Rubric,
+    }
+
+    fn shaped_plan(
+        mission: &Mission,
+        complexity: Complexity,
+        strategy: PlanStrategy,
+        task_count: usize,
+    ) -> Plan {
+        let tasks = (0..task_count)
+            .map(|index| Task {
+                id: format!("task-{index}"),
+                name: format!("Task {index}"),
+                prompt: format!("Implement task {index}"),
+                files_owned: vec![format!("src/task-{index}.rs")],
+                depends_on: if strategy == PlanStrategy::Sequential && index > 0 {
+                    vec![format!("task-{}", index - 1)]
+                } else {
+                    Vec::new()
+                },
+                agent: "codex".to_string(),
+                estimated_minutes: 10,
+            })
+            .collect();
+        Plan {
+            mission_id: mission.id.clone(),
+            complexity,
+            strategy,
+            tasks,
+            created_at: Utc::now(),
+        }
+    }
+
+    fn accepted_task_fixture(
+        complexity: Complexity,
+        strategy: PlanStrategy,
+        task_count: usize,
+    ) -> AcceptanceFixture {
+        accepted_task_fixture_with_scope_release(complexity, strategy, task_count, true)
+    }
+
+    fn accepted_task_fixture_with_scope_release(
+        complexity: Complexity,
+        strategy: PlanStrategy,
+        task_count: usize,
+        release_scopes: bool,
+    ) -> AcceptanceFixture {
+        let temp = tempfile::TempDir::new().unwrap();
+        let repo = temp.path().join("repo");
+        let state_dir = temp.path().join("state");
+        std::fs::create_dir_all(&repo).unwrap();
+        std::fs::create_dir_all(&state_dir).unwrap();
+        assert!(std::process::Command::new("git")
+            .args(["init", "--quiet"])
+            .current_dir(&repo)
+            .status()
+            .unwrap()
+            .success());
+        let ledger = MissionLedger::open_in_memory().unwrap();
+        let mission = Mission::new(
+            "OmegaOS",
+            format!("{complexity:?} acceptance runtime"),
+            repo.clone(),
+        );
+        let plan = shaped_plan(&mission, complexity, strategy, task_count);
+        let mut execution = prepare_authoritative_execution(
+            &ledger,
+            &mission,
+            &plan,
+            "test-orchestrator",
+            vec![
+                "independent_verification".to_string(),
+                "quality_gate".to_string(),
+            ],
+        )
+        .unwrap();
+        transition_authoritative_mission(
+            &ledger,
+            &mission.id,
+            MissionState::Running,
+            "test-orchestrator",
+        )
+        .unwrap();
+        let mut results = Vec::new();
+        let task_scopes = execution
+            .plan
+            .tasks
+            .iter()
+            .map(|task| (task.task_id.as_str().to_string(), task.scope.clone()))
+            .collect::<BTreeMap<_, _>>();
+        for attempt in &mut execution.attempts {
+            let owner = format!("worker-{}", attempt.task_id);
+            claim_authoritative_scopes(
+                &ledger,
+                &state_dir,
+                &repo,
+                attempt,
+                &owner,
+                task_scopes.get(&attempt.task_id).unwrap(),
+                Duration::from_secs(300),
+            )
+            .unwrap();
+            transition_authoritative_attempt(&ledger, attempt, TaskAttemptState::Running, &owner)
+                .unwrap();
+            let mut done = DoneSignal::new(&owner, DoneStatus::DoneClean, "verified");
+            done.todos_total = 1;
+            done.todos_completed = 1;
+            done.corroboration = vec![crate::done::CorroborationSource::WorkerSelfReport];
+            done.artifacts = vec![crate::done::DoneArtifact::Command {
+                cmd: "git diff --check".to_string(),
+                exit_code: 0,
+            }];
+            let done = append_worker_candidate(&ledger, attempt, &owner, done);
+            let outcome = verify_and_finalize_candidate(
+                &ledger,
+                &mission.id,
+                &attempt.task_id,
+                &attempt.attempt_id,
+                attempt.plan_revision,
+                &owner,
+                &done,
+                &repo,
+            )
+            .unwrap();
+            assert!(outcome.accepted, "{:?}", outcome.verification.failures);
+            if release_scopes {
+                release_authoritative_scopes(&ledger, &state_dir, attempt).unwrap();
+            }
+            results.push(WorkerResult {
+                task_id: attempt.task_id.clone(),
+                session_name: owner,
+                status: DoneStatus::DoneClean,
+                summary: "verified".to_string(),
+                commit: None,
+                duration_secs: 1,
+            });
+        }
+        transition_authoritative_mission(
+            &ledger,
+            &mission.id,
+            MissionState::Verifying,
+            "test-orchestrator",
+        )
+        .unwrap();
+        let rubric = Rubric::new(
+            &mission.text,
+            vec![RubricCriterion {
+                id: "F1".to_string(),
+                description: "All immutable task contracts are accepted".to_string(),
+                weight: 1.0,
+                category: crate::gate::CriterionCategory::Functional,
+            }],
+        );
+        AcceptanceFixture {
+            _temp: temp,
+            state_dir,
+            ledger,
+            mission,
+            execution,
+            results,
+            rubric,
+        }
+    }
+
+    fn run_fixture_gate(fixture: &AcceptanceFixture) -> GateResult {
+        Orchestrator::run_quality_gate(
+            &fixture.state_dir,
+            &fixture.ledger,
+            &fixture.mission,
+            &fixture.execution.plan,
+            &fixture.rubric,
+            &fixture.results,
+        )
+        .unwrap()
+    }
+
+    fn latest_gate_observation(fixture: &AcceptanceFixture) -> MissionGateObservation {
+        fixture
+            .ledger
+            .events(&fixture.mission.id)
+            .unwrap()
+            .into_iter()
+            .rev()
+            .find(|event| event.kind == "mission_gate_observed")
+            .and_then(|event| serde_json::from_value(event.payload).ok())
+            .unwrap()
+    }
+
+    #[test]
+    fn malformed_task_acceptance_invalidation_is_never_treated_as_absent() {
+        let fixture = accepted_task_fixture(Complexity::Simple, PlanStrategy::Direct, 1);
+        assert!(run_fixture_gate(&fixture).overall_pass);
+        let attempt = &fixture.execution.attempts[0];
+        append_bound_observation(
+            &fixture.ledger,
+            attempt,
+            "independent-debugger",
+            "task_acceptance_invalidated",
+            "malformed-invalidation",
+            serde_json::json!({"attempt_id": attempt.attempt_id}),
+        )
+        .unwrap();
+
+        assert!(transition_authoritative_mission(
+            &fixture.ledger,
+            &fixture.mission.id,
+            MissionState::Accepted,
+            "omega-quality-gate",
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn task_acceptance_invalidation_for_unknown_attempt_fails_closed() {
+        let fixture = accepted_task_fixture(Complexity::Simple, PlanStrategy::Direct, 1);
+        assert!(run_fixture_gate(&fixture).overall_pass);
+        let attempt = &fixture.execution.attempts[0];
+        let invalidation = TaskAcceptanceInvalidation {
+            schema_version: ACCEPTANCE_OBSERVATION_SCHEMA_VERSION,
+            mission_id: fixture.mission.id.as_str().to_string(),
+            task_id: attempt.task_id.clone(),
+            attempt_id: "attempt-does-not-exist".to_string(),
+            plan_revision: attempt.plan_revision,
+            reason: "adversarial typo".to_string(),
+        };
+        append_bound_observation(
+            &fixture.ledger,
+            attempt,
+            "independent-debugger",
+            "task_acceptance_invalidated",
+            "wrong-attempt-invalidation",
+            serde_json::to_value(invalidation).unwrap(),
+        )
+        .unwrap();
+
+        assert!(transition_authoritative_mission(
+            &fixture.ledger,
+            &fixture.mission.id,
+            MissionState::Accepted,
+            "omega-quality-gate",
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn direct_complex_and_epic_missions_pass_the_full_ledger_gate_and_delivery_path() {
+        for (complexity, strategy, tasks) in [
+            (Complexity::Simple, PlanStrategy::Direct, 1),
+            (Complexity::Complex, PlanStrategy::Parallel, 2),
+            (Complexity::Epic, PlanStrategy::Sequential, 3),
+        ] {
+            let fixture = accepted_task_fixture(complexity, strategy, tasks);
+            let gate = run_fixture_gate(&fixture);
+            assert!(gate.overall_pass, "gate failed: {:?}", gate.details);
+            let observation = latest_gate_observation(&fixture);
+            assert!(observation.overall_pass);
+            assert_eq!(observation.checks.len(), 12);
+            assert_eq!(observation.lenses.len(), 3);
+            assert_eq!(
+                observation
+                    .checks
+                    .iter()
+                    .map(|check| check.evidence_event_id.as_str())
+                    .collect::<BTreeSet<_>>()
+                    .len(),
+                12
+            );
+            assert!(gate
+                .details
+                .adversarial_challenges
+                .iter()
+                .all(|challenge| challenge.evidence.starts_with("log:mission-ledger:")));
+            transition_authoritative_mission(
+                &fixture.ledger,
+                &fixture.mission.id,
+                MissionState::Accepted,
+                "omega-quality-gate",
+            )
+            .unwrap();
+            transition_authoritative_mission(
+                &fixture.ledger,
+                &fixture.mission.id,
+                MissionState::Reporting,
+                "omega-reporter",
+            )
+            .unwrap();
+            transition_authoritative_mission(
+                &fixture.ledger,
+                &fixture.mission.id,
+                MissionState::Delivered,
+                "omega-delivery",
+            )
+            .unwrap();
+            fixture
+                .ledger
+                .validate_mission_acceptance(&fixture.mission.id)
+                .unwrap();
+        }
+    }
+
+    #[test]
+    fn mission_acceptance_rejects_missing_or_reused_gate_evidence_and_tampered_digests() {
+        let missing = accepted_task_fixture(Complexity::Simple, PlanStrategy::Direct, 1);
+        assert!(transition_authoritative_mission(
+            &missing.ledger,
+            &missing.mission.id,
+            MissionState::Accepted,
+            "omega-quality-gate",
+        )
+        .is_err());
+
+        let reused = accepted_task_fixture(Complexity::Simple, PlanStrategy::Direct, 1);
+        assert!(run_fixture_gate(&reused).overall_pass);
+        let mut forged = latest_gate_observation(&reused);
+        let evidence_id = forged.checks[0].evidence_event_id.clone();
+        let evidence = reused
+            .ledger
+            .events(&reused.mission.id)
+            .unwrap()
+            .into_iter()
+            .find(|event| event.event_id == evidence_id)
+            .unwrap();
+        for check in &mut forged.checks {
+            check.evidence_event_id = evidence.event_id.clone();
+            check.evidence_sequence = evidence.sequence;
+            check.fact_digest =
+                mission_gate_fact_digest(&check.check_id, check.passed, &check.detail, &evidence)
+                    .unwrap();
+        }
+        forged.gate_result_digest = mission_gate_result_digest(&forged).unwrap();
+        record_mission_gate_observation(&reused.ledger, &reused.mission.id, "forged-gate", &forged)
+            .unwrap();
+        assert!(transition_authoritative_mission(
+            &reused.ledger,
+            &reused.mission.id,
+            MissionState::Accepted,
+            "omega-quality-gate",
+        )
+        .is_err());
+
+        let tampered = accepted_task_fixture(Complexity::Simple, PlanStrategy::Direct, 1);
+        assert!(run_fixture_gate(&tampered).overall_pass);
+        let mut forged = latest_gate_observation(&tampered);
+        forged.checks[0].fact_digest = "0".repeat(64);
+        forged.gate_result_digest = mission_gate_result_digest(&forged).unwrap();
+        record_mission_gate_observation(
+            &tampered.ledger,
+            &tampered.mission.id,
+            "forged-gate",
+            &forged,
+        )
+        .unwrap();
+        assert!(transition_authoritative_mission(
+            &tampered.ledger,
+            &tampered.mission.id,
+            MissionState::Accepted,
+            "omega-quality-gate",
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn mission_acceptance_rejects_duplicate_verifier_superseding_attempt_and_active_lease() {
+        let duplicate = accepted_task_fixture(Complexity::Simple, PlanStrategy::Direct, 1);
+        let original = duplicate
+            .ledger
+            .events(&duplicate.mission.id)
+            .unwrap()
+            .into_iter()
+            .find(|event| event.kind == "task_verifier_observations_recorded")
+            .unwrap();
+        append_bound_observation(
+            &duplicate.ledger,
+            &duplicate.execution.attempts[0],
+            "omega-independent-verifier",
+            "task_verifier_observations_recorded",
+            "duplicate-verifier",
+            original.payload,
+        )
+        .unwrap();
+        run_fixture_gate(&duplicate);
+        assert!(transition_authoritative_mission(
+            &duplicate.ledger,
+            &duplicate.mission.id,
+            MissionState::Accepted,
+            "omega-quality-gate",
+        )
+        .is_err());
+
+        let superseded = accepted_task_fixture(Complexity::Simple, PlanStrategy::Direct, 1);
+        assert!(run_fixture_gate(&superseded).overall_pass);
+        let projection = superseded
+            .ledger
+            .mission(&superseded.mission.id)
+            .unwrap()
+            .unwrap();
+        let task = &superseded.execution.plan.tasks[0];
+        let mut queued = AppendEvent::new(
+            superseded.mission.id.clone(),
+            projection.version,
+            "test:superseding-attempt",
+            "test-orchestrator",
+            "task_attempt_queued",
+        );
+        queued.task_attempt = Some(TaskAttemptMutation {
+            task_id: task.task_id.as_str().to_string(),
+            attempt_id: "attempt-superseding".to_string(),
+            plan_revision: superseded.execution.plan.revision,
+            expected_version: 0,
+            next_state: TaskAttemptState::Queued,
+        });
+        superseded.ledger.append(queued).unwrap();
+        assert!(transition_authoritative_mission(
+            &superseded.ledger,
+            &superseded.mission.id,
+            MissionState::Accepted,
+            "omega-quality-gate",
+        )
+        .is_err());
+
+        let leased = accepted_task_fixture_with_scope_release(
+            Complexity::Simple,
+            PlanStrategy::Direct,
+            1,
+            false,
+        );
+        assert!(!run_fixture_gate(&leased).overall_pass);
+        let attempt = &leased.execution.attempts[0];
+        assert!(!leased
+            .ledger
+            .active_leases_for_attempt(&leased.mission.id, &attempt.task_id, &attempt.attempt_id,)
+            .unwrap()
+            .is_empty());
+        assert!(transition_authoritative_mission(
+            &leased.ledger,
+            &leased.mission.id,
+            MissionState::Accepted,
+            "omega-quality-gate",
+        )
+        .is_err());
+        release_authoritative_scopes(&leased.ledger, &leased.state_dir, attempt).unwrap();
+    }
+
+    #[test]
+    fn mission_blockers_require_exact_resolution_and_late_contradictions_invalidate_delivery() {
+        let unresolved = accepted_task_fixture(Complexity::Simple, PlanStrategy::Direct, 1);
+        append_mission_observation(
+            &unresolved.ledger,
+            &unresolved.mission.id,
+            "test",
+            "mission_blocker_recorded",
+            "blocker",
+            serde_json::json!({"detail": "runtime contradiction"}),
+        )
+        .unwrap();
+        assert!(!run_fixture_gate(&unresolved).overall_pass);
+        assert!(transition_authoritative_mission(
+            &unresolved.ledger,
+            &unresolved.mission.id,
+            MissionState::Accepted,
+            "omega-quality-gate",
+        )
+        .is_err());
+
+        let resolved = accepted_task_fixture(Complexity::Simple, PlanStrategy::Direct, 1);
+        let issue = append_mission_observation(
+            &resolved.ledger,
+            &resolved.mission.id,
+            "test",
+            "mission_blocker_recorded",
+            "blocker",
+            serde_json::json!({"detail": "transient runtime contradiction"}),
+        )
+        .unwrap();
+        let resolution = MissionIssueResolution {
+            schema_version: ACCEPTANCE_OBSERVATION_SCHEMA_VERSION,
+            mission_id: resolved.mission.id.as_str().to_string(),
+            plan_revision: resolved.execution.plan.revision,
+            plan_digest: resolved.execution.plan.content_digest.clone(),
+            issue_event_id: issue.event_id,
+            resolved_by: "independent-debugger".to_string(),
+            detail: "fresh runtime evidence closed the exact blocker".to_string(),
+        };
+        append_mission_observation(
+            &resolved.ledger,
+            &resolved.mission.id,
+            "independent-debugger",
+            "mission_blocker_resolved",
+            "blocker-resolution",
+            serde_json::to_value(resolution).unwrap(),
+        )
+        .unwrap();
+        assert!(run_fixture_gate(&resolved).overall_pass);
+        for state in [
+            MissionState::Accepted,
+            MissionState::Reporting,
+            MissionState::Delivered,
+        ] {
+            transition_authoritative_mission(&resolved.ledger, &resolved.mission.id, state, "test")
+                .unwrap();
+        }
+        assert!(record_acceptance_invalidation(
+            &resolved.ledger,
+            &resolved.execution.attempts[0],
+            "independent-debugger",
+            "late runtime contradiction",
+        )
+        .is_err());
+        assert!(resolved
+            .ledger
+            .validate_mission_acceptance(&resolved.mission.id)
+            .is_err());
+        assert!(transition_authoritative_mission(
+            &resolved.ledger,
+            &resolved.mission.id,
+            MissionState::Delivered,
+            "test",
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn exact_candidate_api_executes_full_contract_and_persists_acceptance() {
+        let temp = tempfile::TempDir::new().unwrap();
+        assert!(std::process::Command::new("git")
+            .args(["init", "--quiet"])
+            .current_dir(temp.path())
+            .status()
+            .unwrap()
+            .success());
+        let ledger = MissionLedger::open_in_memory().unwrap();
+        let mission = Mission::new("OmegaOS", "candidate", temp.path().to_path_buf());
+        let execution = running_attempt(&ledger, &mission, "candidate");
+        let attempt = &execution.attempts[0];
+        let mut done = DoneSignal::new("worker", DoneStatus::DoneClean, "done");
+        done.todos_total = 1;
+        done.todos_completed = 1;
+        done.corroboration = vec![crate::done::CorroborationSource::WorkerSelfReport];
+        done.artifacts = vec![crate::done::DoneArtifact::Command {
+            cmd: "git diff --check".to_string(),
+            exit_code: 0,
+        }];
+        let done = append_worker_candidate(&ledger, attempt, "worker", done);
+
+        let outcome = verify_and_finalize_candidate(
+            &ledger,
+            &mission.id,
+            &attempt.task_id,
+            &attempt.attempt_id,
+            attempt.plan_revision,
+            "worker",
+            &done,
+            temp.path(),
+        )
+        .unwrap();
+        assert!(outcome.accepted, "{:?}", outcome.verification.failures);
+        assert_eq!(outcome.attempt_state, TaskAttemptState::Accepted);
+        assert_eq!(
+            outcome.verification.observations.len(),
+            execution.plan.tasks[0].verifier_checks.len()
+        );
+        assert!(ledger.events(&mission.id).unwrap().iter().any(|event| {
+            event.kind == "task_verifier_observations_recorded"
+                && serde_json::from_value::<RecordedContractVerification>(event.payload.clone())
+                    .is_ok_and(|record| {
+                        record.attempt_id == attempt.attempt_id
+                            && record.plan_digest == execution.plan.content_digest
+                            && record.verification.passed
+                    })
+        }));
+    }
+
+    #[test]
+    fn candidate_without_exact_provenance_stays_candidate_and_keeps_authority() {
+        let temp = tempfile::TempDir::new().unwrap();
+        assert!(std::process::Command::new("git")
+            .args(["init", "--quiet"])
+            .current_dir(temp.path())
+            .status()
+            .unwrap()
+            .success());
+        let ledger = MissionLedger::open_in_memory().unwrap();
+        let mission = Mission::new("OmegaOS", "candidate", temp.path().to_path_buf());
+        let execution = running_attempt(&ledger, &mission, "candidate");
+        let attempt = &execution.attempts[0];
+        let mut done = DoneSignal::new("worker", DoneStatus::DoneClean, "done");
+        done.todos_total = 1;
+        done.todos_completed = 1;
+        done.corroboration = vec![crate::done::CorroborationSource::WorkerSelfReport];
+        done.artifacts = vec![crate::done::DoneArtifact::Command {
+            cmd: "git diff --check".to_string(),
+            exit_code: 0,
+        }];
+        let recorded = append_worker_candidate(&ledger, attempt, "worker", done);
+        let mut missing = recorded;
+        missing.projection = None;
+
+        assert!(verify_and_finalize_candidate(
+            &ledger,
+            &mission.id,
+            &attempt.task_id,
+            &attempt.attempt_id,
+            attempt.plan_revision,
+            "worker",
+            &missing,
+            temp.path(),
+        )
+        .is_err());
+        assert_eq!(
+            ledger
+                .task_attempt(&attempt.attempt_id)
+                .unwrap()
+                .unwrap()
+                .state,
+            TaskAttemptState::CandidateDone
+        );
+        assert!(!ledger
+            .events(&mission.id)
+            .unwrap()
+            .iter()
+            .any(|event| event.kind == "task_verifier_observations_recorded"));
+    }
+
+    #[test]
+    fn oracle_pending_bridge_requires_exact_candidate_provenance() {
+        let ledger = MissionLedger::open_in_memory().unwrap();
+        let mission = Mission::new("OmegaOS", "oracle bridge", PathBuf::from("/tmp"));
+        let mut execution = prepare_authoritative_execution(
+            &ledger,
+            &mission,
+            &direct_plan(&mission, "oracle"),
+            "test",
+            Vec::new(),
+        )
+        .unwrap();
+        transition_authoritative_mission(&ledger, &mission.id, MissionState::Running, "test")
+            .unwrap();
+        let state = tempfile::TempDir::new().unwrap();
+        let scope = execution.plan.tasks[0].scope.clone();
+        claim_authoritative_scopes(
+            &ledger,
+            state.path(),
+            &mission.working_dir,
+            &mut execution.attempts[0],
+            "oracle-OmegaOS",
+            &scope,
+            Duration::from_secs(60),
+        )
+        .unwrap();
+        let attempt = &execution.attempts[0];
+        transition_authoritative_attempt(
+            &ledger,
+            attempt,
+            TaskAttemptState::Running,
+            "oracle-OmegaOS",
+        )
+        .unwrap();
+        let mut oracle = crate::done::OracleDoneSignal::new(
+            "oracle-OmegaOS",
+            "OmegaOS",
+            DoneStatus::Pending,
+            "mission",
+        );
+        oracle.summary = "candidate ready".to_string();
+        oracle.pending_actions = vec![
+            V3_ACCEPTANCE_PENDING.to_string(),
+            "unrelated pending action".to_string(),
+        ];
+        let mission_projection = ledger.mission(&mission.id).unwrap().unwrap();
+        let task_projection = ledger.task_attempt(&attempt.attempt_id).unwrap().unwrap();
+        let mut event = AppendEvent::new(
+            mission.id.clone(),
+            mission_projection.version,
+            "test:oracle-candidate",
+            "oracle-OmegaOS",
+            "legacy_oracle_completion_candidate",
+        );
+        event.payload = serde_json::to_value(&oracle).unwrap();
+        event.task_attempt = Some(TaskAttemptMutation {
+            task_id: attempt.task_id.clone(),
+            attempt_id: attempt.attempt_id.clone(),
+            plan_revision: attempt.plan_revision,
+            expected_version: task_projection.version,
+            next_state: TaskAttemptState::CandidateDone,
+        });
+        event.lease_assertions = attempt.leases.iter().map(LeaseAssertion::from).collect();
+        let appended = ledger.append(event).unwrap();
+        let provenance = crate::done::ProjectionProvenance {
+            source: "mission-engine-v3.sqlite3".to_string(),
+            event_id: appended.event.event_id,
+            event_sequence: appended.event.sequence,
+            mission_version: appended.projection.version,
+            projection_hash: appended.projection.projection_hash,
+        };
+        let mut signal = DoneSignal::new("oracle-OmegaOS", DoneStatus::Pending, "candidate ready");
+        signal.finished_at = oracle.finished_at;
+        signal.todos_total = 1;
+        signal.pending_actions = oracle.pending_actions.clone();
+        signal.projection = Some(provenance.clone());
+        let exact = validate_done_projection(&ledger, attempt, "oracle-OmegaOS", &provenance, true)
+            .unwrap();
+        validate_done_payload_binding(&signal, &exact, true).unwrap();
+        assert!(bridge_v3_oracle_candidate(&mut signal, true));
+        assert_eq!(signal.status, DoneStatus::DoneClean);
+        assert_eq!(
+            signal.pending_actions,
+            vec!["unrelated pending action".to_string()]
+        );
+
+        let mut unbound = DoneSignal::new("oracle-OmegaOS", DoneStatus::Pending, "candidate ready");
+        unbound.pending_actions = vec![V3_ACCEPTANCE_PENDING.to_string()];
+        assert!(!bridge_v3_oracle_candidate(&mut unbound, false));
+        assert_eq!(unbound.status, DoneStatus::Pending);
+    }
+
+    #[test]
+    fn concurrent_direct_missions_cannot_claim_the_same_checkout() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let work = tmp.path().join("repo");
+        std::fs::create_dir_all(&work).unwrap();
+        let state = tmp.path().join("state");
+        std::fs::create_dir_all(&state).unwrap();
+        let ledger = MissionLedger::open_in_memory().unwrap();
+        let first = Mission::new("OmegaOS", "first", work.clone());
+        let second = Mission::new("OmegaOS", "second", work.clone());
+        let mut first_run = prepare_authoritative_execution(
+            &ledger,
+            &first,
+            &direct_plan(&first, "first"),
+            "test",
+            Vec::new(),
+        )
+        .unwrap();
+        let mut second_run = prepare_authoritative_execution(
+            &ledger,
+            &second,
+            &direct_plan(&second, "second"),
+            "test",
+            Vec::new(),
+        )
+        .unwrap();
+        transition_authoritative_mission(&ledger, &first.id, MissionState::Running, "test")
+            .unwrap();
+        transition_authoritative_mission(&ledger, &second.id, MissionState::Running, "test")
+            .unwrap();
+        claim_authoritative_scopes(
+            &ledger,
+            &state,
+            &work,
+            &mut first_run.attempts[0],
+            "worker-first",
+            &["**/*".to_string()],
+            Duration::from_secs(60),
+        )
+        .unwrap();
+        assert!(claim_authoritative_scopes(
+            &ledger,
+            &state,
+            &work,
+            &mut second_run.attempts[0],
+            "worker-second",
+            &["**/*".to_string()],
+            Duration::from_secs(60),
+        )
+        .is_err());
+        release_authoritative_scopes(&ledger, &state, &first_run.attempts[0]).unwrap();
+    }
+
+    #[test]
+    fn release_reconciles_an_already_released_lease_and_clears_the_rest() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let work = tmp.path().join("repo");
+        let state = tmp.path().join("state");
+        std::fs::create_dir_all(&work).unwrap();
+        std::fs::create_dir_all(&state).unwrap();
+        let ledger = MissionLedger::open_in_memory().unwrap();
+        let mission = Mission::new("OmegaOS", "release", work.clone());
+        let mut plan = direct_plan(&mission, "release");
+        plan.tasks[0].files_owned = vec!["src/a.rs".to_string(), "src/b.rs".to_string()];
+        let mut run =
+            prepare_authoritative_execution(&ledger, &mission, &plan, "test", Vec::new()).unwrap();
+        transition_authoritative_mission(&ledger, &mission.id, MissionState::Running, "test")
+            .unwrap();
+        claim_authoritative_scopes(
+            &ledger,
+            &state,
+            &work,
+            &mut run.attempts[0],
+            "worker-release",
+            &plan.tasks[0].files_owned,
+            Duration::from_secs(60),
+        )
+        .unwrap();
+        assert_eq!(run.attempts[0].leases.len(), 2);
+        let first = &run.attempts[0].leases[0];
+        let second = &run.attempts[0].leases[1];
+        ledger
+            .release_lease(&first.resource_key, first.fencing_token)
+            .unwrap();
+        release_authoritative_scopes(&ledger, &state, &run.attempts[0]).unwrap();
+        assert!(ledger
+            .assert_fence(&second.resource_key, second.fencing_token)
+            .is_err());
+        assert!(scope::ScopeClaim::read(&state, "worker-release").is_none());
+    }
+
+    fn prepared_scope_receipt(
+        ledger: &MissionLedger,
+        work: &Path,
+        attempt: &AuthoritativeTaskAttempt,
+        owner: &str,
+        selectors: &[String],
+    ) -> AuthoritativeScopeReceipt {
+        let receipt = AuthoritativeScopeReceipt {
+            schema_version: SCOPE_AUTHORITY_SCHEMA_VERSION,
+            mission_id: attempt.mission_id.clone(),
+            task_id: attempt.task_id.clone(),
+            attempt_id: attempt.attempt_id.clone(),
+            plan_revision: attempt.plan_revision,
+            owner: owner.to_string(),
+            claim: scope::prepare_claim_for_workspace(work, owner, selectors.to_vec()).unwrap(),
+        };
+        let persisted = append_scope_authority_receipt(ledger, attempt, &receipt).unwrap();
+        let event = ledger
+            .events(&attempt.mission_id)
+            .unwrap()
+            .into_iter()
+            .find(|event| {
+                event.kind == SCOPE_AUTHORITY_EVENT_KIND
+                    && event.payload == serde_json::to_value(&persisted).unwrap()
+            })
+            .unwrap();
+        assert_eq!(event.plan_revision, Some(attempt.plan_revision));
+        persisted
+    }
+
+    #[test]
+    fn scope_receipt_event_recovers_event_only_and_published_crash_boundaries() {
+        for publish_before_restart in [false, true] {
+            let tmp = tempfile::TempDir::new().unwrap();
+            let work = tmp.path().join("repo");
+            let state = tmp.path().join("state");
+            std::fs::create_dir_all(&work).unwrap();
+            std::fs::create_dir_all(&state).unwrap();
+            let ledger = MissionLedger::open_in_memory().unwrap();
+            let mission = Mission::new("OmegaOS", "scope recovery", work.clone());
+            let plan = direct_plan(&mission, "scope-recovery");
+            let mut execution =
+                prepare_authoritative_execution(&ledger, &mission, &plan, "test", Vec::new())
+                    .unwrap();
+            transition_authoritative_mission(&ledger, &mission.id, MissionState::Running, "test")
+                .unwrap();
+            let owner = "worker-scope-recovery";
+            let persisted = prepared_scope_receipt(
+                &ledger,
+                &work,
+                &execution.attempts[0],
+                owner,
+                &plan.tasks[0].files_owned,
+            );
+            if publish_before_restart {
+                scope::publish_prepared_claim(&state, &work, &persisted.claim).unwrap();
+            } else {
+                assert!(scope::ScopeClaim::read_strict(&state, owner)
+                    .unwrap()
+                    .is_none());
+            }
+
+            claim_authoritative_scopes(
+                &ledger,
+                &state,
+                &work,
+                &mut execution.attempts[0],
+                owner,
+                &plan.tasks[0].files_owned,
+                Duration::from_secs(60),
+            )
+            .unwrap();
+            assert_eq!(
+                execution.attempts[0].scope_receipt.as_ref(),
+                Some(&persisted)
+            );
+            assert_eq!(
+                scope::ScopeClaim::read_strict(&state, owner)
+                    .unwrap()
+                    .unwrap(),
+                persisted.claim
+            );
+            release_authoritative_scopes(&ledger, &state, &execution.attempts[0]).unwrap();
+        }
+    }
+
+    #[test]
+    fn restart_release_reloads_only_the_unique_immutable_scope_receipt() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let work = tmp.path().join("repo");
+        let state = tmp.path().join("state");
+        std::fs::create_dir_all(&work).unwrap();
+        std::fs::create_dir_all(&state).unwrap();
+        let ledger = MissionLedger::open_in_memory().unwrap();
+        let mission = Mission::new("OmegaOS", "scope restart", work.clone());
+        let plan = direct_plan(&mission, "scope-restart");
+        let mut execution =
+            prepare_authoritative_execution(&ledger, &mission, &plan, "test", Vec::new()).unwrap();
+        transition_authoritative_mission(&ledger, &mission.id, MissionState::Running, "test")
+            .unwrap();
+        claim_authoritative_scopes(
+            &ledger,
+            &state,
+            &work,
+            &mut execution.attempts[0],
+            "worker-scope-restart",
+            &plan.tasks[0].files_owned,
+            Duration::from_secs(60),
+        )
+        .unwrap();
+
+        let mut restarted = execution.attempts[0].clone();
+        restarted.scope_receipt = None;
+        restarted.leases = ledger
+            .active_leases_for_attempt(
+                &restarted.mission_id,
+                &restarted.task_id,
+                &restarted.attempt_id,
+            )
+            .unwrap();
+        release_authoritative_scopes(&ledger, &state, &restarted).unwrap();
+        assert!(
+            scope::ScopeClaim::read_strict(&state, "worker-scope-restart")
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn stale_attempt_receipt_cannot_release_a_replacement_scope_generation() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let work = tmp.path().join("repo");
+        let state = tmp.path().join("state");
+        std::fs::create_dir_all(&work).unwrap();
+        std::fs::create_dir_all(&state).unwrap();
+        let ledger = MissionLedger::open_in_memory().unwrap();
+        let mission = Mission::new("OmegaOS", "scope aba", work.clone());
+        let plan = direct_plan(&mission, "scope-aba");
+        let mut execution =
+            prepare_authoritative_execution(&ledger, &mission, &plan, "test", Vec::new()).unwrap();
+        transition_authoritative_mission(&ledger, &mission.id, MissionState::Running, "test")
+            .unwrap();
+        claim_authoritative_scopes(
+            &ledger,
+            &state,
+            &work,
+            &mut execution.attempts[0],
+            "worker-scope-aba",
+            &plan.tasks[0].files_owned,
+            Duration::from_secs(60),
+        )
+        .unwrap();
+        let first = execution.attempts[0]
+            .scope_receipt
+            .as_ref()
+            .unwrap()
+            .claim
+            .clone();
+        let replacement = scope::replace_claim_exact(
+            &state,
+            &work,
+            &first,
+            vec!["src/replacement.rs".to_string()],
+        )
+        .unwrap();
+
+        assert!(release_authoritative_scopes(&ledger, &state, &execution.attempts[0]).is_err());
+        assert_eq!(
+            scope::ScopeClaim::read_strict(&state, "worker-scope-aba")
+                .unwrap()
+                .unwrap(),
+            replacement
+        );
+    }
+
+    #[test]
+    fn missing_duplicate_or_corrupt_scope_events_fail_closed() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let work = tmp.path().join("repo");
+        let state = tmp.path().join("state");
+        std::fs::create_dir_all(&work).unwrap();
+        std::fs::create_dir_all(&state).unwrap();
+
+        let missing_ledger = MissionLedger::open_in_memory().unwrap();
+        let missing_mission = Mission::new("OmegaOS", "scope missing", work.clone());
+        let missing_plan = direct_plan(&missing_mission, "scope-missing");
+        let mut missing = prepare_authoritative_execution(
+            &missing_ledger,
+            &missing_mission,
+            &missing_plan,
+            "test",
+            Vec::new(),
+        )
+        .unwrap();
+        let orphan = scope::claim_or_reject_for_workspace(
+            &state,
+            &work,
+            "worker-scope-missing",
+            missing_plan.tasks[0].files_owned.clone(),
+        )
+        .unwrap();
+        missing.attempts[0].owner = Some("worker-scope-missing".to_string());
+        assert!(
+            release_authoritative_scopes(&missing_ledger, &state, &missing.attempts[0]).is_err()
+        );
+        assert_eq!(
+            scope::ScopeClaim::read_strict(&state, "worker-scope-missing")
+                .unwrap()
+                .unwrap(),
+            orphan
+        );
+        scope::ScopeClaim::release_exact(&state, &orphan).unwrap();
+
+        for corrupt in [false, true] {
+            let bad_state = tmp.path().join(if corrupt {
+                "state-corrupt"
+            } else {
+                "state-duplicate"
+            });
+            std::fs::create_dir_all(&bad_state).unwrap();
+            let ledger = MissionLedger::open_in_memory().unwrap();
+            let mission = Mission::new("OmegaOS", "scope bad event", work.clone());
+            let plan = direct_plan(
+                &mission,
+                if corrupt {
+                    "scope-corrupt"
+                } else {
+                    "scope-duplicate"
+                },
+            );
+            let mut execution =
+                prepare_authoritative_execution(&ledger, &mission, &plan, "test", Vec::new())
+                    .unwrap();
+            transition_authoritative_mission(&ledger, &mission.id, MissionState::Running, "test")
+                .unwrap();
+            let owner = if corrupt {
+                "worker-scope-corrupt"
+            } else {
+                "worker-scope-duplicate"
+            };
+            claim_authoritative_scopes(
+                &ledger,
+                &bad_state,
+                &work,
+                &mut execution.attempts[0],
+                owner,
+                &plan.tasks[0].files_owned,
+                Duration::from_secs(60),
+            )
+            .unwrap();
+            let payload = if corrupt {
+                serde_json::json!({"attempt_id": execution.attempts[0].attempt_id})
+            } else {
+                serde_json::to_value(execution.attempts[0].scope_receipt.as_ref().unwrap()).unwrap()
+            };
+            append_mission_observation(
+                &ledger,
+                &mission.id,
+                SCOPE_AUTHORITY_ACTOR,
+                SCOPE_AUTHORITY_EVENT_KIND,
+                if corrupt {
+                    "scope-corrupt"
+                } else {
+                    "scope-duplicate"
+                },
+                payload,
+            )
+            .unwrap();
+            assert!(
+                release_authoritative_scopes(&ledger, &bad_state, &execution.attempts[0]).is_err()
+            );
+            assert!(scope::ScopeClaim::read_strict(&bad_state, owner)
+                .unwrap()
+                .is_some());
+        }
+    }
+
+    #[test]
+    fn failed_multi_lease_acquisition_rolls_back_every_owned_resource() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let work = tmp.path().join("repo");
+        let state = tmp.path().join("state");
+        std::fs::create_dir_all(&work).unwrap();
+        std::fs::create_dir_all(&state).unwrap();
+        let ledger = MissionLedger::open_in_memory().unwrap();
+        let mission = Mission::new("OmegaOS", "scope rollback", work.clone());
+        let mut plan = direct_plan(&mission, "scope-rollback");
+        plan.tasks[0].files_owned = vec!["src/a.rs".to_string(), "src/b.rs".to_string()];
+        let mut execution =
+            prepare_authoritative_execution(&ledger, &mission, &plan, "test", Vec::new()).unwrap();
+        transition_authoritative_mission(&ledger, &mission.id, MissionState::Running, "test")
+            .unwrap();
+        let blocked_selector = scope::normalize_scope_selector("src/b.rs");
+        let prepared = scope::prepare_claim_for_workspace(
+            &work,
+            "resource-probe",
+            plan.tasks[0].files_owned.clone(),
+        )
+        .unwrap();
+        let blocked_resource =
+            scope_lease_resource(prepared.workspace_id.as_deref().unwrap(), &blocked_selector);
+        let foreign_mission = Mission::new("OmegaOS", "foreign scope holder", work.clone());
+        let mut foreign_plan = direct_plan(&foreign_mission, "foreign-task");
+        foreign_plan.tasks[0].files_owned = vec!["src/b.rs".to_string()];
+        let foreign_execution = prepare_authoritative_execution(
+            &ledger,
+            &foreign_mission,
+            &foreign_plan,
+            "test",
+            Vec::new(),
+        )
+        .unwrap();
+        transition_authoritative_mission(
+            &ledger,
+            &foreign_mission.id,
+            MissionState::Running,
+            "test",
+        )
+        .unwrap();
+        let foreign_attempt = &foreign_execution.attempts[0];
+        prepared_scope_receipt(
+            &ledger,
+            &work,
+            foreign_attempt,
+            "foreign-worker",
+            &foreign_plan.tasks[0].files_owned,
+        );
+        ledger
+            .acquire_lease(
+                &blocked_resource,
+                &foreign_mission.id,
+                &foreign_attempt.task_id,
+                &foreign_attempt.attempt_id,
+                "foreign-worker",
+                Duration::from_secs(60),
+            )
+            .unwrap();
+
+        let error = claim_authoritative_scopes(
+            &ledger,
+            &state,
+            &work,
+            &mut execution.attempts[0],
+            "worker-scope-rollback",
+            &plan.tasks[0].files_owned,
+            Duration::from_secs(60),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("rolled back cleanly"));
+        assert!(execution.attempts[0].owner.is_none());
+        assert!(execution.attempts[0].leases.is_empty());
+        assert!(execution.attempts[0].scope_receipt.is_none());
+        assert!(ledger
+            .active_leases_for_attempt(
+                &mission.id,
+                &execution.attempts[0].task_id,
+                &execution.attempts[0].attempt_id,
+            )
+            .unwrap()
+            .is_empty());
+        assert!(
+            scope::ScopeClaim::read_strict(&state, "worker-scope-rollback")
+                .unwrap()
+                .is_none()
+        );
+        assert!(ledger.assert_fence(&blocked_resource, 1).is_ok());
+    }
+
+    #[test]
+    fn incomplete_lease_rollback_retains_the_exact_compatibility_claim() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let work = tmp.path().join("repo");
+        let state = tmp.path().join("state");
+        std::fs::create_dir_all(&work).unwrap();
+        std::fs::create_dir_all(&state).unwrap();
+        let ledger = MissionLedger::open_in_memory().unwrap();
+        let mission = Mission::new("OmegaOS", "rollback retention", work.clone());
+        let plan = direct_plan(&mission, "rollback-retention");
+        let mut execution =
+            prepare_authoritative_execution(&ledger, &mission, &plan, "test", Vec::new()).unwrap();
+        let receipt = prepared_scope_receipt(
+            &ledger,
+            &work,
+            &execution.attempts[0],
+            "worker-rollback-retention",
+            &plan.tasks[0].files_owned,
+        );
+        scope::publish_prepared_claim(&state, &work, &receipt.claim).unwrap();
+        let missing_lease = LeaseRecord {
+            resource_key: "scope:missing-rollback-lease".to_string(),
+            mission_id: mission.id.clone(),
+            task_id: execution.attempts[0].task_id.clone(),
+            attempt_id: execution.attempts[0].attempt_id.clone(),
+            owner: receipt.owner.clone(),
+            fencing_token: 99,
+            expires_at: Utc::now() + ChronoDuration::seconds(60),
+            status: crate::mission_ledger::LeaseStatus::Active,
+        };
+        let error = rollback_scope_acquisition(
+            &ledger,
+            &state,
+            &mut execution.attempts[0],
+            &receipt,
+            vec![missing_lease],
+            anyhow::anyhow!("synthetic acquisition failure"),
+        );
+        assert!(error.to_string().contains("rollback incomplete"));
+        assert_eq!(execution.attempts[0].scope_receipt, Some(receipt.clone()));
+        assert_eq!(execution.attempts[0].leases.len(), 1);
+        assert_eq!(
+            scope::ScopeClaim::read_strict(&state, &receipt.owner)
+                .unwrap()
+                .unwrap(),
+            receipt.claim
+        );
+    }
+
+    #[test]
+    fn read_only_attempt_claims_an_owner_without_creating_writable_authority() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let work = tmp.path().join("repo");
+        let state = tmp.path().join("state");
+        std::fs::create_dir_all(&work).unwrap();
+        std::fs::create_dir_all(&state).unwrap();
+        let ledger = MissionLedger::open_in_memory().unwrap();
+        let mission = Mission::new("OmegaOS", "read only verifier", work.clone());
+        let mut plan = direct_plan(&mission, "read-only");
+        plan.tasks[0].files_owned.clear();
+        let mut execution =
+            prepare_authoritative_execution(&ledger, &mission, &plan, "test", Vec::new()).unwrap();
+        transition_authoritative_mission(&ledger, &mission.id, MissionState::Running, "test")
+            .unwrap();
+        claim_authoritative_scopes(
+            &ledger,
+            &state,
+            &work,
+            &mut execution.attempts[0],
+            "worker-read-only",
+            &[],
+            Duration::from_secs(60),
+        )
+        .unwrap();
+        assert_eq!(
+            execution.attempts[0].owner.as_deref(),
+            Some("worker-read-only")
+        );
+        assert!(execution.attempts[0].leases.is_empty());
+        assert!(execution.attempts[0].scope_receipt.is_none());
+        assert!(scope::ScopeClaim::read_all_strict(&state)
+            .unwrap()
+            .is_empty());
+        transition_authoritative_attempt(
+            &ledger,
+            &execution.attempts[0],
+            TaskAttemptState::Running,
+            "worker-read-only",
+        )
+        .unwrap();
+        release_authoritative_scopes(&ledger, &state, &execution.attempts[0]).unwrap();
+    }
+
+    #[test]
+    fn duplicate_selectors_acquire_one_canonical_lease() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let work = tmp.path().join("repo");
+        let state = tmp.path().join("state");
+        std::fs::create_dir_all(&work).unwrap();
+        std::fs::create_dir_all(&state).unwrap();
+        let ledger = MissionLedger::open_in_memory().unwrap();
+        let mission = Mission::new("OmegaOS", "deduplicated scope", work.clone());
+        let mut plan = direct_plan(&mission, "deduplicated-scope");
+        plan.tasks[0].files_owned = vec![
+            "./src/lib.rs".to_string(),
+            "src//lib.rs".to_string(),
+            "src/lib.rs".to_string(),
+        ];
+        let mut execution =
+            prepare_authoritative_execution(&ledger, &mission, &plan, "test", Vec::new()).unwrap();
+        transition_authoritative_mission(&ledger, &mission.id, MissionState::Running, "test")
+            .unwrap();
+        claim_authoritative_scopes(
+            &ledger,
+            &state,
+            &work,
+            &mut execution.attempts[0],
+            "worker-deduplicated-scope",
+            &plan.tasks[0].files_owned,
+            Duration::from_secs(60),
+        )
+        .unwrap();
+        assert_eq!(execution.attempts[0].leases.len(), 1);
+        assert_eq!(
+            execution.attempts[0]
+                .scope_receipt
+                .as_ref()
+                .unwrap()
+                .claim
+                .files_owned,
+            vec!["src/lib.rs".to_string()]
+        );
+        release_authoritative_scopes(&ledger, &state, &execution.attempts[0]).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn workspace_aliases_derive_the_same_v3_lease_resource() {
+        use std::os::unix::fs::symlink;
+        let tmp = tempfile::TempDir::new().unwrap();
+        let work = tmp.path().join("repo");
+        let alias = tmp.path().join("repo-alias");
+        std::fs::create_dir_all(&work).unwrap();
+        symlink(&work, &alias).unwrap();
+        let first = scope::prepare_claim_for_workspace(
+            &work,
+            "worker-real",
+            vec!["src/lib.rs".to_string()],
+        )
+        .unwrap();
+        let second = scope::prepare_claim_for_workspace(
+            &alias,
+            "worker-alias",
+            vec!["./src//lib.rs".to_string()],
+        )
+        .unwrap();
+        assert_eq!(first.workspace_id, second.workspace_id);
+        assert_eq!(
+            scope_lease_resource(
+                first.workspace_id.as_deref().unwrap(),
+                &first.files_owned[0]
+            ),
+            scope_lease_resource(
+                second.workspace_id.as_deref().unwrap(),
+                &second.files_owned[0]
+            )
+        );
+    }
+
+    #[test]
+    fn batch_dispatch_rollback_after_confirmed_kills_leaves_no_worker_authority() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let work = tmp.path().join("repo");
+        let state = tmp.path().join("state");
+        std::fs::create_dir_all(&work).unwrap();
+        std::fs::create_dir_all(&state).unwrap();
+        let ledger = MissionLedger::open_in_memory().unwrap();
+        let mission = Mission::new("OmegaOS", "batch rollback", work.clone());
+        let plan = shaped_plan(&mission, Complexity::Complex, PlanStrategy::Parallel, 2);
+        let mut execution =
+            prepare_authoritative_execution(&ledger, &mission, &plan, "test", Vec::new()).unwrap();
+        transition_authoritative_mission(&ledger, &mission.id, MissionState::Running, "test")
+            .unwrap();
+        for (index, attempt) in execution.attempts.iter_mut().enumerate() {
+            let owner = format!("worker-batch-{index}");
+            claim_authoritative_scopes(
+                &ledger,
+                &state,
+                &work,
+                attempt,
+                &owner,
+                &plan.tasks[index].files_owned,
+                Duration::from_secs(60),
+            )
+            .unwrap();
+            transition_authoritative_attempt(&ledger, attempt, TaskAttemptState::Running, &owner)
+                .unwrap();
+        }
+        let mut failures = Vec::new();
+        for attempt in execution.attempts.iter().rev() {
+            failures.extend(rollback_killed_worker_authority(
+                &ledger,
+                &state,
+                attempt.owner.as_deref().unwrap(),
+                attempt,
+            ));
+        }
+        assert!(failures.is_empty(), "{failures:?}");
+        assert!(persist_dispatch_failure_state(&ledger, &mission.id, false).is_empty());
+        assert_eq!(
+            ledger.mission(&mission.id).unwrap().unwrap().state,
+            MissionState::Failed
+        );
+        for attempt in &execution.attempts {
+            assert_eq!(
+                ledger
+                    .task_attempt(&attempt.attempt_id)
+                    .unwrap()
+                    .unwrap()
+                    .state,
+                TaskAttemptState::Cancelled
+            );
+            assert!(ledger
+                .active_leases_for_attempt(&mission.id, &attempt.task_id, &attempt.attempt_id,)
+                .unwrap()
+                .is_empty());
+            assert!(
+                scope::ScopeClaim::read_strict(&state, attempt.owner.as_deref().unwrap())
+                    .unwrap()
+                    .is_none()
+            );
+        }
+    }
+
+    #[test]
+    fn child_mission_edge_is_reciprocal_atomic_idempotent_and_runtime_unique() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let work = temp.path().join("repo");
+        std::fs::create_dir_all(&work).unwrap();
+        let ledger = MissionLedger::open_in_memory().unwrap();
+        let parent = Mission::new("OmegaOS", "parent", work.clone());
+        let child = Mission::new("OmegaOS", "child", work.clone());
+        let sibling = Mission::new("OmegaOS", "sibling", work.clone());
+        prepare_authoritative_execution(
+            &ledger,
+            &parent,
+            &direct_plan(&parent, "parent-task"),
+            "test",
+            Vec::new(),
+        )
+        .unwrap();
+        prepare_authoritative_execution(
+            &ledger,
+            &child,
+            &direct_plan(&child, "child-task"),
+            "test",
+            Vec::new(),
+        )
+        .unwrap();
+        prepare_authoritative_execution(
+            &ledger,
+            &sibling,
+            &direct_plan(&sibling, "sibling-task"),
+            "test",
+            Vec::new(),
+        )
+        .unwrap();
+        let parent_before = ledger.mission(&parent.id).unwrap().unwrap().version;
+        let child_before = ledger.mission(&child.id).unwrap().unwrap().version;
+        let digest = "ab".repeat(32);
+        let link = link_authoritative_child_mission(
+            &ledger,
+            &parent.id,
+            &child.id,
+            "OmegaOS-worker-child",
+            &digest,
+            "oracle-OmegaOS",
+        )
+        .unwrap();
+        assert_eq!(link.runtime_manifest_digest, digest);
+        assert_eq!(
+            ledger.mission(&parent.id).unwrap().unwrap().version,
+            parent_before + 1
+        );
+        assert_eq!(
+            ledger.mission(&child.id).unwrap().unwrap().version,
+            child_before + 1
+        );
+        let child_event = ledger
+            .events(&child.id)
+            .unwrap()
+            .into_iter()
+            .find(|event| event.kind == "child_parent_binding_prepared")
+            .unwrap();
+        let binding: crate::mission_ledger::ChildMissionBinding =
+            serde_json::from_value(child_event.payload).unwrap();
+        assert_eq!(
+            binding.parent_ack_event_id,
+            ledger
+                .events(&parent.id)
+                .unwrap()
+                .into_iter()
+                .find(|event| event.kind == "child_mission_linked")
+                .unwrap()
+                .event_id
+        );
+
+        let replay = link_authoritative_child_mission(
+            &ledger,
+            &parent.id,
+            &child.id,
+            "OmegaOS-worker-child",
+            &digest,
+            "oracle-OmegaOS",
+        )
+        .unwrap();
+        assert_eq!(replay, link);
+        assert_eq!(
+            ledger.mission(&parent.id).unwrap().unwrap().version,
+            parent_before + 1
+        );
+        assert_eq!(
+            ledger.mission(&child.id).unwrap().unwrap().version,
+            child_before + 1
+        );
+        transition_authoritative_mission(
+            &ledger,
+            &child.id,
+            MissionState::Running,
+            "OmegaOS-worker-child",
+        )
+        .unwrap();
+
+        let sibling_before = ledger.mission(&sibling.id).unwrap().unwrap().version;
+        assert!(link_authoritative_child_mission(
+            &ledger,
+            &parent.id,
+            &sibling.id,
+            "OmegaOS-worker-child",
+            &"cd".repeat(32),
+            "oracle-OmegaOS",
+        )
+        .is_err());
+        assert_eq!(
+            ledger.mission(&sibling.id).unwrap().unwrap().version,
+            sibling_before
+        );
+        assert!(!ledger
+            .events(&sibling.id)
+            .unwrap()
+            .iter()
+            .any(|event| event.kind == "child_parent_binding_prepared"));
+    }
+
+    #[test]
+    fn child_mission_rejects_a_second_parent_without_partial_events() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let work = temp.path().join("repo");
+        std::fs::create_dir_all(&work).unwrap();
+        let ledger = MissionLedger::open_in_memory().unwrap();
+        let first_parent = Mission::new("OmegaOS", "first parent", work.clone());
+        let second_parent = Mission::new("OmegaOS", "second parent", work.clone());
+        let child = Mission::new("OmegaOS", "child", work.clone());
+        for (mission, task) in [
+            (&first_parent, "first-parent-task"),
+            (&second_parent, "second-parent-task"),
+            (&child, "child-task"),
+        ] {
+            prepare_authoritative_execution(
+                &ledger,
+                mission,
+                &direct_plan(mission, task),
+                "test",
+                Vec::new(),
+            )
+            .unwrap();
+        }
+        link_authoritative_child_mission(
+            &ledger,
+            &first_parent.id,
+            &child.id,
+            "OmegaOS-worker-first-parent",
+            &"11".repeat(32),
+            "oracle-OmegaOS",
+        )
+        .unwrap();
+
+        let second_before = ledger.mission(&second_parent.id).unwrap().unwrap().version;
+        let child_before = ledger.mission(&child.id).unwrap().unwrap().version;
+        let second_events_before = ledger.events(&second_parent.id).unwrap();
+        let child_events_before = ledger.events(&child.id).unwrap();
+        assert!(link_authoritative_child_mission(
+            &ledger,
+            &second_parent.id,
+            &child.id,
+            "OmegaOS-worker-second-parent",
+            &"22".repeat(32),
+            "oracle-OmegaOS",
+        )
+        .is_err());
+        assert_eq!(
+            ledger.mission(&second_parent.id).unwrap().unwrap().version,
+            second_before
+        );
+        assert_eq!(
+            ledger.mission(&child.id).unwrap().unwrap().version,
+            child_before
+        );
+        assert_eq!(
+            ledger.events(&second_parent.id).unwrap(),
+            second_events_before
+        );
+        assert_eq!(ledger.events(&child.id).unwrap(), child_events_before);
+        assert_eq!(
+            ledger
+                .parent_link_for_child(&child.id)
+                .unwrap()
+                .unwrap()
+                .parent_mission_id,
+            first_parent.id.as_str()
+        );
+    }
+
+    #[test]
+    fn child_mission_rejects_reverse_ancestor_cycle_without_partial_events() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let work = temp.path().join("repo");
+        std::fs::create_dir_all(&work).unwrap();
+        let ledger = MissionLedger::open_in_memory().unwrap();
+        let mission_a = Mission::new("OmegaOS", "mission A", work.clone());
+        let mission_b = Mission::new("OmegaOS", "mission B", work.clone());
+        for (mission, task) in [(&mission_a, "task-a"), (&mission_b, "task-b")] {
+            prepare_authoritative_execution(
+                &ledger,
+                mission,
+                &direct_plan(mission, task),
+                "test",
+                Vec::new(),
+            )
+            .unwrap();
+        }
+        link_authoritative_child_mission(
+            &ledger,
+            &mission_a.id,
+            &mission_b.id,
+            "OmegaOS-worker-a-to-b",
+            &"33".repeat(32),
+            "oracle-OmegaOS",
+        )
+        .unwrap();
+
+        let a_before = ledger.mission(&mission_a.id).unwrap().unwrap().version;
+        let b_before = ledger.mission(&mission_b.id).unwrap().unwrap().version;
+        let a_events_before = ledger.events(&mission_a.id).unwrap();
+        let b_events_before = ledger.events(&mission_b.id).unwrap();
+        assert!(link_authoritative_child_mission(
+            &ledger,
+            &mission_b.id,
+            &mission_a.id,
+            "OmegaOS-worker-b-to-a",
+            &"44".repeat(32),
+            "oracle-OmegaOS",
+        )
+        .is_err());
+        assert_eq!(
+            ledger.mission(&mission_a.id).unwrap().unwrap().version,
+            a_before
+        );
+        assert_eq!(
+            ledger.mission(&mission_b.id).unwrap().unwrap().version,
+            b_before
+        );
+        assert_eq!(ledger.events(&mission_a.id).unwrap(), a_events_before);
+        assert_eq!(ledger.events(&mission_b.id).unwrap(), b_events_before);
+        assert!(ledger
+            .parent_link_for_child(&mission_a.id)
+            .unwrap()
+            .is_none());
+        assert_eq!(
+            ledger
+                .parent_link_for_child(&mission_b.id)
+                .unwrap()
+                .unwrap()
+                .parent_mission_id,
+            mission_a.id.as_str()
+        );
+    }
+
+    #[test]
+    fn nonclean_child_state_propagates_to_its_linked_parent() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let work = temp.path().join("repo");
+        std::fs::create_dir_all(&work).unwrap();
+        let ledger = MissionLedger::open_in_memory().unwrap();
+        let parent = Mission::new("OmegaOS", "parent", work.clone());
+        let child = Mission::new("OmegaOS", "child", work.clone());
+        prepare_authoritative_execution(
+            &ledger,
+            &parent,
+            &direct_plan(&parent, "parent-task"),
+            "test",
+            Vec::new(),
+        )
+        .unwrap();
+        prepare_authoritative_execution(
+            &ledger,
+            &child,
+            &direct_plan(&child, "child-task"),
+            "test",
+            Vec::new(),
+        )
+        .unwrap();
+        transition_authoritative_mission(
+            &ledger,
+            &parent.id,
+            MissionState::Running,
+            "oracle-OmegaOS",
+        )
+        .unwrap();
+        link_authoritative_child_mission(
+            &ledger,
+            &parent.id,
+            &child.id,
+            "OmegaOS-worker-nonclean",
+            &"12".repeat(32),
+            "oracle-OmegaOS",
+        )
+        .unwrap();
+        transition_authoritative_mission(
+            &ledger,
+            &child.id,
+            MissionState::Running,
+            "OmegaOS-worker-nonclean",
+        )
+        .unwrap();
+        transition_authoritative_mission(
+            &ledger,
+            &child.id,
+            MissionState::Verifying,
+            "OmegaOS-worker-nonclean",
+        )
+        .unwrap();
+        transition_authoritative_mission(
+            &ledger,
+            &child.id,
+            MissionState::Blocked,
+            "OmegaOS-worker-nonclean",
+        )
+        .unwrap();
+        assert_eq!(
+            ledger.mission(&parent.id).unwrap().unwrap().state,
+            MissionState::Blocked
+        );
+    }
+
+    #[test]
+    fn done_clean_without_worker_evidence_cannot_be_accepted() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::process::Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(tmp.path())
+            .status()
+            .unwrap();
+        let mission = Mission::new("OmegaOS", "verify", tmp.path().to_path_buf());
+        let plan = direct_plan(&mission, "verify");
+        let contract = compatibility_task_contract(&mission, &plan.tasks[0]);
+        let mut done = DoneSignal::new("worker", DoneStatus::DoneClean, "trust me");
+        done.todos_total = 1;
+        done.todos_completed = 1;
+
+        let verdict = independently_verify_task_contract(&done, tmp.path(), &contract);
+        assert!(!verdict.passed);
+        assert_eq!(verdict.observations.len(), contract.verifier_checks.len());
+        assert!(verdict
+            .failures
+            .iter()
+            .any(|failure| failure.contains("zero artifacts")));
+    }
+
+    #[test]
+    fn failing_git_diff_check_cannot_be_accepted() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let git = |args: &[&str]| {
+            let status = std::process::Command::new("git")
+                .args(args)
+                .current_dir(tmp.path())
+                .status()
+                .unwrap();
+            assert!(status.success(), "git {args:?} failed");
+        };
+        git(&["init", "-q"]);
+        git(&["config", "user.email", "test@omega.invalid"]);
+        git(&["config", "user.name", "Omega Test"]);
+        std::fs::write(tmp.path().join("tracked.txt"), "clean\n").unwrap();
+        git(&["add", "tracked.txt"]);
+        git(&["commit", "-qm", "fixture"]);
+        std::fs::write(tmp.path().join("tracked.txt"), "trailing spaces   \n").unwrap();
+
+        let mission = Mission::new("OmegaOS", "verify", tmp.path().to_path_buf());
+        let plan = direct_plan(&mission, "verify");
+        let contract = compatibility_task_contract(&mission, &plan.tasks[0]);
+        let mut done = DoneSignal::new("worker", DoneStatus::DoneClean, "done");
+        done.todos_total = 1;
+        done.todos_completed = 1;
+        done.corroboration = vec![
+            crate::done::CorroborationSource::WorkerSelfReport,
+            crate::done::CorroborationSource::CiExitCode,
+        ];
+        done.artifacts = vec![crate::done::DoneArtifact::Command {
+            cmd: "git diff --check".to_string(),
+            exit_code: 0,
+        }];
+
+        let verdict = independently_verify_task_contract(&done, tmp.path(), &contract);
+        assert!(!verdict.passed);
+        assert!(verdict
+            .observations
+            .iter()
+            .any(|observation| !observation.passed));
+    }
+
+    #[test]
+    fn immutable_command_verifier_executes_exactly_once() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let script = tmp.path().join("count-verifier.sh");
+        let counter = tmp.path().join("counter");
+        std::fs::write(&script, "#!/bin/sh\nprintf x >> \"$1\"\n").unwrap();
+        let argv = vec![
+            "sh".to_string(),
+            script.to_string_lossy().to_string(),
+            counter.to_string_lossy().to_string(),
+        ];
+        let mission = Mission::new("OmegaOS", "verify once", tmp.path().to_path_buf());
+        let plan = direct_plan(&mission, "verify-once");
+        let mut contract = compatibility_task_contract(&mission, &plan.tasks[0]);
+        contract.verifier_checks = vec![VerifierCheck {
+            schema_version: CONTRACT_SCHEMA_VERSION,
+            check_id: "one-invocation".to_string(),
+            kind: VerifierCheckKind::Command {
+                argv: argv.clone(),
+                cwd: None,
+                expected_exit_code: 0,
+            },
+            timeout_secs: 5,
+        }];
+        let mut done = DoneSignal::new("worker", DoneStatus::DoneClean, "done");
+        done.todos_total = 1;
+        done.todos_completed = 1;
+        done.corroboration = vec![crate::done::CorroborationSource::WorkerSelfReport];
+        done.artifacts = vec![crate::done::DoneArtifact::Command {
+            cmd: argv.join(" "),
+            exit_code: 0,
+        }];
+
+        let verdict = independently_verify_task_contract(&done, tmp.path(), &contract);
+        assert!(verdict.passed, "{:?}", verdict.failures);
+        assert_eq!(std::fs::read_to_string(counter).unwrap(), "x");
     }
 
     #[tokio::test]

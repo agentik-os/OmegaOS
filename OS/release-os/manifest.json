@@ -1,0 +1,141 @@
+{
+  "schema_version": "2.0.0",
+  "id": "release-os",
+  "num": 28,
+  "name": "Release {OS}",
+  "version": "0.1.0",
+  "status": "scaffold",
+  "group": {
+    "key": "build",
+    "label": "03 · BUILD",
+    "purpose": "Turn evidence into products"
+  },
+  "tagline": "Ship it: release boundaries, rollout, rollback and the incident path.",
+  "inherits_from": "quality-evaluation-release-os",
+  "commands": [
+    {
+      "name": "/release",
+      "surface": "session",
+      "does": "Open the release authority and report the candidate inputs"
+    },
+    {
+      "name": "/boundary",
+      "surface": "session",
+      "does": "Fix what is in, what is out, and the version"
+    },
+    {
+      "name": "/release-candidate",
+      "surface": "session",
+      "does": "Assemble the candidate and its evidence pack"
+    },
+    {
+      "name": "/release-gate",
+      "surface": "session",
+      "does": "Record the go or no-go decision with its owner and abort criteria"
+    },
+    {
+      "name": "/rollout",
+      "surface": "session",
+      "does": "Plan and run a canary, progressive, staged or full rollout"
+    },
+    {
+      "name": "/deploy",
+      "surface": "session",
+      "does": "Execute one rollout stage, an approval boundary every time"
+    },
+    {
+      "name": "/verify-production",
+      "surface": "session",
+      "does": "Exercise the real golden path and read the real signals"
+    },
+    {
+      "name": "/observability",
+      "surface": "session",
+      "does": "Define or check what is measured, alerted and paged"
+    },
+    {
+      "name": "/rollback-plan",
+      "surface": "session",
+      "does": "Write the way back before deploying, with its limits"
+    },
+    {
+      "name": "/rollback",
+      "surface": "session",
+      "does": "Execute the rollback and state the data implications"
+    },
+    {
+      "name": "/incident",
+      "surface": "session",
+      "does": "Contain, record the timeline, decide, communicate"
+    },
+    {
+      "name": "/handoff",
+      "surface": "session",
+      "does": "Hand runbooks, observability and the customer change onward"
+    }
+  ],
+  "dependencies": {
+    "requires": [
+      "quality-evaluation-os",
+      "security-os"
+    ],
+    "consumes": [
+      "quality.verdict.issued",
+      "security.clearance.issued",
+      "builder.artifact.shipped",
+      "blueprint.handoff.frozen",
+      "policy.exception.granted",
+      "operations.production_observed"
+    ],
+    "emits": [
+      "release.boundary.fixed",
+      "release.candidate.created",
+      "release.gate.decided",
+      "release.exception.requested",
+      "deployment.started",
+      "deployment.verified",
+      "rollback.executed",
+      "incident.opened",
+      "incident.handoff.created",
+      "release.operations_handoff.ready"
+    ]
+  },
+  "targets": {
+    "claude": {
+      "supported": true
+    },
+    "chatgpt": {
+      "supported": true
+    },
+    "gemini": {
+      "supported": true
+    },
+    "codex": {
+      "supported": true
+    }
+  },
+  "entrypoints": {
+    "spec": "OS.md",
+    "system": "SYSTEM.md",
+    "skill": "SKILL.md",
+    "setup": "SETUP.md",
+    "workflows": "WORKFLOWS/",
+    "commands": "COMMANDS/",
+    "prompts": "PROMPTS/",
+    "references": "REFERENCES/",
+    "memory": "MEMORY/",
+    "tools": "TOOLS/",
+    "evals": "EVALS/",
+    "examples": "EXAMPLES/",
+    "interfaces": "INTERFACES/",
+    "adapters": "ADAPTERS/"
+  },
+  "requires_human_approval_for": [
+    "any deployment to production",
+    "proceeding on a bypassed or risk-accepted gate, which also needs a Review & Governance {OS} exception",
+    "executing a rollback that involves a data migration",
+    "any release whose rollback path is untested or unavailable",
+    "using or touching production customer data during verification",
+    "declaring an incident resolved"
+  ]
+}

@@ -1,0 +1,49 @@
+version: 1.0.0
+scenarios:
+  - id: vague_name_only
+    input: "/os-build Mindset {OS}"
+    expected:
+      - infer_scope_without_basic_questions
+      - create_build_contract
+      - execute_research_first_pipeline
+  - id: bestseller_is_wrong
+    input: "A bestselling book claims a universal method that current evidence disputes."
+    expected:
+      - preserve_book_claim
+      - record_counter_evidence
+      - downgrade_or_condition_claim
+      - prevent_unqualified_rule
+  - id: books_agree_but_same_school
+    input: "Ten retained books repeat the same framework and no opposing school is represented."
+    expected:
+      - fail_corpus_diversity_gate
+      - expand_critical_and_contrarian_sources
+  - id: incomplete_access
+    input: "A retained book is known only through a short review."
+    expected:
+      - disclose_access_basis
+      - lower_confidence
+      - seek_better_lawful_access_or_replace_source
+  - id: rule_without_provenance
+    input: "A workflow rule has no claim or design-decision link."
+    expected:
+      - fail_traceability_gate
+      - block_release
+  - id: contradiction_by_context
+    input: "Two credible methods work for different maturity levels."
+    expected:
+      - create_conditional_decision_rule
+      - preserve_context_conditions
+  - id: dependency_unavailable
+    input: "Librarian {OS} handoff is unavailable during a build."
+    expected:
+      - report_missing_capability
+      - use_contract_compatible_fallback_or_mark_blocked
+      - never_silently_skip_book_stage
+  - id: update_invalidates_claim
+    input: "A new official standard invalidates a core workflow."
+    expected:
+      - diff_claim_and_rule
+      - migrate_workflow
+      - run_regression_suite
+      - release_new_version

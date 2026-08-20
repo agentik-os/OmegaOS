@@ -148,7 +148,9 @@ pub fn parse_line(line: &str) -> Vec<ParsedLine> {
                 }
             }
             if !text.is_empty() {
-                out.push(ParsedLine::Frame(ChatStreamServerMsg::AssistantMessage { text }));
+                out.push(ParsedLine::Frame(ChatStreamServerMsg::AssistantMessage {
+                    text,
+                }));
             }
             out
         }
@@ -183,7 +185,10 @@ fn compact_json(v: &Value) -> String {
 /// `run_turn`'s `process_group(0)` on its `Command`).
 async fn kill_process_group(pid: u32) {
     let _ = tokio::task::spawn_blocking(move || {
-        std::process::Command::new("kill").arg("--").arg(format!("-{pid}")).status()
+        std::process::Command::new("kill")
+            .arg("--")
+            .arg(format!("-{pid}"))
+            .status()
     })
     .await;
 }
@@ -338,10 +343,19 @@ mod tests {
         std::env::remove_var("OMEGA_CHAT_BIN");
 
         let std_cmd = cmd.as_std();
-        assert_eq!(std_cmd.get_program().to_str().unwrap(), "/usr/bin/fake-claude");
+        assert_eq!(
+            std_cmd.get_program().to_str().unwrap(),
+            "/usr/bin/fake-claude"
+        );
         let args: Vec<&str> = std_cmd.get_args().map(|a| a.to_str().unwrap()).collect();
-        assert_eq!(args, vec!["-p", "hello", "--output-format", "stream-json", "--verbose"]);
-        assert_eq!(std_cmd.get_current_dir().unwrap().to_str().unwrap(), "/tmp/proj");
+        assert_eq!(
+            args,
+            vec!["-p", "hello", "--output-format", "stream-json", "--verbose"]
+        );
+        assert_eq!(
+            std_cmd.get_current_dir().unwrap().to_str().unwrap(),
+            "/tmp/proj"
+        );
     }
 
     #[tokio::test]
@@ -518,7 +532,10 @@ mod tests {
         let line = r#"{"type":"result","is_error":false,"stop_reason":"end_turn","result":"PONG","session_id":"s1"}"#;
         let out = parse_line(line);
         assert_eq!(out.len(), 1);
-        assert!(matches!(&out[0], ParsedLine::Frame(ChatStreamServerMsg::TurnDone)));
+        assert!(matches!(
+            &out[0],
+            ParsedLine::Frame(ChatStreamServerMsg::TurnDone)
+        ));
     }
 
     #[test]

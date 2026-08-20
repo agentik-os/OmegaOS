@@ -1,0 +1,138 @@
+{
+  "schema_version": "2.0.0",
+  "id": "quality-evaluation-os",
+  "num": 26,
+  "name": "Quality & Evaluation {OS}",
+  "version": "0.1.0",
+  "status": "scaffold",
+  "group": {
+    "key": "build",
+    "label": "03 · BUILD",
+    "purpose": "Turn evidence into products"
+  },
+  "tagline": "Independent certification of what was built, before it ships.",
+  "inherits_from": "quality-evaluation-release-os",
+  "commands": [
+    {
+      "name": "/quality",
+      "surface": "session",
+      "does": "Pin the build and the contracts, propose the certification scope"
+    },
+    {
+      "name": "/traceability",
+      "surface": "session",
+      "does": "Bidirectional requirement-to-evidence matrix with both gap lists"
+    },
+    {
+      "name": "/test-plan",
+      "surface": "session",
+      "does": "Risk-based test and evaluation plan, including what it excludes"
+    },
+    {
+      "name": "/qa",
+      "surface": "session",
+      "does": "Run functional and exploratory QA against the plan"
+    },
+    {
+      "name": "/regression",
+      "surface": "session",
+      "does": "Run the regression suite against the last certified build"
+    },
+    {
+      "name": "/contract-test",
+      "surface": "session",
+      "does": "Verify API, event and integration contracts"
+    },
+    {
+      "name": "/performance",
+      "surface": "session",
+      "does": "Test the non-functional requirements and report the spread"
+    },
+    {
+      "name": "/accessibility",
+      "surface": "session",
+      "does": "Test the build against the Design accessibility contracts"
+    },
+    {
+      "name": "/data-migration",
+      "surface": "session",
+      "does": "Verify migration correctness, invariants and reversibility"
+    },
+    {
+      "name": "/ai-eval",
+      "surface": "session",
+      "does": "Score AI behaviour over a stored dataset, versions recorded"
+    },
+    {
+      "name": "/defects",
+      "surface": "session",
+      "does": "Show or triage the defect ledger"
+    },
+    {
+      "name": "/verdict",
+      "surface": "session",
+      "does": "Issue the quality verdict with residual risk and uncovered surface"
+    }
+  ],
+  "dependencies": {
+    "requires": [
+      "builder-os"
+    ],
+    "consumes": [
+      "builder.artifact.shipped",
+      "builder.gate.evaluated",
+      "stepper.release_check.passed",
+      "blueprint.handoff.frozen",
+      "design.handoff.completed",
+      "operations.production_observed"
+    ],
+    "emits": [
+      "quality.plan.created",
+      "quality.traceability.mapped",
+      "test.executed",
+      "eval.executed",
+      "defect.opened",
+      "defect.closed",
+      "quality.requirement.uncertifiable",
+      "quality.verdict.issued"
+    ]
+  },
+  "targets": {
+    "claude": {
+      "supported": true
+    },
+    "chatgpt": {
+      "supported": true
+    },
+    "gemini": {
+      "supported": true
+    },
+    "codex": {
+      "supported": true
+    }
+  },
+  "entrypoints": {
+    "spec": "OS.md",
+    "system": "SYSTEM.md",
+    "skill": "SKILL.md",
+    "setup": "SETUP.md",
+    "workflows": "WORKFLOWS/",
+    "commands": "COMMANDS/",
+    "prompts": "PROMPTS/",
+    "references": "REFERENCES/",
+    "memory": "MEMORY/",
+    "tools": "TOOLS/",
+    "evals": "EVALS/",
+    "examples": "EXAMPLES/",
+    "interfaces": "INTERFACES/",
+    "adapters": "ADAPTERS/"
+  },
+  "requires_human_approval_for": [
+    "using production or real customer data in any test or evaluation",
+    "running a destructive or stateful test against a shared environment",
+    "issuing CONFORMS WITH KNOWN DEFECTS, which needs a named acceptance authority per defect",
+    "accepting a high residual risk into the verdict",
+    "narrowing an agreed test plan for time, cost or access reasons",
+    "publishing a defect that describes an exploitable weakness, which routes to Security {OS} first"
+  ]
+}

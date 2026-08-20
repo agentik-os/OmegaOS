@@ -1,0 +1,87 @@
+{
+  "schema_version": "2.0.0",
+  "id": "wealth-os",
+  "num": 52,
+  "name": "Wealth {OS}",
+  "version": "0.1.0",
+  "status": "scaffold",
+  "group": {
+    "key": "own",
+    "label": "06 · OWN",
+    "purpose": "Turn work into assets"
+  },
+  "tagline": "Personal net worth, reserves and long-horizon goals.",
+  "inherits_from": "wealth-capital-os",
+  "commands": [
+    "/wealth",
+    "/wealth-baseline",
+    "/wealth-update",
+    "/wealth-reserve",
+    "/wealth-goal",
+    "/wealth-risk",
+    "/wealth-constraints",
+    "/wealth-scenario",
+    "/wealth-pack"
+  ],
+  "dependencies": {
+    "requires": [
+      "context-memory-os",
+      "money-os"
+    ],
+    "consumes": [
+      "money.surplus.verified",
+      "money.month.closed",
+      "ownership.position.valued",
+      "ipasset.valuation.recorded",
+      "exit.proceeds.expected",
+      "change.approved",
+      "memory.context.compiled"
+    ],
+    "emits": [
+      "wealth.networth.updated",
+      "wealth.reserve_target.set",
+      "wealth.goal.funded_path",
+      "wealth.capital_constraints.published",
+      "memory.record.staged"
+    ]
+  },
+  "targets": {
+    "claude": {
+      "supported": true
+    },
+    "chatgpt": {
+      "supported": true
+    },
+    "gemini": {
+      "supported": true
+    },
+    "codex": {
+      "supported": true
+    }
+  },
+  "entrypoints": {
+    "spec": "OS.md",
+    "system": "SYSTEM.md",
+    "skill": "SKILL.md",
+    "setup": "SETUP.md",
+    "workflows": "WORKFLOWS/",
+    "commands": "COMMANDS/",
+    "prompts": "PROMPTS/",
+    "references": "REFERENCES/",
+    "memory": "MEMORY/",
+    "tools": "TOOLS/",
+    "evals": "EVALS/",
+    "examples": "EXAMPLES/",
+    "interfaces": "INTERFACES/",
+    "adapters": "ADAPTERS/"
+  },
+  "requires_human_approval_for": [
+    "writing or changing the reserve policy, since Money {OS} tests every monthly close against it",
+    "publishing capital constraints to Capital {OS}, because an allocation will be made inside them",
+    "accepting a valuation that moves net worth by more than the configured threshold",
+    "recording a risk as an accepted exposure rather than a mitigated one",
+    "retiring or re-targeting a long-horizon goal",
+    "exporting or sending anything to an adviser, accountant, tax professional, insurance broker or lawyer, per recipient and per document",
+    "any instruction that would result in money moving: this OS never opens, funds or closes an account, never places a buy or sell order, and never transfers a balance"
+  ]
+}

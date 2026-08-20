@@ -81,27 +81,45 @@ use crate::server::AppState;
 type ApiError = (StatusCode, Json<serde_json::Value>);
 
 fn bad_request(msg: impl Into<String>) -> ApiError {
-    (StatusCode::BAD_REQUEST, Json(serde_json::json!({ "error": msg.into() })))
+    (
+        StatusCode::BAD_REQUEST,
+        Json(serde_json::json!({ "error": msg.into() })),
+    )
 }
 
 fn not_found(msg: impl Into<String>) -> ApiError {
-    (StatusCode::NOT_FOUND, Json(serde_json::json!({ "error": msg.into() })))
+    (
+        StatusCode::NOT_FOUND,
+        Json(serde_json::json!({ "error": msg.into() })),
+    )
 }
 
 fn forbidden(msg: impl Into<String>) -> ApiError {
-    (StatusCode::FORBIDDEN, Json(serde_json::json!({ "error": msg.into() })))
+    (
+        StatusCode::FORBIDDEN,
+        Json(serde_json::json!({ "error": msg.into() })),
+    )
 }
 
 fn bad_gateway(msg: impl Into<String>) -> ApiError {
-    (StatusCode::BAD_GATEWAY, Json(serde_json::json!({ "error": msg.into() })))
+    (
+        StatusCode::BAD_GATEWAY,
+        Json(serde_json::json!({ "error": msg.into() })),
+    )
 }
 
 fn too_many_requests(msg: impl Into<String>) -> ApiError {
-    (StatusCode::TOO_MANY_REQUESTS, Json(serde_json::json!({ "error": msg.into() })))
+    (
+        StatusCode::TOO_MANY_REQUESTS,
+        Json(serde_json::json!({ "error": msg.into() })),
+    )
 }
 
 fn internal(msg: impl std::fmt::Display) -> ApiError {
-    (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "error": msg.to_string() })))
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        Json(serde_json::json!({ "error": msg.to_string() })),
+    )
 }
 
 /// The literal `--template` values `omega pdf` accepts (`crates/omega-cli/
@@ -155,7 +173,11 @@ fn pdf_root_dir() -> PathBuf {
     if let Ok(dir) = std::env::var("OMEGA_PDF_DIR") {
         return PathBuf::from(dir);
     }
-    dirs::home_dir().expect("no home dir").join(".omega").join("state").join("gateway-pdf")
+    dirs::home_dir()
+        .expect("no home dir")
+        .join(".omega")
+        .join("state")
+        .join("gateway-pdf")
 }
 
 /// Where generated PDFs land — the ONLY directory `GET /v1/pdf/download`
@@ -193,7 +215,10 @@ fn is_server_generated_pdf_name(name: &str) -> bool {
 /// child on POSIX).
 async fn kill_process_group(pid: u32) {
     let _ = tokio::task::spawn_blocking(move || {
-        std::process::Command::new("kill").arg("--").arg(format!("-{pid}")).status()
+        std::process::Command::new("kill")
+            .arg("--")
+            .arg(format!("-{pid}"))
+            .status()
     })
     .await;
 }
@@ -272,7 +297,9 @@ pub async fn create(
     }
 
     let Ok(_permit) = state.pdf_permits.clone().try_acquire_owned() else {
-        return Err(too_many_requests("too many concurrent PDF generations, try again shortly"));
+        return Err(too_many_requests(
+            "too many concurrent PDF generations, try again shortly",
+        ));
     };
 
     let ts = chrono::Local::now().format("%Y%m%d-%H%M%S%.f").to_string();
@@ -303,9 +330,10 @@ pub async fn create(
                 .map_err(|e| internal(format!("mkdir {}: {e}", data_dir.display())))?;
             std::fs::create_dir_all(&out_dir)
                 .map_err(|e| internal(format!("mkdir {}: {e}", out_dir.display())))?;
-            let json =
-                serde_json::to_string_pretty(&data).map_err(|e| internal(format!("serialize data: {e}")))?;
-            std::fs::write(&data_path, json).map_err(|e| internal(format!("write data file: {e}")))?;
+            let json = serde_json::to_string_pretty(&data)
+                .map_err(|e| internal(format!("serialize data: {e}")))?;
+            std::fs::write(&data_path, json)
+                .map_err(|e| internal(format!("write data file: {e}")))?;
             Ok(())
         }
     })
@@ -342,9 +370,16 @@ pub async fn create(
     let size_bytes = tokio::fs::metadata(&out_path)
         .await
         .map(|m| m.len())
-        .map_err(|e| bad_gateway(format!("omega pdf reported success but no file at {out_path_str}: {e}")))?;
+        .map_err(|e| {
+            bad_gateway(format!(
+                "omega pdf reported success but no file at {out_path_str}: {e}"
+            ))
+        })?;
 
-    Ok(Json(crate::protocol::PdfResponse { path: out_path_str, size_bytes }))
+    Ok(Json(crate::protocol::PdfResponse {
+        path: out_path_str,
+        size_bytes,
+    }))
 }
 
 /// `GET /v1/pdf/download?path=` — see this module's doc comment. Streams
@@ -357,7 +392,10 @@ pub async fn download(Query(query): Query<HashMap<String, String>>) -> Result<Re
     // Reduce to the bare file name FIRST -- see this module's doc comment
     // for why this makes traversal structurally impossible rather than
     // merely rejected.
-    let Some(name) = std::path::Path::new(&raw).file_name().and_then(|n| n.to_str()) else {
+    let Some(name) = std::path::Path::new(&raw)
+        .file_name()
+        .and_then(|n| n.to_str())
+    else {
         return Err(bad_request("path must contain a valid file name"));
     };
     if !is_server_generated_pdf_name(name) {
@@ -417,8 +455,14 @@ mod tests {
         let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
         std::env::set_var("OMEGA_PDF_DIR", "/tmp/omega-pdf-test-root");
         assert_eq!(pdf_root_dir(), PathBuf::from("/tmp/omega-pdf-test-root"));
-        assert_eq!(pdf_output_dir(), PathBuf::from("/tmp/omega-pdf-test-root/output"));
-        assert_eq!(pdf_data_dir(), PathBuf::from("/tmp/omega-pdf-test-root/data"));
+        assert_eq!(
+            pdf_output_dir(),
+            PathBuf::from("/tmp/omega-pdf-test-root/output")
+        );
+        assert_eq!(
+            pdf_data_dir(),
+            PathBuf::from("/tmp/omega-pdf-test-root/data")
+        );
         std::env::remove_var("OMEGA_PDF_DIR");
     }
 
@@ -444,7 +488,9 @@ mod tests {
 
     #[test]
     fn is_server_generated_pdf_name_accepts_only_the_real_shape() {
-        assert!(is_server_generated_pdf_name("omega-report-20260810-abcd1234.pdf"));
+        assert!(is_server_generated_pdf_name(
+            "omega-report-20260810-abcd1234.pdf"
+        ));
         assert!(!is_server_generated_pdf_name("passwd"));
         assert!(!is_server_generated_pdf_name("data-20260810-abcd1234.json"));
         assert!(!is_server_generated_pdf_name("omega-report-evil.pdf.txt"));

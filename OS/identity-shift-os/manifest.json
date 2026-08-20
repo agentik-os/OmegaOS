@@ -1,0 +1,75 @@
+{
+  "schema_version": "2.0.0",
+  "id": "identity-shift-os",
+  "num": 3,
+  "name": "Identity Shift {OS}",
+  "version": "0.1.0",
+  "status": "scaffold",
+  "group": {
+    "key": "personal",
+    "label": "01 · PERSONAL",
+    "purpose": "Operate yourself"
+  },
+  "tagline": "Deliberate identity change: who you must become before what you must do.",
+  "inherits_from": "identity-shift-os",
+  "commands": [
+    "identity-shift",
+    "shift-define",
+    "shift-evidence",
+    "shift-review",
+    "shift-close"
+  ],
+  "dependencies": {
+    "requires": [
+      "mindset-os",
+      "context-memory-os"
+    ],
+    "consumes_from": [
+      "mindset-os",
+      "alignment-os",
+      "journal-os"
+    ],
+    "emits_to": [
+      "mindset-os",
+      "habit-tracker-os",
+      "goal-life-strategy-os"
+    ]
+  },
+  "targets": {
+    "claude": {
+      "supported": true
+    },
+    "chatgpt": {
+      "supported": true
+    },
+    "gemini": {
+      "supported": true
+    },
+    "codex": {
+      "supported": true
+    }
+  },
+  "entrypoints": {
+    "spec": "OS.md",
+    "system": "SYSTEM.md",
+    "skill": "SKILL.md",
+    "setup": "SETUP.md",
+    "workflows": "WORKFLOWS/",
+    "commands": "COMMANDS/",
+    "prompts": "PROMPTS/",
+    "references": "REFERENCES/",
+    "memory": "MEMORY/",
+    "tools": "TOOLS/",
+    "evals": "EVALS/",
+    "examples": "EXAMPLES/",
+    "interfaces": "INTERFACES/",
+    "adapters": "ADAPTERS/"
+  },
+  "requires_human_approval_for": [
+    "opening a shift, replacing an already open shift, or extending a close-by date",
+    "closing a shift as achieved and handing the resulting identity model to Mindset {OS}",
+    "recording a disconfirming pattern as a durable statement about the person",
+    "amending the exit test of a running charter",
+    "sending the charter, the evidence ledger or any review outside the local machine"
+  ]
+}

@@ -1,0 +1,102 @@
+{
+  "schema_version": "2.0.0",
+  "id": "customer-discovery-os",
+  "num": 18,
+  "name": "Customer Discovery {OS}",
+  "version": "0.1.0",
+  "status": "authored",
+  "group": {
+    "key": "discover",
+    "label": "02 · DISCOVER & DECIDE",
+    "purpose": "Find what is worth building"
+  },
+  "tagline": "Talk to real users and extract what they actually need.",
+  "inherits_from": null,
+  "commands": [
+    "/discovery",
+    "/round",
+    "/screener",
+    "/recruit",
+    "/guide",
+    "/interview",
+    "/debrief",
+    "/transcribe",
+    "/code",
+    "/saturation",
+    "/insight",
+    "/jtbd",
+    "/segment",
+    "/discovery-audit"
+  ],
+  "dependencies": {
+    "requires": [
+      "agentik-runtime",
+      "context-memory-os"
+    ],
+    "consumes": [
+      "market.primary_research.requested",
+      "brainstorm.concept.selected",
+      "validation.test.signed"
+    ],
+    "emits": [
+      "discovery.round.planned",
+      "discovery.interview.recorded",
+      "discovery.insight.confirmed",
+      "discovery.segment.profiled"
+    ],
+    "consumes_from": [
+      "market-research-os",
+      "brainstorm-os",
+      "validation-os"
+    ],
+    "emits_to": [
+      "context-memory-os",
+      "market-research-os",
+      "validation-os",
+      "brainstorm-os",
+      "blueprint-os",
+      "business-model-os",
+      "positioning-os"
+    ]
+  },
+  "targets": {
+    "claude": {
+      "supported": true
+    },
+    "chatgpt": {
+      "supported": true
+    },
+    "gemini": {
+      "supported": true
+    },
+    "codex": {
+      "supported": true
+    }
+  },
+  "entrypoints": {
+    "spec": "OS.md",
+    "system": "SYSTEM.md",
+    "skill": "SKILL.md",
+    "setup": "SETUP.md",
+    "workflows": "WORKFLOWS/",
+    "commands": "COMMANDS/",
+    "prompts": "PROMPTS/",
+    "references": "REFERENCES/",
+    "memory": "MEMORY/",
+    "tools": "TOOLS/",
+    "evals": "EVALS/",
+    "examples": "EXAMPLES/",
+    "interfaces": "INTERFACES/",
+    "adapters": "ADAPTERS/"
+  },
+  "requires_human_approval_for": [
+    "contacting any real person, in any channel, for any reason",
+    "sending a recruitment message, including a single one to a warm contact",
+    "offering or paying a participant incentive",
+    "recording a call, in audio, video or by an automated notetaker",
+    "storing personal data, and any retention beyond the window stated in the round plan",
+    "sharing a transcript, a recording or a quote outside the organisation",
+    "attributing a quote to a named person or a named company",
+    "contacting an existing paying customer"
+  ]
+}

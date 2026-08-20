@@ -1,0 +1,136 @@
+{
+  "schema_version": "2.0.0",
+  "id": "security-os",
+  "num": 27,
+  "name": "Security {OS}",
+  "version": "0.1.0",
+  "status": "scaffold",
+  "group": {
+    "key": "build",
+    "label": "03 · BUILD",
+    "purpose": "Turn evidence into products"
+  },
+  "tagline": "Threat modelling, hardening and the security gate on a release.",
+  "inherits_from": null,
+  "commands": [
+    {
+      "name": "/security",
+      "surface": "session",
+      "does": "Open the authority and establish the written scope"
+    },
+    {
+      "name": "/threat-model",
+      "surface": "session",
+      "does": "Assets, actors, entry points, trust boundaries, abuse cases"
+    },
+    {
+      "name": "/security-review",
+      "surface": "session",
+      "does": "Static review of auth, permissions, secrets, input handling, crypto"
+    },
+    {
+      "name": "/pentest",
+      "surface": "session",
+      "does": "Attempt the planned attack classes inside the written scope"
+    },
+    {
+      "name": "/ai-attack",
+      "surface": "session",
+      "does": "Prompt injection, tool misuse, exfiltration, tenancy leakage"
+    },
+    {
+      "name": "/supply-chain",
+      "surface": "session",
+      "does": "SBOM, dependency origins, pinning, advisories, build provenance"
+    },
+    {
+      "name": "/privacy",
+      "surface": "session",
+      "does": "Map personal data flows to purpose and retention"
+    },
+    {
+      "name": "/secrets-scan",
+      "surface": "session",
+      "does": "Hunt credentials, report restricted, rotate on a live hit"
+    },
+    {
+      "name": "/findings",
+      "surface": "session",
+      "does": "The vulnerability ledger, restricted while unfixed"
+    },
+    {
+      "name": "/harden",
+      "surface": "session",
+      "does": "Remediation ordered by exploitability multiplied by impact"
+    },
+    {
+      "name": "/retest <id>",
+      "surface": "session",
+      "does": "Prove a fix by failing the original reproduction"
+    },
+    {
+      "name": "/clearance",
+      "surface": "session",
+      "does": "Issue the security clearance with conditions and untested surface"
+    }
+  ],
+  "dependencies": {
+    "requires": [
+      "quality-evaluation-os"
+    ],
+    "consumes": [
+      "quality.verdict.issued",
+      "builder.artifact.shipped",
+      "blueprint.handoff.frozen",
+      "design.handoff.completed",
+      "operations.production_observed"
+    ],
+    "emits": [
+      "security.threat_model.completed",
+      "security.finding.opened",
+      "security.finding.retested",
+      "security.secret.exposed",
+      "security.sbom.published",
+      "security.requirement.proposed",
+      "security.clearance.issued"
+    ]
+  },
+  "targets": {
+    "claude": {
+      "supported": true
+    },
+    "chatgpt": {
+      "supported": true
+    },
+    "gemini": {
+      "supported": true
+    },
+    "codex": {
+      "supported": true
+    }
+  },
+  "entrypoints": {
+    "spec": "OS.md",
+    "system": "SYSTEM.md",
+    "skill": "SKILL.md",
+    "setup": "SETUP.md",
+    "workflows": "WORKFLOWS/",
+    "commands": "COMMANDS/",
+    "prompts": "PROMPTS/",
+    "references": "REFERENCES/",
+    "memory": "MEMORY/",
+    "tools": "TOOLS/",
+    "evals": "EVALS/",
+    "examples": "EXAMPLES/",
+    "interfaces": "INTERFACES/",
+    "adapters": "ADAPTERS/"
+  },
+  "requires_human_approval_for": [
+    "testing anything outside the written scope, or any third-party asset",
+    "any test against a production system or with real customer data",
+    "any test that could degrade availability, even briefly",
+    "issuing CLEARED WITH CONDITIONS, which needs a named owner per condition",
+    "disclosing a vulnerability outside the restricted channel, including to a vendor",
+    "accepting a known exploitable weakness into a release"
+  ]
+}

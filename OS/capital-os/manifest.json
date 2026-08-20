@@ -1,0 +1,95 @@
+{
+  "schema_version": "2.0.0",
+  "id": "capital-os",
+  "num": 57,
+  "name": "Capital {OS}",
+  "version": "0.1.0",
+  "status": "scaffold",
+  "group": {
+    "key": "capital",
+    "label": "07 · CAPITAL",
+    "purpose": "Turn assets into capital allocation"
+  },
+  "tagline": "Allocate capital deliberately across a portfolio of bets.",
+  "inherits_from": "wealth-capital-os",
+  "commands": [
+    "/capital policy",
+    "/capital budget",
+    "/capital screen",
+    "/capital allocate",
+    "/capital reserve",
+    "/capital release",
+    "/capital concentration",
+    "/capital rebalance",
+    "/capital review",
+    "/capital decisions"
+  ],
+  "dependencies": {
+    "requires": [
+      "context-memory-os",
+      "investment-thesis-os",
+      "due-diligence-os",
+      "portfolio-management-os",
+      "review-governance-os"
+    ],
+    "consumes": [
+      "thesis.drafted",
+      "thesis.kill_criteria.set",
+      "thesis.invalidated",
+      "diligence.completed",
+      "diligence.redflag.raised",
+      "structure.terms.agreed",
+      "portfolio.followon.recommended",
+      "portfolio.position.impaired",
+      "wealth.capital_constraints.published",
+      "revenue.owner_distribution.verified",
+      "change.approved"
+    ],
+    "emits": [
+      "capital.policy.set",
+      "capital.allocation.approved",
+      "capital.allocation.declined",
+      "capital.reserve.committed",
+      "capital.pacing.reported"
+    ]
+  },
+  "targets": {
+    "claude": {
+      "supported": true
+    },
+    "chatgpt": {
+      "supported": true
+    },
+    "gemini": {
+      "supported": true
+    },
+    "codex": {
+      "supported": true
+    }
+  },
+  "entrypoints": {
+    "spec": "OS.md",
+    "system": "SYSTEM.md",
+    "skill": "SKILL.md",
+    "setup": "SETUP.md",
+    "workflows": "WORKFLOWS/",
+    "commands": "COMMANDS/",
+    "prompts": "PROMPTS/",
+    "references": "REFERENCES/",
+    "memory": "MEMORY/",
+    "tools": "TOOLS/",
+    "evals": "EVALS/",
+    "examples": "EXAMPLES/",
+    "interfaces": "INTERFACES/",
+    "adapters": "ADAPTERS/"
+  },
+  "requires_human_approval_for": [
+    "approving or declining an allocation amount",
+    "committing or releasing a follow-on reserve",
+    "publishing or amending the allocation policy",
+    "setting the deployable budget or the pacing for a period",
+    "treating a facility as drawable capital",
+    "breaching or amending a concentration ceiling",
+    "sending an allocation decision record to a third party"
+  ]
+}

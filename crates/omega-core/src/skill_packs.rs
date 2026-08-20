@@ -169,8 +169,7 @@ mod tests {
 
     #[test]
     fn parse_minimal_pack() {
-        let dir =
-            std::env::temp_dir().join(format!("omega-pack-test-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("omega-pack-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let p = write_pack(
             &dir,
@@ -199,8 +198,7 @@ mod tests {
 
     #[test]
     fn registry_hot_reload() {
-        let dir =
-            std::env::temp_dir().join(format!("omega-reg-test-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("omega-reg-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let mut reg = SkillPackRegistry::new(dir.clone());
         write_pack(&dir, "a", "name: a\nskills:\n  - x\n");

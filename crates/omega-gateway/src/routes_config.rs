@@ -59,11 +59,17 @@ use omega_core::providers::ProvidersConfig;
 type ApiError = (StatusCode, Json<serde_json::Value>);
 
 fn bad_request(msg: impl Into<String>) -> ApiError {
-    (StatusCode::BAD_REQUEST, Json(serde_json::json!({ "error": msg.into() })))
+    (
+        StatusCode::BAD_REQUEST,
+        Json(serde_json::json!({ "error": msg.into() })),
+    )
 }
 
 fn internal(msg: impl std::fmt::Display) -> ApiError {
-    (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "error": msg.to_string() })))
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        Json(serde_json::json!({ "error": msg.to_string() })),
+    )
 }
 
 /// Cap on `PUT /v1/config`'s `value` — generous enough for any real model
@@ -172,8 +178,14 @@ fn load_config_or_refuse() -> Result<ProvidersConfig, String> {
 /// not a functional deviation for any value that already parses.
 fn apply_config_value(cfg: &mut ProvidersConfig, key: &str, value: &str) -> Result<(), String> {
     let mut parts = key.splitn(2, '.');
-    let provider = parts.next().filter(|s| !s.is_empty()).ok_or("missing provider")?;
-    let field = parts.next().filter(|s| !s.is_empty()).ok_or("missing field (use provider.field)")?;
+    let provider = parts
+        .next()
+        .filter(|s| !s.is_empty())
+        .ok_or("missing provider")?;
+    let field = parts
+        .next()
+        .filter(|s| !s.is_empty())
+        .ok_or("missing field (use provider.field)")?;
     match (provider, field) {
         ("claude", "model") => cfg.claude.model = value.to_string(),
         ("claude", "effort") => cfg.claude.effort = value.to_string(),
@@ -187,9 +199,9 @@ fn apply_config_value(cfg: &mut ProvidersConfig, key: &str, value: &str) -> Resu
         // module's security reasoning otherwise discusses only `api_key`
         // READ blast radius, not this field's WRITE blast radius.
         ("claude", "dangerously_skip_permissions") => {
-            cfg.claude.dangerously_skip_permissions = value
-                .parse()
-                .map_err(|_| "dangerously_skip_permissions must be 'true' or 'false'".to_string())?;
+            cfg.claude.dangerously_skip_permissions = value.parse().map_err(|_| {
+                "dangerously_skip_permissions must be 'true' or 'false'".to_string()
+            })?;
         }
         ("codex", "model") => cfg.codex.model = value.to_string(),
         ("codex", "api_key") => cfg.codex.api_key = value.to_string(),
@@ -221,7 +233,9 @@ pub async fn set(Json(req): Json<ConfigSetRequest>) -> Result<Json<ConfigRespons
         return Err(bad_request("key/value must not contain a NUL byte"));
     }
     if req.value.len() > MAX_CONFIG_VALUE_LEN {
-        return Err(bad_request(format!("value too long (max {MAX_CONFIG_VALUE_LEN} bytes)")));
+        return Err(bad_request(format!(
+            "value too long (max {MAX_CONFIG_VALUE_LEN} bytes)"
+        )));
     }
 
     let key = req.key.clone();

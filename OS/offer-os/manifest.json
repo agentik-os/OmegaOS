@@ -1,0 +1,179 @@
+{
+  "schema_version": "2.0.0",
+  "id": "offer-os",
+  "num": 32,
+  "name": "Offer {OS}",
+  "version": "0.1.0",
+  "status": "scaffold",
+  "group": {
+    "key": "grow",
+    "label": "04 · GROW",
+    "purpose": "Turn value into distribution and revenue"
+  },
+  "tagline": "The thing you sell, shaped so the value is obvious.",
+  "inherits_from": null,
+  "commands": [
+    {
+      "name": "/offer",
+      "does": "Opens the OS and reports the state of every offer",
+      "returns": "the offer set with lifecycle state per offer"
+    },
+    {
+      "name": "/offer-draft",
+      "does": "Drafts a candidate offer from the claim and the job to be done",
+      "returns": "a draft offer definition"
+    },
+    {
+      "name": "/offer-scope",
+      "does": "Draws the scope boundary and gives each deliverable an acceptance form",
+      "returns": "a scope boundary artifact"
+    },
+    {
+      "name": "/offer-exclude",
+      "does": "States what the offer deliberately does not cover",
+      "returns": "the exclusion list"
+    },
+    {
+      "name": "/offer-deliverables",
+      "does": "Enumerates the deliverables and their acceptance conditions",
+      "returns": "the deliverable list with acceptance forms"
+    },
+    {
+      "name": "/offer-guarantee",
+      "does": "Designs a guarantee and models its worst case cost",
+      "returns": "a guarantee record with a cost ceiling"
+    },
+    {
+      "name": "/offer-proof",
+      "does": "Assembles the proof set behind each promise",
+      "returns": "proof items, each with a source"
+    },
+    {
+      "name": "/offer-cost-check",
+      "does": "Reconciles the offer against what fulfilment actually costs",
+      "returns": "a viable or not viable verdict with the gap named"
+    },
+    {
+      "name": "/offer-stress-test",
+      "does": "Runs the offer against real objections",
+      "returns": "an objection log and the revisions it forces"
+    },
+    {
+      "name": "/offer-review",
+      "does": "Audits the live offer set for contradiction and drift",
+      "returns": "findings, each with the contradicting statement quoted"
+    },
+    {
+      "name": "/offer-publish",
+      "does": "Publishes a versioned offer after human approval",
+      "returns": "a live, versioned offer emitted to consuming units"
+    },
+    {
+      "name": "/offer-retire",
+      "does": "Retires an offer and migrates the customers on it",
+      "returns": "a retirement record and a per customer migration path"
+    }
+  ],
+  "dependencies": {
+    "requires": [
+      "positioning-os"
+    ],
+    "consumes_from": [
+      "positioning-os",
+      "customer-discovery-os",
+      "validation-os",
+      "delivery-cs-os"
+    ],
+    "emits_to": [
+      "pricing-os",
+      "sales-os",
+      "revenue-os",
+      "delivery-cs-os",
+      "content-os"
+    ],
+    "handoffs": [
+      {
+        "to": "positioning-os",
+        "artifact": "the claim the offer must honour"
+      },
+      {
+        "to": "customer-discovery-os",
+        "artifact": "the job to be done"
+      },
+      {
+        "to": "validation-os",
+        "artifact": "evidence of demand"
+      },
+      {
+        "to": "delivery-cs-os",
+        "artifact": "what fulfilment actually costs to deliver"
+      },
+      {
+        "to": "pricing-os",
+        "artifact": "offer definition"
+      },
+      {
+        "to": "sales-os",
+        "artifact": "offer definition"
+      },
+      {
+        "to": "revenue-os",
+        "artifact": "offer definition"
+      },
+      {
+        "to": "delivery-cs-os",
+        "artifact": "offer definition"
+      },
+      {
+        "to": "content-os",
+        "artifact": "offer definition"
+      },
+      {
+        "to": "sales-os",
+        "artifact": "scope boundary and guarantee"
+      },
+      {
+        "to": "delivery-cs-os",
+        "artifact": "scope boundary and guarantee"
+      }
+    ]
+  },
+  "targets": {
+    "claude": {
+      "supported": true
+    },
+    "chatgpt": {
+      "supported": true
+    },
+    "gemini": {
+      "supported": true
+    },
+    "codex": {
+      "supported": true
+    }
+  },
+  "entrypoints": {
+    "spec": "OS.md",
+    "system": "SYSTEM.md",
+    "skill": "SKILL.md",
+    "setup": "SETUP.md",
+    "workflows": "WORKFLOWS/",
+    "commands": "COMMANDS/",
+    "prompts": "PROMPTS/",
+    "references": "REFERENCES/",
+    "memory": "MEMORY/",
+    "tools": "TOOLS/",
+    "evals": "EVALS/",
+    "examples": "EXAMPLES/",
+    "interfaces": "INTERFACES/",
+    "adapters": "ADAPTERS/"
+  },
+  "requires_human_approval_for": [
+    "publishing an offer or any change to a live offer definition",
+    "adding, changing or removing a guarantee",
+    "retiring an offer that has live customers, including the migration path",
+    "widening the scope boundary or removing an exclusion",
+    "asserting a proof item that names a customer",
+    "the exact wording of any customer-facing offer text"
+  ]
+}

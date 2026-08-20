@@ -30,7 +30,10 @@ pub fn ledger_dir() -> PathBuf {
     if let Ok(dir) = std::env::var("OMEGA_STATE_DIR") {
         return PathBuf::from(dir);
     }
-    dirs::home_dir().expect("no home dir").join(".omega").join("state")
+    dirs::home_dir()
+        .expect("no home dir")
+        .join(".omega")
+        .join("state")
 }
 
 #[derive(Deserialize)]
@@ -60,7 +63,12 @@ struct LedgerFile {
 /// First line of `text`, truncated to `max_chars` characters. Empty for
 /// empty/whitespace-only input.
 fn first_line_truncated(text: &str, max_chars: usize) -> String {
-    text.lines().next().unwrap_or("").chars().take(max_chars).collect()
+    text.lines()
+        .next()
+        .unwrap_or("")
+        .chars()
+        .take(max_chars)
+        .collect()
 }
 
 /// A filename counts as a top-level oracle ledger when it is
@@ -80,11 +88,15 @@ pub fn list() -> Vec<Mission> {
         return missions;
     };
     for entry in entries.flatten() {
-        let Ok(file_type) = entry.file_type() else { continue };
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
         if !file_type.is_file() {
             continue;
         }
-        let Some(name) = entry.file_name().to_str().map(str::to_string) else { continue };
+        let Some(name) = entry.file_name().to_str().map(str::to_string) else {
+            continue;
+        };
         if !is_top_level_oracle_ledger(&name) {
             continue;
         }
@@ -120,7 +132,10 @@ pub fn list() -> Vec<Mission> {
             tasks: parsed
                 .tasks
                 .into_iter()
-                .map(|t| MissionTask { title: t.title, status: t.status })
+                .map(|t| MissionTask {
+                    title: t.title,
+                    status: t.status,
+                })
                 .collect(),
             updated_at: parsed.ts,
         });
@@ -144,14 +159,20 @@ mod tests {
     fn ledger_dir_env_override() {
         let _g = LOCK.lock().unwrap();
         std::env::set_var("OMEGA_STATE_DIR", "/tmp/omega-state-test-override");
-        assert_eq!(ledger_dir(), PathBuf::from("/tmp/omega-state-test-override"));
+        assert_eq!(
+            ledger_dir(),
+            PathBuf::from("/tmp/omega-state-test-override")
+        );
         std::env::remove_var("OMEGA_STATE_DIR");
     }
 
     #[test]
     fn list_on_missing_dir_returns_empty() {
         let _g = LOCK.lock().unwrap();
-        std::env::set_var("OMEGA_STATE_DIR", "/tmp/nonexistent-omega-state-dir-xyz-123");
+        std::env::set_var(
+            "OMEGA_STATE_DIR",
+            "/tmp/nonexistent-omega-state-dir-xyz-123",
+        );
         assert!(list().is_empty());
         std::env::remove_var("OMEGA_STATE_DIR");
     }
@@ -197,20 +218,38 @@ mod tests {
             }"#,
         );
         // Malformed: must be skipped, not fatal.
-        write_ledger(dir.path(), "oracle-broken.progress.json", "{ not valid json");
+        write_ledger(
+            dir.path(),
+            "oracle-broken.progress.json",
+            "{ not valid json",
+        );
         // Foreign JSON (missing required fields entirely): also skipped.
-        write_ledger(dir.path(), "oracle-foreign.progress.json", r#"{"unrelated":"shape"}"#);
+        write_ledger(
+            dir.path(),
+            "oracle-foreign.progress.json",
+            r#"{"unrelated":"shape"}"#,
+        );
 
         let missions = list();
         std::env::remove_var("OMEGA_STATE_DIR");
 
-        assert_eq!(missions.len(), 2, "worker + malformed + foreign ledgers must be excluded");
-        assert_eq!(missions[0].key, "oracle-verba", "sorted updated_at desc: 08-09 before 08-08");
+        assert_eq!(
+            missions.len(),
+            2,
+            "worker + malformed + foreign ledgers must be excluded"
+        );
+        assert_eq!(
+            missions[0].key, "oracle-verba",
+            "sorted updated_at desc: 08-09 before 08-08"
+        );
         assert_eq!(missions[1].key, "oracle-dentistrygpt");
 
         let dentistry = &missions[1];
         assert_eq!(dentistry.project.as_deref(), Some("dentistrygpt"));
-        assert_eq!(dentistry.title.as_deref(), Some("Audit code reset vs addition"));
+        assert_eq!(
+            dentistry.title.as_deref(),
+            Some("Audit code reset vs addition")
+        );
         assert_eq!(dentistry.done, 6);
         assert_eq!(dentistry.total, 6);
         assert_eq!(dentistry.updated_at, "2026-08-08T08:48:20Z");
@@ -232,8 +271,12 @@ mod tests {
 
     #[test]
     fn top_level_oracle_ledger_filename_matching() {
-        assert!(is_top_level_oracle_ledger("oracle-dentistrygpt.progress.json"));
-        assert!(!is_top_level_oracle_ledger("oracle-dentistrygpt-worker-1.progress.json"));
+        assert!(is_top_level_oracle_ledger(
+            "oracle-dentistrygpt.progress.json"
+        ));
+        assert!(!is_top_level_oracle_ledger(
+            "oracle-dentistrygpt-worker-1.progress.json"
+        ));
         assert!(!is_top_level_oracle_ledger("something-else.json"));
         assert!(!is_top_level_oracle_ledger("oracle-x.json"));
     }

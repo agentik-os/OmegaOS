@@ -1,0 +1,73 @@
+{
+  "schema_version": "2.0.0",
+  "id": "intuitive-os",
+  "num": 8,
+  "name": "Intuitive {OS}",
+  "version": "0.1.0",
+  "status": "scaffold",
+  "group": {
+    "key": "personal",
+    "label": "01 · PERSONAL",
+    "purpose": "Operate yourself"
+  },
+  "tagline": "Train and calibrate intuition as a usable, falsifiable signal.",
+  "inherits_from": "intuitive-os",
+  "commands": [
+    "intuition",
+    "signal-log",
+    "signal-resolve",
+    "calibration",
+    "intuition-review"
+  ],
+  "dependencies": {
+    "requires": [
+      "context-memory-os"
+    ],
+    "consumes_from": [
+      "journal-os",
+      "decision-os"
+    ],
+    "emits_to": [
+      "decision-os",
+      "journal-os",
+      "mindset-os"
+    ]
+  },
+  "targets": {
+    "claude": {
+      "supported": true
+    },
+    "chatgpt": {
+      "supported": true
+    },
+    "gemini": {
+      "supported": true
+    },
+    "codex": {
+      "supported": true
+    }
+  },
+  "entrypoints": {
+    "spec": "OS.md",
+    "system": "SYSTEM.md",
+    "skill": "SKILL.md",
+    "setup": "SETUP.md",
+    "workflows": "WORKFLOWS/",
+    "commands": "COMMANDS/",
+    "prompts": "PROMPTS/",
+    "references": "REFERENCES/",
+    "memory": "MEMORY/",
+    "tools": "TOOLS/",
+    "evals": "EVALS/",
+    "examples": "EXAMPLES/",
+    "interfaces": "INTERFACES/",
+    "adapters": "ADAPTERS/"
+  },
+  "requires_human_approval_for": [
+    "resolving a signal as hit or miss when the outcome is contested or the evidence is indirect",
+    "promoting a domain out of uncalibrated, or moving any domain to a higher weight tier",
+    "attaching a calibration weight to a signal passed to Decision {OS} for an irreversible or expensive decision",
+    "editing or deleting a captured signal, in particular after its resolution date has passed",
+    "sending or exporting the signal log, resolutions or the calibration record outside the local machine"
+  ]
+}

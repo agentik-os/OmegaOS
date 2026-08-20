@@ -1,0 +1,104 @@
+{
+  "schema_version": "2.0.0",
+  "id": "librarian-os",
+  "num": 12,
+  "name": "Librarian {OS}",
+  "version": "0.1.0",
+  "status": "authored",
+  "group": {
+    "key": "discover",
+    "label": "02 · DISCOVER & DECIDE",
+    "purpose": "Find what is worth building"
+  },
+  "tagline": "Your reading and source corpus turned into retrievable understanding.",
+  "inherits_from": "books-os",
+  "commands": [
+    "/librarian",
+    "/ingest",
+    "/extract",
+    "/ask",
+    "/synthesize",
+    "/shelf",
+    "/reread",
+    "/cite",
+    "/corpus-audit"
+  ],
+  "dependencies": {
+    "requires": [
+      "agentik-runtime",
+      "context-memory-os"
+    ],
+    "consumes": [
+      "memory.context.compiled",
+      "research.evidence.compiled",
+      "osbuilder.contract.opened",
+      "osbuilder.bookdeep.requested"
+    ],
+    "emits": [
+      "librarian.source.indexed",
+      "librarian.extract.delivered",
+      "librarian.corpus.audited",
+      "librarian.corpus.discovered",
+      "librarian.book.analyzed",
+      "librarian.corpus.compared"
+    ],
+    "consumes_from": [
+      "context-memory-os",
+      "research-os",
+      "os-builder-os"
+    ],
+    "emits_to": [
+      "research-os",
+      "trend-opportunity-os",
+      "context-memory-os",
+      "brainstorm-os",
+      "business-model-os",
+      "os-builder-os"
+    ],
+    "handoffs": [
+      {
+        "to": "os-builder-os",
+        "artifact": "book intelligence for a Forge build: the curated corpus matrix with logged rejections, one schema-valid deep analysis per retained book, and the cross-corpus comparison. See REFERENCES/BOOK-INTELLIGENCE-CONTRACT.md"
+      }
+    ]
+  },
+  "targets": {
+    "claude": {
+      "supported": true
+    },
+    "chatgpt": {
+      "supported": true
+    },
+    "gemini": {
+      "supported": true
+    },
+    "codex": {
+      "supported": true
+    }
+  },
+  "entrypoints": {
+    "spec": "OS.md",
+    "system": "SYSTEM.md",
+    "skill": "SKILL.md",
+    "setup": "SETUP.md",
+    "workflows": "WORKFLOWS/",
+    "commands": "COMMANDS/",
+    "prompts": "PROMPTS/",
+    "references": "REFERENCES/",
+    "memory": "MEMORY/",
+    "tools": "TOOLS/",
+    "evals": "EVALS/",
+    "examples": "EXAMPLES/",
+    "interfaces": "INTERFACES/",
+    "adapters": "ADAPTERS/"
+  },
+  "requires_human_approval_for": [
+    "deleting a source record, an extract or a shelf",
+    "merging two source records into one",
+    "re-indexing in a way that discards existing extracts",
+    "sending source text to an external service, including for embedding, OCR or transcription",
+    "exporting or sharing copyrighted material beyond a permitted quotation",
+    "ingesting a source containing personal data about identifiable people",
+    "overwriting rather than superseding a canonical extract"
+  ]
+}

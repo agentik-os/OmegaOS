@@ -1,0 +1,179 @@
+{
+  "schema_version": "2.0.0",
+  "id": "revenue-os",
+  "num": 39,
+  "name": "Revenue {OS}",
+  "version": "0.1.0",
+  "status": "scaffold",
+  "group": {
+    "key": "grow",
+    "label": "04 · GROW",
+    "purpose": "Turn value into distribution and revenue"
+  },
+  "tagline": "Business cash flow, CRM, billing and receivables.",
+  "inherits_from": "revenue-os",
+  "commands": [
+    {
+      "name": "/revenue",
+      "does": "Opens the business money view.",
+      "returns": "Cash, receivables, pipeline and the next decision that is due."
+    },
+    {
+      "name": "/pipeline",
+      "does": "Reviews the pipeline and the forecast.",
+      "returns": "Pipeline state and a forecast range with its assumptions stated."
+    },
+    {
+      "name": "/lead",
+      "does": "Creates or inspects the commercial record for a lead.",
+      "returns": "A CRM record with source and stage evidence."
+    },
+    {
+      "name": "/proposal",
+      "does": "Builds the commercial logic of a proposal.",
+      "returns": "Figures, terms and the consequence of a scope change."
+    },
+    {
+      "name": "/invoice",
+      "does": "Drafts an invoice and issues it once approved.",
+      "returns": "An invoice draft, issued only on approval of the exact figures."
+    },
+    {
+      "name": "/collections",
+      "does": "Manages overdue receivables.",
+      "returns": "An ageing view, one action per invoice, and an unsent message."
+    },
+    {
+      "name": "/business-cashflow",
+      "does": "Analyses business cash and runway.",
+      "returns": "A cash position with runway dates and the variables that move it."
+    },
+    {
+      "name": "/receipt-business",
+      "does": "Stages a business receipt or photo as evidence.",
+      "returns": "A staged extraction with its source and confidence level."
+    },
+    {
+      "name": "/contract",
+      "does": "Stages contract data as a commercial record.",
+      "returns": "Terms, dates and obligations, staged for confirmation."
+    },
+    {
+      "name": "/revenue-close",
+      "does": "Runs the monthly commercial and financial close.",
+      "returns": "Reconciled accounts and a named exception list."
+    },
+    {
+      "name": "/revenue-scenario",
+      "does": "Models revenue and cash scenarios.",
+      "returns": "Scenarios as ranges with falsifiable assumptions."
+    },
+    {
+      "name": "/renewal",
+      "does": "Takes the renewal decision on the delivery signals.",
+      "returns": "The decision, citing the signals it accepted or overrode."
+    }
+  ],
+  "dependencies": {
+    "requires": [
+      "offer-os",
+      "pricing-os"
+    ],
+    "consumes_from": [
+      "sales-os",
+      "pricing-os",
+      "offer-os",
+      "delivery-cs-os"
+    ],
+    "emits_to": [
+      "kpi-analytics-os",
+      "business-strategy-os",
+      "growth-os",
+      "delivery-cs-os",
+      "sales-os",
+      "wealth-os"
+    ],
+    "handoffs": [
+      {
+        "to": "sales-os",
+        "artifact": "closed won commitment and agreed scope"
+      },
+      {
+        "to": "pricing-os",
+        "artifact": "price book"
+      },
+      {
+        "to": "offer-os",
+        "artifact": "scope"
+      },
+      {
+        "to": "delivery-cs-os",
+        "artifact": "acceptance, adoption and renewal signals"
+      },
+      {
+        "to": "kpi-analytics-os",
+        "artifact": "cash position and receivable status"
+      },
+      {
+        "to": "business-strategy-os",
+        "artifact": "cash position and receivable status"
+      },
+      {
+        "to": "growth-os",
+        "artifact": "cash position and receivable status"
+      },
+      {
+        "to": "delivery-cs-os",
+        "artifact": "renewal decision"
+      },
+      {
+        "to": "sales-os",
+        "artifact": "renewal decision"
+      },
+      {
+        "to": "wealth-os",
+        "artifact": "verified owner distribution"
+      }
+    ]
+  },
+  "targets": {
+    "claude": {
+      "supported": true
+    },
+    "chatgpt": {
+      "supported": true
+    },
+    "gemini": {
+      "supported": true
+    },
+    "codex": {
+      "supported": true
+    }
+  },
+  "entrypoints": {
+    "spec": "OS.md",
+    "system": "SYSTEM.md",
+    "skill": "SKILL.md",
+    "setup": "SETUP.md",
+    "workflows": "WORKFLOWS/",
+    "commands": "COMMANDS/",
+    "prompts": "PROMPTS/",
+    "references": "REFERENCES/",
+    "memory": "MEMORY/",
+    "tools": "TOOLS/",
+    "evals": "EVALS/",
+    "examples": "EXAMPLES/",
+    "interfaces": "INTERFACES/",
+    "adapters": "ADAPTERS/"
+  },
+  "requires_human_approval_for": [
+    "sending an invoice, on the exact figures, line items and recipient",
+    "sending any collections message, on the exact text",
+    "writing off a receivable",
+    "taking an owner distribution",
+    "any change to a signed contract",
+    "applying a discount outside the published policy",
+    "closing a period that still has unreconciled accounts",
+    "recording a renewal decision that contradicts the delivery signals"
+  ]
+}

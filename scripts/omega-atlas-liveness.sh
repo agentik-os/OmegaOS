@@ -26,14 +26,72 @@
 #   - busy-guard: never restart a bot with a live claude/codex child (a legit
 #     long task can hold pending > 0 for minutes).
 #   - drain-guard: only restart if pending2 >= pending1 (not consuming at all).
-#   - cooldown: at most one restart per 15 min, PER UNIT (own stamp file).
+#   - cooldown: at most one restart per 15 min, PER UNIT.
+#   - circuit breaker: after 3 restarts in 60 min the unit is left untouched
+#     until an operator explicitly resets it with `--reset <unit>`.
 #   - ONE shared 25s window for all bots, so covering N bots costs ~30s total
 #     and never overruns the 2-minute cron interval.
 set -uo pipefail
 
-API_BASE="https://api.telegram.org/bot"
+API_BASE="${OMEGA_TG_API_BASE:-https://api.telegram.org/bot}"
+DRAIN_SECONDS="${OMEGA_TG_DRAIN_SECONDS:-25}"
+COOLDOWN_SECONDS="${OMEGA_TG_COOLDOWN_SECONDS:-900}"
+WINDOW_SECONDS="${OMEGA_TG_WINDOW_SECONDS:-3600}"
+MAX_RESTARTS="${OMEGA_TG_MAX_RESTARTS:-3}"
+LOCK_STALE_SECONDS="${OMEGA_TG_LOCK_STALE_SECONDS:-120}"
+STATE_DIR="${OMEGA_TG_STATE_DIR:-$HOME/.omega/state}"
+ALERT_BIN="${OMEGA_TG_ALERT_BIN:-$HOME/.omega/bin/omega-alert-send.sh}"
+if ! [[ "$DRAIN_SECONDS" =~ ^[0-9]+$ && "$COOLDOWN_SECONDS" =~ ^[0-9]+$ \
+    && "$WINDOW_SECONDS" =~ ^[0-9]+$ && "$MAX_RESTARTS" =~ ^[1-9][0-9]*$ \
+    && "$LOCK_STALE_SECONDS" =~ ^[1-9][0-9]*$ ]]; then
+    echo "tg-liveness: invalid numeric circuit-breaker configuration" >&2
+    exit 2
+fi
+
+valid_unit() {
+    [[ "$1" =~ ^omega-tg-(bot|agent-[a-zA-Z0-9_-]+)\.service$ ]]
+}
+
+reset_circuit() {
+    local requested="${1:-}"
+    mkdir -p "$STATE_DIR"
+    if [ "$requested" = "all" ]; then
+        local state
+        for state in \
+            "$STATE_DIR"/tg-liveness-circuit-omega-tg-* \
+            "$STATE_DIR"/tg-liveness-restarts-omega-tg-* \
+            "$STATE_DIR"/tg-liveness-restart-omega-tg-* \
+            "$STATE_DIR"/tg-liveness-lock-omega-tg-*; do
+            if [ -d "$state" ]; then rmdir -- "$state" 2>/dev/null || true
+            elif [ -e "$state" ]; then rm -f -- "$state"
+            fi
+        done
+        echo "tg-liveness: all Telegram circuit breakers reset"
+        return 0
+    fi
+    [[ "$requested" == *.service ]] || requested="${requested}.service"
+    valid_unit "$requested" || {
+        echo "usage: omega-atlas-liveness.sh --reset <omega-tg-bot.service|omega-tg-agent-ID.service|all>" >&2
+        return 2
+    }
+    local stem="${requested%.service}"
+    rm -f -- \
+        "$STATE_DIR/tg-liveness-circuit-$stem" \
+        "$STATE_DIR/tg-liveness-restarts-$stem" \
+        "$STATE_DIR/tg-liveness-restart-$stem"
+    rmdir -- "$STATE_DIR/tg-liveness-lock-$stem" 2>/dev/null || true
+    echo "tg-liveness: circuit breaker reset for $requested"
+}
+
+if [ "${1:-}" = "--reset" ]; then
+    reset_circuit "${2:-}"
+    exit $?
+fi
+
 pending() {  # $1 = token
-    curl -s --max-time 10 "${API_BASE}${1}/getWebhookInfo" \
+    [[ "$1" =~ ^[0-9]+:[A-Za-z0-9_-]+$ ]] || return 1
+    printf 'url = "%s"\n' "${API_BASE}${1}/getWebhookInfo" \
+        | curl -s --max-time 10 --config - \
         | grep -oP '"pending_update_count":\K[0-9]+'
 }
 
@@ -82,6 +140,7 @@ busy() {  # $1 = main pid
 SUSPECT=""
 while IFS=$'\t' read -r unit token label; do
     [ -n "${unit:-}" ] && [ -n "${token:-}" ] || continue
+    valid_unit "$unit" || continue
     p1="$(pending "$token")"
     [ -n "${p1:-}" ] || continue
     [ "$p1" -gt 0 ] 2>/dev/null || continue
@@ -95,31 +154,95 @@ done <<< "$WATCH"
 [ -n "${SUSPECT//[[:space:]]/}" ] || exit 0
 
 # ── One shared drain window, then re-probe only the suspects ────────────────
-sleep 25
+sleep "$DRAIN_SECONDS"
 
-while IFS=$'\t' read -r unit token label p1 mpid; do
-    [ -n "${unit:-}" ] || continue
+atomic_state() { # $1 target, $2 content
+    local target="$1" content="$2" tmp
+    mkdir -p "$STATE_DIR"
+    tmp="$(mktemp "$STATE_DIR/.tg-liveness-state.XXXXXX")" || return 1
+    chmod 0600 "$tmp"
+    if ! printf '%s' "$content" > "$tmp" || ! mv -f -- "$tmp" "$target"; then
+        rm -f -- "$tmp"
+        return 1
+    fi
+}
+
+send_alert() { # $1 message
+    [ -x "$ALERT_BIN" ] && bash "$ALERT_BIN" "$1" >/dev/null 2>&1 || true
+}
+
+handle_suspect() (
+    unit="$1" token="$2" label="$3" p1="$4" mpid="$5"
+    valid_unit "$unit" || { echo "tg-liveness: refusing invalid unit $unit" >&2; return 2; }
+    mkdir -p "$STATE_DIR"
+    stem="${unit%.service}"
+    lock="$STATE_DIR/tg-liveness-lock-$stem"
+    if ! mkdir "$lock" 2>/dev/null; then
+        lock_age=$(( $(date +%s) - $(stat -c %Y "$lock" 2>/dev/null || echo 0) ))
+        if [ "$lock_age" -ge "$LOCK_STALE_SECONDS" ] && rmdir "$lock" 2>/dev/null && mkdir "$lock" 2>/dev/null; then
+            echo "[$(date '+%F %T')] tg-liveness: recovered stale probe lock for $unit"
+        else
+            echo "[$(date '+%F %T')] tg-liveness: another probe owns $unit; skipping"
+            return 0
+        fi
+    fi
+    trap 'rmdir "$lock" 2>/dev/null || true' EXIT
+
+    circuit="$STATE_DIR/tg-liveness-circuit-$stem"
+    history="$STATE_DIR/tg-liveness-restarts-$stem"
+    legacy_flag="$STATE_DIR/tg-liveness-restart-$stem"
+    if [ -f "$circuit" ]; then
+        echo "[$(date '+%F %T')] tg-liveness: CIRCUIT OPEN for $unit; no restart (repair, then run --reset $unit)"
+        return 0
+    fi
+
     p2="$(pending "$token")"
-    [ -n "${p2:-}" ] || continue
-    [ "$p2" -gt 0 ] 2>/dev/null || continue      # drained → was just busy, healthy
-    [ "$p2" -ge "$p1" ] 2>/dev/null || continue  # still draining → consuming, healthy
-    busy "$mpid" && continue                     # a task started during the wait
+    [ -n "${p2:-}" ] || return 0
+    [ "$p2" -gt 0 ] 2>/dev/null || return 0      # drained → was just busy, healthy
+    [ "$p2" -ge "$p1" ] 2>/dev/null || return 0  # still draining → consuming, healthy
+    busy "$mpid" && return 0                      # a task started during the wait
 
-    # Cooldown: at most one restart per 15 min, per unit.
-    FLAG="$HOME/.omega/state/tg-liveness-restart-${unit%.service}"
-    mkdir -p "$HOME/.omega/state"
-    if [ -f "$FLAG" ]; then
-        AGE=$(( $(date +%s) - $(stat -c %Y "$FLAG" 2>/dev/null || echo 0) ))
-        [ "$AGE" -lt 900 ] && continue
+    now="$(date +%s)"
+    cutoff=$(( now - WINDOW_SECONDS ))
+    recent="$(awk -v cutoff="$cutoff" '$1 ~ /^[0-9]+$/ && $1 >= cutoff { print $1 }' "$history" 2>/dev/null)"
+    restart_count="$(printf '%s\n' "$recent" | awk 'NF { n++ } END { print n + 0 }')"
+    last_restart="$(printf '%s\n' "$recent" | tail -n 1)"
+    if [ -n "$last_restart" ] && [ $(( now - last_restart )) -lt "$COOLDOWN_SECONDS" ]; then
+        return 0
+    fi
+    # Honour the legacy cooldown stamp during the first run after upgrading.
+    if [ ! -s "$history" ] && [ -f "$legacy_flag" ]; then
+        legacy_age=$(( now - $(stat -c %Y "$legacy_flag" 2>/dev/null || echo 0) ))
+        [ "$legacy_age" -lt "$COOLDOWN_SECONDS" ] && return 0
+    fi
+
+    if [ "$restart_count" -ge "$MAX_RESTARTS" ]; then
+        atomic_state "$circuit" "OPEN $now"$'\n' || return 1
+        echo "[$(date '+%F %T')] tg-liveness: CIRCUIT OPEN for $unit after $restart_count restart(s) in ${WINDOW_SECONDS}s; no restart"
+        send_alert "━━━━━━━━━━━━
+<b>Ω  TELEGRAM CIRCUIT OPEN</b>
+━━━━━━━━━━━━
+ ⛔ ${label} stayed deaf after ${restart_count} restart(s) in ${WINDOW_SECONDS}s. Automatic restarts are stopped. Repair the root cause, then run: <code>omega-atlas-liveness.sh --reset ${unit}</code>."
+        return 0
     fi
 
     echo "[$(date '+%F %T')] tg-liveness: DEAF ${label} (pending ${p1}→${p2}, pid ${mpid}, no agent child) → restarting ${unit}"
-    systemctl --user restart "$unit" && : > "$FLAG"
-
-    # Alert the operator through the canonical funnel (best-effort).
-    MSG="━━━━━━━━━━━━
+    if systemctl --user restart "$unit"; then
+        next_history="${recent}${recent:+$'\n'}${now}"$'\n'
+        atomic_state "$history" "$next_history" || return 1
+        atomic_state "$legacy_flag" "$now"$'\n' || return 1
+        send_alert "━━━━━━━━━━━━
 <b>Ω  TELEGRAM AUTO-HEAL</b>
 ━━━━━━━━━━━━
- 🔄 ${label} was alive but not consuming (${p1} msg stuck). Poll loop restarted."
-    [ -x "$HOME/.omega/bin/omega-alert-send.sh" ] && bash "$HOME/.omega/bin/omega-alert-send.sh" "$MSG" >/dev/null 2>&1 || true
+ 🔄 ${label} was alive but not consuming (${p1} msg stuck). Poll loop restarted ($(( restart_count + 1 ))/${MAX_RESTARTS} in the current window)."
+    else
+        echo "[$(date '+%F %T')] tg-liveness: restart FAILED for $unit" >&2
+        send_alert "OmegaOS Telegram auto-heal could not restart ${label} (${unit}). Manual intervention required."
+        return 1
+    fi
+)
+
+while IFS=$'\t' read -r unit token label p1 mpid; do
+    [ -n "${unit:-}" ] || continue
+    handle_suspect "$unit" "$token" "$label" "$p1" "$mpid"
 done <<< "$SUSPECT"

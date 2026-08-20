@@ -1213,7 +1213,7 @@ POST-FIX VERIFICATION (after writing code, BEFORE commit):
 
 IF ANY POST-FIX CHECK FAILS:
   → `git revert HEAD` immediately
-  → Log the failure in .audit/fix-log.md with exact error
+  → Log the failure in audits/.debugaudit/fix-log.md with exact error
   → Mark as NEEDS_REVIEW (never retry same approach blindly)
   → Try alternative approach OR skip this fix
 
@@ -1412,7 +1412,7 @@ This audit implements contracts defined in `../_shared/QUALITY-ARSENAL-PREAMBLE.
 
 ### Audit-Specific Critical Addendum — Parallel-Dispatch Safety
 
-Rule 43 step 8 dispatches `/codeaudit` + `/uiuxaudit` + `/flowaudit` + `/debugaudit` in parallel on the same ticket. Each writes to a distinct `.{audit}/` dir, so no collision between audits. Concurrency lock (preamble §3) prevents two `/debugaudit` instances. Output dir includes ticket ID: `.linear-fix/{TICKET}/debugaudit.json`.
+Rule 43 step 8 dispatches `/codeaudit` + `/uiuxaudit` + `/flowaudit` + `/debugaudit` in parallel on the same ticket. Each writes to a distinct `audits/.<audit-id>/` dir, so no collision between audits. Concurrency lock (preamble §3) prevents two `/debugaudit` instances. Output dir includes ticket ID: `.linear-fix/{TICKET}/debugaudit.json`.
 
 Console/network capture reliability:
 - Playwright must be in authenticated state (rule 43 preflight)
@@ -1528,11 +1528,11 @@ After v1.2 compliance round:
 
 Every fix MUST follow the "Do No Harm" protocol:
 
-1. **PRE-FIX BASELINE** — grep all references, capture functional state (syntax/parse/load), save to `.{audit}/baseline/`.
+1. **PRE-FIX BASELINE** — grep all references, capture functional state (syntax/parse/load), save to `audits/.<audit-id>/baseline/`.
 2. **APPLY FIX** — normal execution.
 3. **POST-FIX CHECK** — repeat every baseline check. If any PASSED→FAILED transition occurs, revert immediately.
 4. **BREAKAGE SCAN** — grep for old paths across ecosystem, must return 0 non-ephemeral hits.
-5. **BEFORE/AFTER MATRIX** — produce `.{audit}/before-after.md` with functional status table per affected item.
+5. **BEFORE/AFTER MATRIX** — produce `audits/.<audit-id>/before-after.md` with functional status table per affected item.
 
 **An audit that breaks 1 working thing is WORSE than no audit.** Do NOT claim "done" without `before-after.md` showing zero regressions.
 

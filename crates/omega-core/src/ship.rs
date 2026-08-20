@@ -178,7 +178,10 @@ impl ShipPipeline {
         }
 
         // Step 6: Whitespace sanity
-        match self.run_step("whitespace", "git diff --cached --check").await {
+        match self
+            .run_step("whitespace", "git diff --cached --check")
+            .await
+        {
             Ok(step) => {
                 let passed = step.passed;
                 steps.push(step);
@@ -452,11 +455,7 @@ mod tests {
         );
         assert!(!pipeline.is_frozen("test-project"));
 
-        std::fs::write(
-            dir.path().join("ship-test-project.frozen"),
-            "frozen\n",
-        )
-        .unwrap();
+        std::fs::write(dir.path().join("ship-test-project.frozen"), "frozen\n").unwrap();
         assert!(pipeline.is_frozen("test-project"));
 
         pipeline.unfreeze("test-project").unwrap();

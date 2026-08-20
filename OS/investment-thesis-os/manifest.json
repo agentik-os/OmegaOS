@@ -1,0 +1,91 @@
+{
+  "schema_version": "2.0.0",
+  "id": "investment-thesis-os",
+  "num": 58,
+  "name": "Investment Thesis {OS}",
+  "version": "0.1.0",
+  "status": "scaffold",
+  "group": {
+    "key": "capital",
+    "label": "07 · CAPITAL",
+    "purpose": "Turn assets into capital allocation"
+  },
+  "tagline": "Write the thesis before the cheque, and test it after.",
+  "inherits_from": null,
+  "commands": [
+    "/thesis draft",
+    "/thesis falsify",
+    "/thesis kill-criteria",
+    "/thesis premortem",
+    "/thesis checkpoint",
+    "/thesis drift",
+    "/thesis revise",
+    "/thesis retire",
+    "/thesis hitrate",
+    "/thesis list"
+  ],
+  "dependencies": {
+    "requires": [
+      "context-memory-os",
+      "capital-os",
+      "due-diligence-os"
+    ],
+    "consumes": [
+      "dealflow.opportunity.qualified",
+      "diligence.finding.registered",
+      "diligence.redflag.raised",
+      "diligence.completed",
+      "capital.allocation.approved",
+      "capital.allocation.declined",
+      "portfolio.mark.updated",
+      "portfolio.position.impaired",
+      "change.approved"
+    ],
+    "emits": [
+      "thesis.drafted",
+      "thesis.kill_criteria.set",
+      "thesis.checkpoint.due",
+      "thesis.reviewed",
+      "thesis.invalidated"
+    ]
+  },
+  "targets": {
+    "claude": {
+      "supported": true
+    },
+    "chatgpt": {
+      "supported": true
+    },
+    "gemini": {
+      "supported": true
+    },
+    "codex": {
+      "supported": true
+    }
+  },
+  "entrypoints": {
+    "spec": "OS.md",
+    "system": "SYSTEM.md",
+    "skill": "SKILL.md",
+    "setup": "SETUP.md",
+    "workflows": "WORKFLOWS/",
+    "commands": "COMMANDS/",
+    "prompts": "PROMPTS/",
+    "references": "REFERENCES/",
+    "memory": "MEMORY/",
+    "tools": "TOOLS/",
+    "evals": "EVALS/",
+    "examples": "EXAMPLES/",
+    "interfaces": "INTERFACES/",
+    "adapters": "ADAPTERS/"
+  },
+  "requires_human_approval_for": [
+    "treating a thesis as authorisation to commit",
+    "sharing a thesis outside the user",
+    "declaring a thesis invalidated",
+    "acting on a met kill criterion",
+    "overwriting or deleting a stored thesis version",
+    "reclassifying a retrospective thesis",
+    "recording a loss as unlucky rather than wrong"
+  ]
+}

@@ -31,11 +31,11 @@ bot for remote control.
 
 | Component | Role |
 |-----------|------|
-| `omega` CLI | Main binary — 40+ commands |
-| TUI | 5-tab session manager (Sessions/Menu/Agentic/Settings/Help — Monitor and Projects live inside Settings and Agentic) |
+| `omega` CLI | Main binary; `omega --help` is the command source of truth |
+| TUI | 7-tab manager: Sessions, Projects, OS, Menu, System, Help, Settings |
 | rmux SDK | Terminal multiplexer (sessions, panes, send/capture) |
-| AISB Master | Always-on Claude session with 14 Matrix agents |
-| Telegram Bridge | Long-poll bot, relays messages to AISB |
+| Atlas Telegram service | Persistent orchestration process that classifies and routes messages |
+| AISB conversation viewer | Optional read-only `aisb-master` rmux mirror; not an agent |
 | Quality Arsenal | 23 forensic audits (code, UX, perf, security, etc.) |
 
 ---
@@ -64,10 +64,10 @@ bot for remote control.
 ├── rules/                         the typed doctrine (.md, editable — `omega rules list` prints the current set)
 │   ├── L0-ship-the-truth...md
 │   ├── L1-runtime-is-the-only-truth.md
-│   └── ... (7 Laws + 47 named R-* rules)
+│   └── ... (the Laws + registry-owned named R-* rules; inspect with `omega rules list`)
 │
 ├── agents/                        Agent system prompts
-│   ├── aisb-master.md             Master AISB brain
+│   ├── aisb-master.md             orchestration prompt retained for service compatibility
 │   ├── oracle.md / worker.md / team-lead.md
 │   └── aisb/                      14 Matrix agents
 │       ├── oracle.md / morpheus.md / seraph.md
@@ -176,11 +176,11 @@ Active selection persisted to `~/.omega/state/telegram-active-model.json`.
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │  Level 1 — Human Interface                                      │
-│  TUI (5 tabs) · CLI (40+ cmds) · Telegram Bridge                │
+│  TUI (7 tabs) · CLI (`omega --help`) · Telegram Bridge          │
 │                      ↓ intent                                    │
 ├─────────────────────────────────────────────────────────────────┤
-│  Level 2 — AISB Master (persistent, auto-restart, --continue)   │
-│  14 Matrix Agents:                                               │
+│  Level 2 — Atlas Telegram orchestration service (persistent)    │
+│  Matrix agent registry:                                          │
 │    Oracle · Morpheus · Seraph · Keymaker · Smith · Niobe         │
 │    Architect · Merovingian · Neo · Zion · Link · Construct       │
 │    Pythia · Council                                              │
@@ -199,7 +199,7 @@ Active selection persisted to `~/.omega/state/telegram-active-model.json`.
 
 | Role | Icon | Pattern | Purpose |
 |------|------|---------|---------|
-| AISB Master | ★ | `aisb-master` | Always-on brain, 14 agents |
+| AISB viewer | (hidden) | `aisb-master` | Optional read-only Telegram conversation mirror |
 | Oracle | ◆ | `oracle-{Project}` | Strategic — classify, plan, dispatch |
 | Worker | ● | `{Project}-worker-{task}` | Tactical — one task, scope-claimed |
 | Home | ⌂ | `claude-1`, `codex-2` | Interactive user sessions |
@@ -255,7 +255,7 @@ Each LLM CLI reads OmegaOS config:
 | Channel | How |
 |---------|-----|
 | TUI | `omega` or `omega menu` — full session manager |
-| CLI | `omega <cmd>` — 40+ commands |
+| CLI | `omega <cmd>`; inspect the current surface with `omega --help` |
 | Telegram | `/help`, `/list`, `/model`, `/newproject`, `/account`, etc. |
 
 ### Inter-process
@@ -323,7 +323,7 @@ When a user installs a new LLM CLI:
 ```toml
 state_dir = "~/.omega/state"
 logs_dir = "~/.omega/logs"
-auto_spawn_master = true       # AISB Master auto-created on launch
+auto_spawn_master = false      # optional legacy read-only viewer
 auto_naming = true             # Sessions named claude-1, codex-2, ...
 ```
 
@@ -365,13 +365,15 @@ enabled = true
 ```
 omega                    Launch TUI
 omega menu               Same as omega
-omega master             Attach AISB Master
+omega aisb-view          Open read-only AISB conversation viewer
+omega master             Compatibility alias for omega aisb-view
+omega aisb-chat          Interactive local chat through the Telegram service
 omega list               List sessions
 omega new <name>         Create session
 omega kill <name>        Kill session
 omega dispatch <P> <M>   Send mission to oracle
 omega orchestrate <P> <M>  Full pipeline (classify → plan → dispatch → gate)
-omega rules list         Show the 7 Laws + 47 named operational Rules
+omega rules list         Show the current Laws + operational Rule registry
 omega rules export       Write to ~/.omega/rules/
 omega sync               Symlink to all LLMs
 omega accounts list      List provider accounts
@@ -394,6 +396,6 @@ To verify the architecture is correctly set up:
 ls ~/.omega/                              # Should show: credentials/ rules/ agents/ skills/ ...
 ls ~/.omega/credentials/                  # Should show: claude.json codex.json ...
 ls -la ~/.claude/.credentials.json        # Should be a symlink to ~/.omega/credentials/claude.json
-omega rules list                          # Should show the 7 Laws + 47 named Rules
+omega rules list                          # Should match the runtime Rule registry
 cargo build --release                     # Should be 0 errors
 ```

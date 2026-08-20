@@ -1,0 +1,926 @@
+{
+  "schema_version": "2.0.0",
+  "suite": "AGENTIK {OS}",
+  "total": 73,
+  "groups": [
+    {
+      "key": "runtime",
+      "label": "00 · RUNTIME",
+      "purpose": "Build and run the entire Agentik ecosystem",
+      "rust_variant": "Runtime",
+      "members": [
+        "os-builder-os",
+        "agentik-runtime"
+      ]
+    },
+    {
+      "key": "personal",
+      "label": "01 · PERSONAL",
+      "purpose": "Operate yourself",
+      "rust_variant": "Personal",
+      "members": [
+        "mindset-os",
+        "identity-shift-os",
+        "alignment-os",
+        "goal-life-strategy-os",
+        "habit-tracker-os",
+        "health-energy-os",
+        "intuitive-os",
+        "decision-os",
+        "journal-os",
+        "social-intelligence-os"
+      ]
+    },
+    {
+      "key": "discover",
+      "label": "02 · DISCOVER & DECIDE",
+      "purpose": "Find what is worth building",
+      "rust_variant": "Discover",
+      "members": [
+        "librarian-os",
+        "research-os",
+        "trend-opportunity-os",
+        "brainstorm-os",
+        "strategy-portfolio-os",
+        "market-research-os",
+        "customer-discovery-os",
+        "validation-os",
+        "business-model-os"
+      ]
+    },
+    {
+      "key": "build",
+      "label": "03 · BUILD",
+      "purpose": "Turn evidence into products",
+      "rust_variant": "Build",
+      "members": [
+        "blueprint-os",
+        "design-os",
+        "prototype-os",
+        "stepper-os",
+        "builder-os",
+        "quality-evaluation-os",
+        "security-os",
+        "release-os"
+      ]
+    },
+    {
+      "key": "grow",
+      "label": "04 · GROW",
+      "purpose": "Turn value into distribution and revenue",
+      "rust_variant": "Grow",
+      "members": [
+        "positioning-os",
+        "brand-os",
+        "storyteller-os",
+        "offer-os",
+        "pricing-os",
+        "content-os",
+        "sales-os",
+        "affiliate-os",
+        "network-os",
+        "growth-os",
+        "revenue-os",
+        "delivery-cs-os"
+      ]
+    },
+    {
+      "key": "operate",
+      "label": "05 · OPERATE",
+      "purpose": "Turn chaos into repeatable execution",
+      "rust_variant": "Operate",
+      "members": [
+        "execution-os",
+        "project-os",
+        "meeting-os",
+        "documentation-os",
+        "client-os",
+        "operations-os",
+        "process-sop-os",
+        "team-delegation-os",
+        "kpi-analytics-os",
+        "review-governance-os"
+      ]
+    },
+    {
+      "key": "own",
+      "label": "06 · OWN",
+      "purpose": "Turn work into assets",
+      "rust_variant": "Own",
+      "members": [
+        "money-os",
+        "wealth-os",
+        "ownership-os",
+        "ip-asset-os",
+        "business-strategy-os",
+        "exit-liquidity-os"
+      ]
+    },
+    {
+      "key": "capital",
+      "label": "07 · CAPITAL",
+      "purpose": "Turn assets into capital allocation",
+      "rust_variant": "Capital",
+      "members": [
+        "capital-os",
+        "investment-thesis-os",
+        "deal-flow-os",
+        "due-diligence-os",
+        "acquisition-os",
+        "deal-structuring-os",
+        "portfolio-management-os",
+        "board-os"
+      ]
+    },
+    {
+      "key": "systems",
+      "label": "08 · AI & SYSTEMS",
+      "purpose": "Intelligence infrastructure for everything",
+      "rust_variant": "Systems",
+      "members": [
+        "ai-logic-os",
+        "context-memory-os",
+        "agent-os",
+        "automation-os",
+        "knowledge-os",
+        "evaluation-os",
+        "tool-integration-os",
+        "orchestration-os"
+      ]
+    }
+  ],
+  "contract": {
+    "files": [
+      "README.md",
+      "OS.md",
+      "SYSTEM.md",
+      "SKILL.md",
+      "SETUP.md",
+      "manifest.json",
+      "CHANGELOG.md"
+    ],
+    "dirs": [
+      "WORKFLOWS",
+      "COMMANDS",
+      "PROMPTS",
+      "REFERENCES",
+      "MEMORY",
+      "TOOLS",
+      "EVALS",
+      "EXAMPLES",
+      "INTERFACES",
+      "ADAPTERS"
+    ],
+    "INTERFACES": [
+      "chat.md",
+      "artifact.md",
+      "dashboard.md",
+      "generative-ui.md"
+    ],
+    "ADAPTERS": [
+      "chatgpt.md",
+      "claude.md",
+      "gemini.md",
+      "codex.md"
+    ]
+  },
+  "aliases": {
+    "designer-os": "design-os",
+    "habits-os": "habit-tracker-os",
+    "storytelling-os": "storyteller-os",
+    "ideation-os": "brainstorm-os",
+    "researcher-os": "research-os"
+  },
+  "os": [
+    {
+      "num": 0,
+      "slug": "os-builder-os",
+      "name": "OS Builder",
+      "display": "OS Builder {OS}",
+      "group": "runtime",
+      "tagline": "Build an operative system itself: intake, spec, research, build, red team, score, release.",
+      "inherits_from": null,
+      "status": "new"
+    },
+    {
+      "num": 1,
+      "slug": "agentik-runtime",
+      "name": "Agentik Runtime",
+      "display": "Agentik Runtime {OS}",
+      "group": "runtime",
+      "tagline": "Install, configure, run, compose, update and evaluate every Agentik OS.",
+      "inherits_from": null,
+      "status": "new"
+    },
+    {
+      "num": 2,
+      "slug": "mindset-os",
+      "name": "Mindset",
+      "display": "Mindset {OS}",
+      "group": "personal",
+      "tagline": "Identity and beliefs: the behavioural compiler under Alignment.",
+      "inherits_from": "mindset-os",
+      "status": "inherit"
+    },
+    {
+      "num": 3,
+      "slug": "identity-shift-os",
+      "name": "Identity Shift",
+      "display": "Identity Shift {OS}",
+      "group": "personal",
+      "tagline": "Deliberate identity change: who you must become before what you must do.",
+      "inherits_from": "identity-shift-os",
+      "status": "inherit"
+    },
+    {
+      "num": 4,
+      "slug": "alignment-os",
+      "name": "Alignment",
+      "display": "Alignment {OS}",
+      "group": "personal",
+      "tagline": "Meaning, values and inner alignment: the BE authority of the suite.",
+      "inherits_from": "alignment-os",
+      "status": "inherit"
+    },
+    {
+      "num": 5,
+      "slug": "goal-life-strategy-os",
+      "name": "Goal & Life Strategy",
+      "display": "Goal & Life Strategy {OS}",
+      "group": "personal",
+      "tagline": "Life-level goals and the strategy that makes them reachable.",
+      "inherits_from": null,
+      "status": "new"
+    },
+    {
+      "num": 6,
+      "slug": "habit-tracker-os",
+      "name": "Habit Tracker",
+      "display": "Habit Tracker {OS}",
+      "group": "personal",
+      "tagline": "Recurring behaviour contracts and the evidence they actually happened.",
+      "inherits_from": "habit-tracker-os",
+      "status": "inherit"
+    },
+    {
+      "num": 7,
+      "slug": "health-energy-os",
+      "name": "Health & Energy",
+      "display": "Health & Energy {OS}",
+      "group": "personal",
+      "tagline": "Physical and cognitive capacity: sleep, movement, fuel, recovery, stress.",
+      "inherits_from": "health-energy-os",
+      "status": "inherit"
+    },
+    {
+      "num": 8,
+      "slug": "intuitive-os",
+      "name": "Intuitive",
+      "display": "Intuitive {OS}",
+      "group": "personal",
+      "tagline": "Train and calibrate intuition as a usable, falsifiable signal.",
+      "inherits_from": "intuitive-os",
+      "status": "inherit"
+    },
+    {
+      "num": 9,
+      "slug": "decision-os",
+      "name": "Decision",
+      "display": "Decision {OS}",
+      "group": "personal",
+      "tagline": "Make hard calls well: framing, reversibility, evidence, the decision record.",
+      "inherits_from": null,
+      "status": "new"
+    },
+    {
+      "num": 10,
+      "slug": "journal-os",
+      "name": "Journal",
+      "display": "Journal {OS}",
+      "group": "personal",
+      "tagline": "Reflection that compounds: capture, revisit, extract the pattern.",
+      "inherits_from": "journal-os",
+      "status": "inherit"
+    },
+    {
+      "num": 11,
+      "slug": "social-intelligence-os",
+      "name": "Social Intelligence",
+      "display": "Social Intelligence {OS}",
+      "group": "personal",
+      "tagline": "Read rooms and people accurately, and act with integrity.",
+      "inherits_from": "seductive-os",
+      "status": "inherit"
+    },
+    {
+      "num": 12,
+      "slug": "librarian-os",
+      "name": "Librarian",
+      "display": "Librarian {OS}",
+      "group": "discover",
+      "tagline": "Your reading and source corpus turned into retrievable understanding.",
+      "inherits_from": "books-os",
+      "status": "inherit"
+    },
+    {
+      "num": 13,
+      "slug": "research-os",
+      "name": "Research",
+      "display": "Research {OS}",
+      "group": "discover",
+      "tagline": "General-purpose evidence gathering with sources you can defend.",
+      "inherits_from": "researcher-os",
+      "status": "inherit"
+    },
+    {
+      "num": 14,
+      "slug": "trend-opportunity-os",
+      "name": "Trend & Opportunity",
+      "display": "Trend & Opportunity {OS}",
+      "group": "discover",
+      "tagline": "Spot movement early and turn it into a named opportunity.",
+      "inherits_from": null,
+      "status": "new"
+    },
+    {
+      "num": 15,
+      "slug": "brainstorm-os",
+      "name": "Brainstorm",
+      "display": "Brainstorm {OS}",
+      "group": "discover",
+      "tagline": "Generate and evolve ideas before research or definition.",
+      "inherits_from": "brainstorm-os",
+      "status": "inherit"
+    },
+    {
+      "num": 16,
+      "slug": "strategy-portfolio-os",
+      "name": "Strategy & Portfolio",
+      "display": "Strategy & Portfolio {OS}",
+      "group": "discover",
+      "tagline": "Choose the bets: goals, projects and resource allocation.",
+      "inherits_from": "strategy-portfolio-os",
+      "status": "inherit"
+    },
+    {
+      "num": 17,
+      "slug": "market-research-os",
+      "name": "Market Research",
+      "display": "Market Research {OS}",
+      "group": "discover",
+      "tagline": "Market and customer evidence, and the validation that follows.",
+      "inherits_from": "market-research-os",
+      "status": "inherit"
+    },
+    {
+      "num": 18,
+      "slug": "customer-discovery-os",
+      "name": "Customer Discovery",
+      "display": "Customer Discovery {OS}",
+      "group": "discover",
+      "tagline": "Talk to real users and extract what they actually need.",
+      "inherits_from": null,
+      "status": "new"
+    },
+    {
+      "num": 19,
+      "slug": "validation-os",
+      "name": "Validation",
+      "display": "Validation {OS}",
+      "group": "discover",
+      "tagline": "Kill or confirm an idea with the cheapest sufficient test.",
+      "inherits_from": null,
+      "status": "new"
+    },
+    {
+      "num": 20,
+      "slug": "business-model-os",
+      "name": "Business Model",
+      "display": "Business Model {OS}",
+      "group": "discover",
+      "tagline": "How value is created, delivered and captured, made explicit.",
+      "inherits_from": null,
+      "status": "new"
+    },
+    {
+      "num": 21,
+      "slug": "blueprint-os",
+      "name": "Blueprint",
+      "display": "Blueprint {OS}",
+      "group": "build",
+      "tagline": "The product-definition compiler: a complete, traceable definition pack.",
+      "inherits_from": "blueprint-os",
+      "status": "inherit"
+    },
+    {
+      "num": 22,
+      "slug": "design-os",
+      "name": "Design",
+      "display": "Design {OS}",
+      "group": "build",
+      "tagline": "UX, interaction and visual design compiled into a machine-readable handoff.",
+      "inherits_from": "design-os",
+      "status": "inherit"
+    },
+    {
+      "num": 23,
+      "slug": "prototype-os",
+      "name": "Prototype",
+      "display": "Prototype {OS}",
+      "group": "build",
+      "tagline": "The cheapest artifact that answers the riskiest open question.",
+      "inherits_from": null,
+      "status": "new"
+    },
+    {
+      "num": 24,
+      "slug": "stepper-os",
+      "name": "Stepper",
+      "display": "Stepper {OS}",
+      "group": "build",
+      "tagline": "The dependency-aware step graph and its deterministic verification gate.",
+      "inherits_from": "stepper-os",
+      "status": "inherit"
+    },
+    {
+      "num": 25,
+      "slug": "builder-os",
+      "name": "Builder",
+      "display": "Builder {OS}",
+      "group": "build",
+      "tagline": "The implementation runtime: steps executed into release-ready code.",
+      "inherits_from": "builder-os",
+      "status": "inherit"
+    },
+    {
+      "num": 26,
+      "slug": "quality-evaluation-os",
+      "name": "Quality & Evaluation",
+      "display": "Quality & Evaluation {OS}",
+      "group": "build",
+      "tagline": "Independent certification of what was built, before it ships.",
+      "inherits_from": "quality-evaluation-release-os",
+      "status": "inherit"
+    },
+    {
+      "num": 27,
+      "slug": "security-os",
+      "name": "Security",
+      "display": "Security {OS}",
+      "group": "build",
+      "tagline": "Threat modelling, hardening and the security gate on a release.",
+      "inherits_from": null,
+      "status": "new"
+    },
+    {
+      "num": 28,
+      "slug": "release-os",
+      "name": "Release",
+      "display": "Release {OS}",
+      "group": "build",
+      "tagline": "Ship it: release boundaries, rollout, rollback and the incident path.",
+      "inherits_from": "quality-evaluation-release-os",
+      "status": "inherit"
+    },
+    {
+      "num": 29,
+      "slug": "positioning-os",
+      "name": "Positioning",
+      "display": "Positioning {OS}",
+      "group": "grow",
+      "tagline": "The category you compete in and the claim you own inside it.",
+      "inherits_from": null,
+      "status": "new"
+    },
+    {
+      "num": 30,
+      "slug": "brand-os",
+      "name": "Brand",
+      "display": "Brand {OS}",
+      "group": "grow",
+      "tagline": "Identity, voice and the visual system that carries them.",
+      "inherits_from": null,
+      "status": "new"
+    },
+    {
+      "num": 31,
+      "slug": "storyteller-os",
+      "name": "Storyteller",
+      "display": "Storyteller {OS}",
+      "group": "grow",
+      "tagline": "Narrative truth, structure, voice and consent.",
+      "inherits_from": "storyteller-os",
+      "status": "inherit"
+    },
+    {
+      "num": 32,
+      "slug": "offer-os",
+      "name": "Offer",
+      "display": "Offer {OS}",
+      "group": "grow",
+      "tagline": "The thing you sell, shaped so the value is obvious.",
+      "inherits_from": null,
+      "status": "new"
+    },
+    {
+      "num": 33,
+      "slug": "pricing-os",
+      "name": "Pricing",
+      "display": "Pricing {OS}",
+      "group": "grow",
+      "tagline": "What to charge, how to package it and when to change it.",
+      "inherits_from": null,
+      "status": "new"
+    },
+    {
+      "num": 34,
+      "slug": "content-os",
+      "name": "Content",
+      "display": "Content {OS}",
+      "group": "grow",
+      "tagline": "Editorial strategy, packaging, publishing and content analytics.",
+      "inherits_from": "content-os",
+      "status": "inherit"
+    },
+    {
+      "num": 35,
+      "slug": "sales-os",
+      "name": "Sales",
+      "display": "Sales {OS}",
+      "group": "grow",
+      "tagline": "Pipeline, conversations and the close, without manipulation.",
+      "inherits_from": null,
+      "status": "new"
+    },
+    {
+      "num": 36,
+      "slug": "affiliate-os",
+      "name": "Affiliate",
+      "display": "Affiliate {OS}",
+      "group": "grow",
+      "tagline": "Learn distribution by selling someone else's real product.",
+      "inherits_from": null,
+      "status": "new"
+    },
+    {
+      "num": 37,
+      "slug": "network-os",
+      "name": "Network",
+      "display": "Network {OS}",
+      "group": "grow",
+      "tagline": "Trusted relationship memory and network stewardship.",
+      "inherits_from": "relationship-network-os",
+      "status": "inherit"
+    },
+    {
+      "num": 38,
+      "slug": "growth-os",
+      "name": "Growth",
+      "display": "Growth {OS}",
+      "group": "grow",
+      "tagline": "Loops, experiments and the channels that compound.",
+      "inherits_from": null,
+      "status": "new"
+    },
+    {
+      "num": 39,
+      "slug": "revenue-os",
+      "name": "Revenue",
+      "display": "Revenue {OS}",
+      "group": "grow",
+      "tagline": "Business cash flow, CRM, billing and receivables.",
+      "inherits_from": "revenue-os",
+      "status": "inherit"
+    },
+    {
+      "num": 40,
+      "slug": "delivery-cs-os",
+      "name": "Delivery & Customer Success",
+      "display": "Delivery & Customer Success {OS}",
+      "group": "grow",
+      "tagline": "Fulfil the promise, drive adoption, earn the renewal.",
+      "inherits_from": "delivery-customer-success-os",
+      "status": "inherit"
+    },
+    {
+      "num": 41,
+      "slug": "execution-os",
+      "name": "Execution",
+      "display": "Execution {OS}",
+      "group": "operate",
+      "tagline": "Time-bound personal commitments and proof of output.",
+      "inherits_from": "execution-os",
+      "status": "inherit"
+    },
+    {
+      "num": 42,
+      "slug": "project-os",
+      "name": "Project",
+      "display": "Project {OS}",
+      "group": "operate",
+      "tagline": "Scope, plan and land a project without losing the thread.",
+      "inherits_from": null,
+      "status": "new"
+    },
+    {
+      "num": 43,
+      "slug": "meeting-os",
+      "name": "Meeting",
+      "display": "Meeting {OS}",
+      "group": "operate",
+      "tagline": "Meetings that produce decisions and owners, or do not happen.",
+      "inherits_from": null,
+      "status": "new"
+    },
+    {
+      "num": 44,
+      "slug": "documentation-os",
+      "name": "Documentation",
+      "display": "Documentation {OS}",
+      "group": "operate",
+      "tagline": "Write it once, find it later, keep it true.",
+      "inherits_from": null,
+      "status": "new"
+    },
+    {
+      "num": 45,
+      "slug": "client-os",
+      "name": "Client",
+      "display": "Client {OS}",
+      "group": "operate",
+      "tagline": "The client relationship: expectations, comms and boundaries.",
+      "inherits_from": null,
+      "status": "new"
+    },
+    {
+      "num": 46,
+      "slug": "operations-os",
+      "name": "Operations",
+      "display": "Operations {OS}",
+      "group": "operate",
+      "tagline": "Process diagnosis and work simplification before automation.",
+      "inherits_from": "operations-automation-os",
+      "status": "inherit"
+    },
+    {
+      "num": 47,
+      "slug": "process-sop-os",
+      "name": "Process & SOP",
+      "display": "Process & SOP {OS}",
+      "group": "operate",
+      "tagline": "Turn a thing you do well into a thing anyone can do.",
+      "inherits_from": null,
+      "status": "new"
+    },
+    {
+      "num": 48,
+      "slug": "team-delegation-os",
+      "name": "Team & Delegation",
+      "display": "Team & Delegation {OS}",
+      "group": "operate",
+      "tagline": "Hand work off so it comes back right the first time.",
+      "inherits_from": null,
+      "status": "new"
+    },
+    {
+      "num": 49,
+      "slug": "kpi-analytics-os",
+      "name": "KPI & Analytics",
+      "display": "KPI & Analytics {OS}",
+      "group": "operate",
+      "tagline": "Measure the few numbers that actually change decisions.",
+      "inherits_from": null,
+      "status": "new"
+    },
+    {
+      "num": 50,
+      "slug": "review-governance-os",
+      "name": "Review & Governance",
+      "display": "Review & Governance {OS}",
+      "group": "operate",
+      "tagline": "Cross-OS learning and approval of consequential change.",
+      "inherits_from": "review-governance-os",
+      "status": "inherit"
+    },
+    {
+      "num": 51,
+      "slug": "money-os",
+      "name": "Money",
+      "display": "Money {OS}",
+      "group": "own",
+      "tagline": "Personal cash flow: what comes in, what goes out, what is left.",
+      "inherits_from": null,
+      "status": "new"
+    },
+    {
+      "num": 52,
+      "slug": "wealth-os",
+      "name": "Wealth",
+      "display": "Wealth {OS}",
+      "group": "own",
+      "tagline": "Personal net worth, reserves and long-horizon goals.",
+      "inherits_from": "wealth-capital-os",
+      "status": "inherit"
+    },
+    {
+      "num": 53,
+      "slug": "ownership-os",
+      "name": "Ownership",
+      "display": "Ownership {OS}",
+      "group": "own",
+      "tagline": "What you own, through which entity, and on what terms.",
+      "inherits_from": null,
+      "status": "new"
+    },
+    {
+      "num": 54,
+      "slug": "ip-asset-os",
+      "name": "IP & Asset",
+      "display": "IP & Asset {OS}",
+      "group": "own",
+      "tagline": "Intellectual property and durable assets: create, protect, license.",
+      "inherits_from": null,
+      "status": "new"
+    },
+    {
+      "num": 55,
+      "slug": "business-strategy-os",
+      "name": "Business Strategy",
+      "display": "Business Strategy {OS}",
+      "group": "own",
+      "tagline": "The strategy of the business as an asset, not as a job.",
+      "inherits_from": null,
+      "status": "new"
+    },
+    {
+      "num": 56,
+      "slug": "exit-liquidity-os",
+      "name": "Exit & Liquidity",
+      "display": "Exit & Liquidity {OS}",
+      "group": "own",
+      "tagline": "Prepare, time and run a liquidity event.",
+      "inherits_from": null,
+      "status": "new"
+    },
+    {
+      "num": 57,
+      "slug": "capital-os",
+      "name": "Capital",
+      "display": "Capital {OS}",
+      "group": "capital",
+      "tagline": "Allocate capital deliberately across a portfolio of bets.",
+      "inherits_from": "wealth-capital-os",
+      "status": "inherit"
+    },
+    {
+      "num": 58,
+      "slug": "investment-thesis-os",
+      "name": "Investment Thesis",
+      "display": "Investment Thesis {OS}",
+      "group": "capital",
+      "tagline": "Write the thesis before the cheque, and test it after.",
+      "inherits_from": null,
+      "status": "new"
+    },
+    {
+      "num": 59,
+      "slug": "deal-flow-os",
+      "name": "Deal Flow",
+      "display": "Deal Flow {OS}",
+      "group": "capital",
+      "tagline": "Source, filter and track opportunities at the top of the funnel.",
+      "inherits_from": null,
+      "status": "new"
+    },
+    {
+      "num": 60,
+      "slug": "due-diligence-os",
+      "name": "Due Diligence",
+      "display": "Due Diligence {OS}",
+      "group": "capital",
+      "tagline": "Verify the story before you are committed to it.",
+      "inherits_from": null,
+      "status": "new"
+    },
+    {
+      "num": 61,
+      "slug": "acquisition-os",
+      "name": "Acquisition",
+      "display": "Acquisition {OS}",
+      "group": "capital",
+      "tagline": "Buy a business: search, approach, negotiate, close.",
+      "inherits_from": null,
+      "status": "new"
+    },
+    {
+      "num": 62,
+      "slug": "deal-structuring-os",
+      "name": "Deal Structuring",
+      "display": "Deal Structuring {OS}",
+      "group": "capital",
+      "tagline": "Terms, instruments and incentives that survive contact with reality.",
+      "inherits_from": null,
+      "status": "new"
+    },
+    {
+      "num": 63,
+      "slug": "portfolio-management-os",
+      "name": "Portfolio Management",
+      "display": "Portfolio Management {OS}",
+      "group": "capital",
+      "tagline": "Run the portfolio after the deal: reporting, support, reallocation.",
+      "inherits_from": null,
+      "status": "new"
+    },
+    {
+      "num": 64,
+      "slug": "board-os",
+      "name": "Board",
+      "display": "Board {OS}",
+      "group": "capital",
+      "tagline": "Governance at the board level: papers, cadence, real oversight.",
+      "inherits_from": null,
+      "status": "new"
+    },
+    {
+      "num": 65,
+      "slug": "ai-logic-os",
+      "name": "AI Logic",
+      "display": "AI Logic {OS}",
+      "group": "systems",
+      "tagline": "When to use deterministic code and when to use model judgment.",
+      "inherits_from": "ai-logic-os",
+      "status": "inherit"
+    },
+    {
+      "num": 66,
+      "slug": "context-memory-os",
+      "name": "Context & Memory",
+      "display": "Context & Memory {OS}",
+      "group": "systems",
+      "tagline": "The canonical shared context and persistence layer for every OS.",
+      "inherits_from": "context-memory-os",
+      "status": "inherit"
+    },
+    {
+      "num": 67,
+      "slug": "agent-os",
+      "name": "Agent",
+      "display": "Agent {OS}",
+      "group": "systems",
+      "tagline": "Design, brief and supervise agents that do real work.",
+      "inherits_from": null,
+      "status": "new"
+    },
+    {
+      "num": 68,
+      "slug": "automation-os",
+      "name": "Automation",
+      "display": "Automation {OS}",
+      "group": "systems",
+      "tagline": "Governed automation of a process that was simplified first.",
+      "inherits_from": "operations-automation-os",
+      "status": "inherit"
+    },
+    {
+      "num": 69,
+      "slug": "knowledge-os",
+      "name": "Knowledge",
+      "display": "Knowledge {OS}",
+      "group": "systems",
+      "tagline": "Turn scattered information into a retrievable knowledge base.",
+      "inherits_from": null,
+      "status": "new"
+    },
+    {
+      "num": 70,
+      "slug": "evaluation-os",
+      "name": "Evaluation",
+      "display": "Evaluation {OS}",
+      "group": "systems",
+      "tagline": "Measure AI output quality with rubrics, not vibes.",
+      "inherits_from": null,
+      "status": "new"
+    },
+    {
+      "num": 71,
+      "slug": "tool-integration-os",
+      "name": "Tool & Integration",
+      "display": "Tool & Integration {OS}",
+      "group": "systems",
+      "tagline": "Connect external tools safely, with typed contracts.",
+      "inherits_from": null,
+      "status": "new"
+    },
+    {
+      "num": 72,
+      "slug": "orchestration-os",
+      "name": "Orchestration",
+      "display": "Orchestration {OS}",
+      "group": "systems",
+      "tagline": "Compose many agents and systems into one reliable mission.",
+      "inherits_from": null,
+      "status": "new"
+    }
+  ]
+}

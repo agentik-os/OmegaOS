@@ -1,0 +1,247 @@
+{
+  "schema_version": "2.0.0",
+  "id": "storyteller-os",
+  "num": 31,
+  "name": "Storyteller {OS}",
+  "version": "0.1.0",
+  "status": "scaffold",
+  "group": {
+    "key": "grow",
+    "label": "04 · GROW",
+    "purpose": "Turn value into distribution and revenue"
+  },
+  "tagline": "Narrative truth, structure, voice and consent.",
+  "inherits_from": "storyteller-os",
+  "commands": [
+    {
+      "name": "/story",
+      "does": "Orients: reads intent, contract and story class, then routes.",
+      "returns": "The routing decision and the next decisive question or action."
+    },
+    {
+      "name": "/story-setup",
+      "does": "Establishes the operator's context, register and boundaries.",
+      "returns": "The working defaults for voice, privacy and stakes."
+    },
+    {
+      "name": "/mine",
+      "does": "Mines raw material for the specific change under meaningful pressure.",
+      "returns": "Candidate moments with their tension, cost and meaning."
+    },
+    {
+      "name": "/interview",
+      "does": "Interviews without contaminating memory, one open question at a time.",
+      "returns": "Recalled material in the user's own words, quotes marked only when confirmed."
+    },
+    {
+      "name": "/moment",
+      "does": "Captures one moment as the seed of a story object.",
+      "returns": "A moment card with what changed, what it cost and what is unresolved."
+    },
+    {
+      "name": "/deepen",
+      "does": "Reveals desire, obstacle, stakes, belief, choice and consequence.",
+      "returns": "The deepened story object with its unresolved edge named."
+    },
+    {
+      "name": "/shape",
+      "does": "Selects the smallest useful architecture and the scene order.",
+      "returns": "The structure with the reason this architecture was chosen."
+    },
+    {
+      "name": "/hook",
+      "does": "Builds openings that earn the next sentence.",
+      "returns": "Hook options, each stating the promise it makes."
+    },
+    {
+      "name": "/scene",
+      "does": "Builds a scene from observable detail only.",
+      "returns": "The scene, plus the details it declined to invent."
+    },
+    {
+      "name": "/arc",
+      "does": "Maps the arc and throughline across several story objects.",
+      "returns": "The arc with its repetitions and its gaps named."
+    },
+    {
+      "name": "/cowrite",
+      "does": "Co-creates structures, beats, questions and neutral fragments.",
+      "returns": "Options and fragments, with the next decision left to the user."
+    },
+    {
+      "name": "/write",
+      "does": "Drafts the deliverable under an explicit WRITE contract.",
+      "returns": "The draft in the user's register, non documented elements labelled."
+    },
+    {
+      "name": "/rewrite",
+      "does": "Rewrites an existing draft while preserving language and intent.",
+      "returns": "The rewrite with what was preserved and what changed."
+    },
+    {
+      "name": "/voice",
+      "does": "Diagnoses voice fidelity against the user's writing and Brand voice rules.",
+      "returns": "A voice report and the exact lines that drifted."
+    },
+    {
+      "name": "/adapt",
+      "does": "Moves a story to another channel preserving story DNA.",
+      "returns": "The channel version, and what was preserved versus deliberately lost."
+    },
+    {
+      "name": "/content",
+      "does": "Produces the content shaped version and hands it to Content {OS}.",
+      "returns": "The piece plus the story object reference it publishes against."
+    },
+    {
+      "name": "/keynote",
+      "does": "Shapes a story for a stage, with beats and timing.",
+      "returns": "The talk structure with timings and the beats most at risk."
+    },
+    {
+      "name": "/pitch",
+      "does": "Shapes a story for a pitch with the ask in its place.",
+      "returns": "The pitch narrative, the ask, and the claims it leans on."
+    },
+    {
+      "name": "/brandstory",
+      "does": "Shapes the origin and purpose story of the company.",
+      "returns": "The brand story, and any conflict found with the live claim."
+    },
+    {
+      "name": "/customerstory",
+      "does": "Shapes a customer story from verified outcome evidence and consent.",
+      "returns": "The customer story with evidence and consent scope, or a refusal."
+    },
+    {
+      "name": "/datastory",
+      "does": "Connects a data pattern to a human consequence.",
+      "returns": "The data story with every number traced to its source."
+    },
+    {
+      "name": "/truthcheck",
+      "does": "Separates fact, memory, inference, interpretation and invention.",
+      "returns": "Truth class per element, load bearing risks, and a hold at VERIFY when needed."
+    },
+    {
+      "name": "/score",
+      "does": "Scores structural completeness only.",
+      "returns": "The score, what is missing, and what the score does not measure."
+    },
+    {
+      "name": "/rehearse",
+      "does": "Tests delivery: clarity, movement, timing, breath and ending.",
+      "returns": "Rehearsal notes and the beats where the room is lost."
+    },
+    {
+      "name": "/feedback",
+      "does": "Compares audience reception with intent.",
+      "returns": "The gap between intent and reception, and the story object update."
+    },
+    {
+      "name": "/storybank",
+      "does": "Operates the durable bank of story objects.",
+      "returns": "Records with truth classes, consent scope and version history."
+    },
+    {
+      "name": "/repurpose",
+      "does": "Finds the stories worth telling again, and where.",
+      "returns": "Ranked candidates with the adaptation each needs and its consent scope."
+    },
+    {
+      "name": "/story-review",
+      "does": "Issues the release verdict for a story on a specific surface.",
+      "returns": "READY, READY WITH CUTS, NEEDS TRUTH CHECK, NEEDS DEEPENING, WRONG STORY FOR THIS JOB, or DO NOT PUBLISH."
+    }
+  ],
+  "dependencies": {
+    "consumes_from": [
+      "brand-os",
+      "positioning-os",
+      "network-os",
+      "delivery-cs-os"
+    ],
+    "emits_to": [
+      "content-os",
+      "sales-os",
+      "affiliate-os"
+    ],
+    "handoffs": [
+      {
+        "to": "brand-os",
+        "artifact": "voice rules a story may not contradict"
+      },
+      {
+        "to": "positioning-os",
+        "artifact": "the claim a story may support"
+      },
+      {
+        "to": "network-os",
+        "artifact": "consent status of any named third party"
+      },
+      {
+        "to": "delivery-cs-os",
+        "artifact": "verified customer outcome evidence for customer stories"
+      },
+      {
+        "to": "content-os",
+        "artifact": "story object"
+      },
+      {
+        "to": "sales-os",
+        "artifact": "story object"
+      },
+      {
+        "to": "affiliate-os",
+        "artifact": "story object"
+      },
+      {
+        "to": "content-os",
+        "artifact": "truth verdict and consent record"
+      },
+      {
+        "to": "sales-os",
+        "artifact": "truth verdict and consent record"
+      }
+    ]
+  },
+  "targets": {
+    "claude": {
+      "supported": true
+    },
+    "chatgpt": {
+      "supported": true
+    },
+    "gemini": {
+      "supported": true
+    },
+    "codex": {
+      "supported": true
+    }
+  },
+  "entrypoints": {
+    "spec": "OS.md",
+    "system": "SYSTEM.md",
+    "skill": "SKILL.md",
+    "setup": "SETUP.md",
+    "workflows": "WORKFLOWS/",
+    "commands": "COMMANDS/",
+    "prompts": "PROMPTS/",
+    "references": "REFERENCES/",
+    "memory": "MEMORY/",
+    "tools": "TOOLS/",
+    "evals": "EVALS/",
+    "examples": "EXAMPLES/",
+    "interfaces": "INTERFACES/",
+    "adapters": "ADAPTERS/"
+  },
+  "requires_human_approval_for": [
+    "moving from COACH to WRITE or EDIT",
+    "naming any third party in a story, on the exact surface it appears on",
+    "publishing a remembered, interpreted or composite element as fact",
+    "releasing a customer story, which needs recorded consent and outcome evidence",
+    "overriding a DO NOT PUBLISH or NEEDS TRUTH CHECK verdict",
+    "storing anything marked private into the shared story bank",
+    "retiring or rewriting a story object version another OS already consumed"
+  ]
+}

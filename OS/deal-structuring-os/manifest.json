@@ -1,0 +1,88 @@
+{
+  "schema_version": "2.0.0",
+  "id": "deal-structuring-os",
+  "num": 62,
+  "name": "Deal Structuring {OS}",
+  "version": "0.1.0",
+  "status": "scaffold",
+  "group": {
+    "key": "capital",
+    "label": "07 · CAPITAL",
+    "purpose": "Turn assets into capital allocation"
+  },
+  "tagline": "Terms, instruments and incentives that survive contact with reality.",
+  "inherits_from": null,
+  "commands": [
+    "/structure",
+    "/structure instrument",
+    "/structure captable",
+    "/structure model",
+    "/structure price <term>",
+    "/structure protect",
+    "/structure incentive",
+    "/structure earnout",
+    "/structure termsheet",
+    "/structure prep",
+    "/structure reconcile",
+    "/structure tax-questions"
+  ],
+  "dependencies": {
+    "requires": [
+      "agentik-runtime",
+      "context-memory-os",
+      "due-diligence-os"
+    ],
+    "consumes": [
+      "diligence.finding.registered",
+      "diligence.completed",
+      "thesis.drafted",
+      "capital.policy.set",
+      "capital.allocation.approved",
+      "acquisition.loi.prepared"
+    ],
+    "emits": [
+      "structure.instrument.selected",
+      "structure.term_sheet.drafted",
+      "structure.waterfall.modelled",
+      "structure.terms.agreed"
+    ]
+  },
+  "targets": {
+    "claude": {
+      "supported": true
+    },
+    "chatgpt": {
+      "supported": true
+    },
+    "gemini": {
+      "supported": true
+    },
+    "codex": {
+      "supported": true
+    }
+  },
+  "entrypoints": {
+    "spec": "OS.md",
+    "system": "SYSTEM.md",
+    "skill": "SKILL.md",
+    "setup": "SETUP.md",
+    "workflows": "WORKFLOWS/",
+    "commands": "COMMANDS/",
+    "prompts": "PROMPTS/",
+    "references": "REFERENCES/",
+    "memory": "MEMORY/",
+    "tools": "TOOLS/",
+    "evals": "EVALS/",
+    "examples": "EXAMPLES/",
+    "interfaces": "INTERFACES/",
+    "adapters": "ADAPTERS/"
+  },
+  "requires_human_approval_for": [
+    "issuing or sending a term sheet to a counterparty",
+    "sharing a cap table or waterfall model outside the operator and advisers",
+    "agreeing any term in substance, including informally",
+    "changing an already agreed term",
+    "accepting executed documents that differ from agreed terms",
+    "committing to any instrument creating an obligation to fund later"
+  ]
+}

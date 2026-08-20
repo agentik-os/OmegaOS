@@ -28,7 +28,9 @@ pub fn omega_bin() -> PathBuf {
     if let Ok(bin) = std::env::var("OMEGA_BIN") {
         return PathBuf::from(bin);
     }
-    dirs::home_dir().expect("no home dir").join(".local/bin/omega")
+    dirs::home_dir()
+        .expect("no home dir")
+        .join(".local/bin/omega")
 }
 
 /// Captured output of an `omega` subprocess invocation.
@@ -97,7 +99,9 @@ pub fn run_with_timeout(args: &[&str], timeout: Duration) -> Result<CommandOutpu
     // foreground child `omega` itself spawns, not just `omega` directly.
     cmd.process_group(0);
 
-    let child = cmd.spawn().with_context(|| format!("failed to spawn omega {args:?}"))?;
+    let child = cmd
+        .spawn()
+        .with_context(|| format!("failed to spawn omega {args:?}"))?;
     let pid = child.id();
 
     // `killed` is the ONLY source of truth for "did the watchdog actually
@@ -128,7 +132,10 @@ pub fn run_with_timeout(args: &[&str], timeout: Duration) -> Result<CommandOutpu
     let _ = watchdog.join();
 
     if killed.load(Ordering::SeqCst) {
-        return Err(anyhow::Error::new(TimedOut { args: args.join(" "), timeout }));
+        return Err(anyhow::Error::new(TimedOut {
+            args: args.join(" "),
+            timeout,
+        }));
     }
 
     let out = wait_result.with_context(|| format!("omega {args:?} process error"))?;
@@ -165,7 +172,12 @@ struct TimedOut {
 
 impl std::fmt::Display for TimedOut {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "omega {} timed out after {}s and was killed", self.args, self.timeout.as_secs())
+        write!(
+            f,
+            "omega {} timed out after {}s and was killed",
+            self.args,
+            self.timeout.as_secs()
+        )
     }
 }
 
@@ -185,7 +197,10 @@ pub fn is_timeout(e: &anyhow::Error) -> bool {
 /// kill_process_group`, run synchronously since this function (unlike that
 /// one) is itself always called from a plain OS thread, never a tokio task.
 fn kill_process_group_sync(pid: u32) {
-    let _ = Command::new("kill").arg("--").arg(format!("-{pid}")).status();
+    let _ = Command::new("kill")
+        .arg("--")
+        .arg(format!("-{pid}"))
+        .status();
 }
 
 /// Default outer wall-clock bound on a WS-stream endpoint's WHOLE
@@ -298,7 +313,10 @@ mod tests {
         let _g = LOCK.lock().unwrap();
         std::env::set_var("OMEGA_BIN", "/no/such/binary/anywhere");
         let err = run_with_timeout(&["x"], Duration::from_secs(5)).unwrap_err();
-        assert!(!is_timeout(&err), "a spawn failure must never be classified as a timeout");
+        assert!(
+            !is_timeout(&err),
+            "a spawn failure must never be classified as a timeout"
+        );
         std::env::remove_var("OMEGA_BIN");
     }
 
@@ -320,7 +338,10 @@ mod tests {
         // return, ever happens.
         install_fake_omega(
             dir.path(),
-            &format!("bash -c 'sleep 2; touch \"{}\"' &\nwait\n", marker.display()),
+            &format!(
+                "bash -c 'sleep 2; touch \"{}\"' &\nwait\n",
+                marker.display()
+            ),
         );
 
         let err = run_with_timeout(&["x"], Duration::from_millis(200)).unwrap_err();

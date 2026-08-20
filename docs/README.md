@@ -15,6 +15,8 @@ Start with the repo-root [GUIDE.md](../GUIDE.md) (the operator manual) and [READ
 - [ARCHITECTURE.md](ARCHITECTURE.md) — full-system reference: crates, 4-level orchestration, plan engine, worker isolation, channels, gates.
 - [ARCHITECTURE-V3.md](ARCHITECTURE-V3.md) — the `~/.omega/` centralized runtime layout (credentials, providers, state).
 - [MAP.md](MAP.md) — where everything lives: source repo vs installed binary vs `~/.omega/` runtime.
+- [OS-UNIVERSE.md](OS-UNIVERSE.md) — **doctrine**: the Master OS Map v1 — the 12 stacks of the Agentik OS universe, the logic each OS runs, and the rule that every OS works alone. The build standard for an integrated OS is [OS-SUITE.md](OS-SUITE.md); the shipped registry is `OS/_tools/suite.py`.
+- [OS-BUILD-STEPPER.md](OS-BUILD-STEPPER.md) — **build program**: the 18-phase method applied per OS, the 5 hard gates, the 4-block step format, and the 11-wave build order over all 120 OS with each one's measured state today.
 - [INSTALL-AND-CREDENTIALS.md](INSTALL-AND-CREDENTIALS.md) — install flow + the credentials/OAuth system.
 - [THEMES.md](THEMES.md) — the TUI palette gallery and contrast contract.
 - [RESET-RECOVERY.md](RESET-RECOVERY.md) — backing up and rebuilding a box (`omega backup` / restore).

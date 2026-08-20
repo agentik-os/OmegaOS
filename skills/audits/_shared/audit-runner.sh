@@ -21,7 +21,7 @@
 #   audit-runner.sh <audit-name> <project-path> \
 #     --user-need="..." --hinge="..." --finalize [--threshold=70]
 #
-# OUTPUT (in $project-path/.{audit}/):
+# OUTPUT (in $project-path/audits/.<canonical-audit-id>/):
 #   raw/                  — programmatic tool outputs (JSON)
 #   evidence-summary.json — structured data the LLM consumes
 #   verdict.json          — LLM's score + findings + fix plan
@@ -125,10 +125,11 @@ cd "$PROJECT_PATH" || {
     exit 2
 }
 
-# Keep the audit protocol's established artifact alias (`.code`, `.sec`, ...)
-# while recording the canonical registry id inside every evidence envelope.
-ARTIFACTS=".${AUDIT}"
-[ -n "$TICKET" ] && ARTIFACTS=".linear-fix/${TICKET}/.${AUDIT}"
+# Machine evidence has one canonical root. The registry id, rather than an
+# invocation alias (`code`, `sec`, ...), prevents two names for the same audit
+# from creating divergent histories.
+ARTIFACTS="audits/.${CANONICAL_AUDIT}"
+[ -n "$TICKET" ] && ARTIFACTS="audits/.linear-fix/${TICKET}/.${CANONICAL_AUDIT}"
 mkdir -p "$ARTIFACTS/raw"
 
 LOG="$ARTIFACTS/runner.log"

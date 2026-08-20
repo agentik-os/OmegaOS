@@ -1,0 +1,91 @@
+{
+  "schema_version": "2.0.0",
+  "id": "alignment-os",
+  "num": 4,
+  "name": "Alignment {OS}",
+  "version": "0.1.0",
+  "status": "scaffold",
+  "group": {
+    "key": "personal",
+    "label": "01 · PERSONAL",
+    "purpose": "Operate yourself"
+  },
+  "tagline": "Meaning, values and inner alignment: the BE authority of the suite.",
+  "inherits_from": "alignment-os",
+  "commands": [
+    "alignment-os",
+    "align",
+    "coach",
+    "omega-align",
+    "morning",
+    "evening",
+    "weekly",
+    "reset",
+    "true_north",
+    "virtue_check",
+    "dichotomy_control",
+    "wu_wei",
+    "decision",
+    "reframe",
+    "shadow",
+    "belief_audit",
+    "fear",
+    "meaning",
+    "personal_philosophy",
+    "manifestation",
+    "quantum_truth",
+    "anti_dependency"
+  ],
+  "dependencies": {
+    "requires": [
+      "context-memory-os"
+    ],
+    "consumes_from": [
+      "journal-os",
+      "decision-os"
+    ],
+    "emits_to": [
+      "mindset-os",
+      "goal-life-strategy-os",
+      "decision-os"
+    ]
+  },
+  "targets": {
+    "claude": {
+      "supported": true
+    },
+    "chatgpt": {
+      "supported": true
+    },
+    "gemini": {
+      "supported": true
+    },
+    "codex": {
+      "supported": true
+    }
+  },
+  "entrypoints": {
+    "spec": "OS.md",
+    "system": "SYSTEM.md",
+    "skill": "SKILL.md",
+    "setup": "SETUP.md",
+    "workflows": "WORKFLOWS/",
+    "commands": "COMMANDS/",
+    "prompts": "PROMPTS/",
+    "references": "REFERENCES/",
+    "memory": "MEMORY/",
+    "tools": "TOOLS/",
+    "evals": "EVALS/",
+    "examples": "EXAMPLES/",
+    "interfaces": "INTERFACES/",
+    "adapters": "ADAPTERS/"
+  },
+  "requires_human_approval_for": [
+    "adding, removing or reordering a value in the declared value set",
+    "persisting a psychological interpretation, a philosophy rule or a behavioural pattern as a durable fact",
+    "writing a session, a value set or an audit verdict to the on-disk ledger",
+    "emitting a value drift verdict to Mindset {OS} or Goal & Life Strategy {OS} as an adopted finding rather than a proposal",
+    "sending or exporting any session, value set, philosophy document or ledger entry outside the local machine",
+    "continuing a coaching session after a crisis signal instead of stopping at the referral"
+  ]
+}

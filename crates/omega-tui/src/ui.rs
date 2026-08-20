@@ -1338,18 +1338,7 @@ fn draw_sessions(frame: &mut Frame, app: &mut App, area: Rect) {
         result
     };
 
-    // Context hint: when the highlighted row is the AISB Master and Telegram
-    // isn't connected yet, advertise the in-TUI Enter→setup path so a non-dev
-    // discovers it.
-    let master_cta = app
-        .selected_session()
-        .map(|e| {
-            omega_core::aisb::is_master(&e.session.name)
-                && !omega_core::monitor::OmegaTelegramConfig::exists()
-        })
-        .unwrap_or(false);
     let list_hint = match app.session_focus {
-        crate::app::SessionFocus::List if master_cta => "LIST  ★ Enter: connect Telegram  x:kill",
         crate::app::SessionFocus::List => "LIST  x:kill  .:lock  r:rename",
         _ => "CHAT (Tab → list to manage)",
     };
@@ -1821,28 +1810,18 @@ fn render_session_item(
     active: bool,
     badge: Option<DoneStatus>,
 ) -> ListItem<'static> {
-    let is_master = omega_core::aisb::is_master(&entry.session.name);
-
-    let icon = if is_master {
-        "★"
-    } else {
-        match entry.session.role {
-            SessionRole::Oracle => "◆",
-            SessionRole::Worker => "●",
-            SessionRole::Home => "⌂",
-            SessionRole::System => "⚙",
-        }
+    let icon = match entry.session.role {
+        SessionRole::Oracle => "◆",
+        SessionRole::Worker => "●",
+        SessionRole::Home => "⌂",
+        SessionRole::System => "⚙",
     };
 
-    let icon_color = if is_master {
-        th::special()
-    } else {
-        match entry.session.role {
-            SessionRole::Oracle => th::accent2(),
-            SessionRole::Worker => th::success(),
-            SessionRole::Home => th::info(),
-            SessionRole::System => th::dim(),
-        }
+    let icon_color = match entry.session.role {
+        SessionRole::Oracle => th::accent2(),
+        SessionRole::Worker => th::success(),
+        SessionRole::Home => th::info(),
+        SessionRole::System => th::dim(),
     };
 
     let progress_str = match &entry.progress {
@@ -1869,10 +1848,6 @@ fn render_session_item(
         Style::default()
             .fg(th::accent())
             .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
-    } else if is_master {
-        Style::default()
-            .fg(th::special())
-            .add_modifier(Modifier::BOLD)
     } else {
         // Passive: plain body text, NO bold — bold on every row carries zero
         // hierarchy. Bold stays reserved for the active session and the
@@ -2841,7 +2816,7 @@ fn render_project_detail(app: &App) -> Vec<Line<'static>> {
         }
     } else {
         lines.push(Line::from(Span::styled(
-            "  No planner active — run /planner to create a plan.",
+            "  No planner active — press p or run /omg-planner to create a plan.",
             Style::default().fg(th::dim()),
         )));
     }
@@ -2887,7 +2862,7 @@ fn render_project_detail(app: &App) -> Vec<Line<'static>> {
     };
     lines.push(action("Enter", "Open in terminal".to_string()));
     lines.push(action("d", "Dispatch oracle".to_string()));
-    lines.push(action("p", "Run planner".to_string()));
+    lines.push(action("p", "Create plan with /omg-planner".to_string()));
     lines.push(action(
         "T",
         format!(
@@ -3488,6 +3463,33 @@ fn wrapped_row_count(lines: &[Line<'_>], width: u16) -> u16 {
 /// (tagline, status, path, integration pipeline + actions). Registry + fs stat
 /// only (see `omega_core::os_products`) — no network, safe per tab entry / F5.
 fn draw_os(frame: &mut Frame, app: &mut App, area: Rect) {
+    if app.detail_fullscreen {
+        let lines = render_os_detail(app);
+        let section_label = app
+            .selected_os_entry()
+            .map(|entry| entry.product.name.to_string())
+            .unwrap_or_else(|| "OS".to_string());
+        let width = area.width.saturating_sub(2).max(1);
+        let painted_rows = wrapped_row_count(&lines, width);
+        app.detail_max_scroll =
+            painted_rows.saturating_sub(area.height.saturating_sub(2));
+        app.detail_scroll = app.detail_scroll.min(app.detail_max_scroll);
+        let paragraph = Paragraph::new(lines)
+            .wrap(Wrap { trim: false })
+            .scroll((app.detail_scroll, 0))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(format!(
+                        " {}  [FULLSCREEN - Tab/Tab-Tab to exit] ",
+                        section_label
+                    ))
+                    .border_style(Style::default().fg(th::accent2())),
+            );
+        frame.render_widget(paragraph, area);
+        return;
+    }
+
     let split = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(25), Constraint::Percentage(75)])
@@ -3516,12 +3518,9 @@ fn draw_os(frame: &mut Frame, app: &mut App, area: Rect) {
                 if last_group.is_some() {
                     items.push(ListItem::new(Line::from("")));
                 }
-                items.push(group_header(match e.product.group {
-                    omega_core::os_products::OsGroup::Personal => "Personal",
-                    omega_core::os_products::OsGroup::BuildChain => "Build chain",
-                    omega_core::os_products::OsGroup::Growth => "Growth",
-                    omega_core::os_products::OsGroup::Systems => "Systems & AI",
-                }));
+                // The label lives on OsGroup so adding a group to the suite
+                // registry never breaks this renderer.
+                items.push(group_header(e.product.group.label()));
                 last_group = Some(e.product.group);
             }
             let current = i == app.os_selected;
@@ -3602,7 +3601,13 @@ fn render_os_detail(app: &App) -> Vec<Line<'static>> {
             Style::default().fg(th::accent2()),
         )
     };
-    let integrated = e.status == omega_core::os_products::OsStatus::Integrated;
+    use omega_core::os_products::OsReadinessLevel;
+    let readiness_color = match e.readiness.level {
+        OsReadinessLevel::Scaffold => th::dim(),
+        OsReadinessLevel::Reference => th::accent(),
+        OsReadinessLevel::Runnable => th::accent2(),
+        OsReadinessLevel::Testable => th::special(),
+    };
 
     let mut lines = vec![
         Line::from(""),
@@ -3621,15 +3626,40 @@ fn render_os_detail(app: &App) -> Vec<Line<'static>> {
         Line::from(""),
         Line::from(vec![field("Slug"), Span::raw(e.product.slug.to_string())]),
         Line::from(vec![
-            field("Status"),
-            if integrated {
-                Span::styled(
-                    "integrated",
-                    Style::default().fg(th::success()).add_modifier(Modifier::BOLD),
-                )
+            field("Readiness"),
+            Span::styled(
+                e.status_label().to_string(),
+                Style::default().fg(readiness_color).add_modifier(Modifier::BOLD),
+            ),
+        ]),
+        Line::from(vec![
+            field("Manifest"),
+            Span::raw(e.readiness.manifest_label().to_string()),
+        ]),
+        Line::from(vec![
+            field("Master prompt"),
+            Span::raw(if e.readiness.master_present { "present" } else { "missing" }),
+        ]),
+        Line::from(vec![
+            field("Runtime surface"),
+            Span::raw(if e.readiness.runtime_present { "present" } else { "not found" }),
+        ]),
+        Line::from(vec![
+            field("Test surface"),
+            Span::raw(if e.readiness.tests_present {
+                "present (not executed)"
             } else {
-                Span::styled(e.status_label().to_string(), Style::default().fg(th::dim()))
-            },
+                "not found"
+            }),
+        ]),
+        Line::from(vec![
+            field("Event schema"),
+            Span::raw(
+                e.readiness
+                    .event_schema_status
+                    .clone()
+                    .unwrap_or_else(|| "not declared".to_string()),
+            ),
         ]),
         Line::from(vec![
             field("Path"),
@@ -3658,11 +3688,15 @@ fn render_os_detail(app: &App) -> Vec<Line<'static>> {
         Line::from(""),
     ];
 
-    // Integrated OSes show what you can DO with them (their command surface);
-    // pre-integration OSes show the drop-and-integrate pipeline instead.
-    if integrated && !e.product.commands.is_empty() {
+    // Commands are registry declarations. Presence of a runtime surface makes
+    // them plausible to execute, but this static scan never calls them.
+    if !e.product.commands.is_empty() {
         lines.push(Line::from(Span::styled(
-            "  ─── Commands ─── (what you can do with this OS)",
+            if e.readiness.runtime_present {
+                "  ─── Declared commands ─── (runtime present; not executed here)"
+            } else {
+                "  ─── Declared commands ─── (reference only; runtime not found)"
+            },
             Style::default().fg(th::accent2()).add_modifier(Modifier::BOLD),
         )));
         for cmd in e.product.commands {
@@ -3674,23 +3708,49 @@ fn render_os_detail(app: &App) -> Vec<Line<'static>> {
                 Style::default().fg(if dim { th::dim() } else { th::text() }),
             )));
         }
-    } else {
-        lines.push(Line::from(Span::styled(
-            "  ─── Integration pipeline ───",
-            Style::default().fg(th::accent2()).add_modifier(Modifier::BOLD),
-        )));
-        lines.push(Line::from(Span::raw(
-            "  1. Drop the OS payload (zip) in the Deposit box (Telegram DEPOSIT bot).",
-        )));
-        lines.push(Line::from(Span::raw(
-            "  2. Unpack it into the OS folder above, next to its README.",
-        )));
-        lines.push(Line::from(Span::raw(
-            "  3. Document the runtime (entrypoint, deps, config) in the README.",
-        )));
-        lines.push(Line::from(Span::raw(
-            "  4. Keep install.sh parity (Law 0) — a fresh install must get it.",
-        )));
+    }
+
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "  ─── Readiness gaps ───",
+        Style::default().fg(th::accent2()).add_modifier(Modifier::BOLD),
+    )));
+    if !e.readiness.directory_present {
+        lines.push(Line::from("  - OS directory is missing on this machine."));
+    }
+    if !e.readiness.master_present {
+        lines.push(Line::from("  - MASTER.md prompt is missing."));
+    }
+    match e.readiness.manifest {
+        omega_core::os_products::OsManifestStatus::Missing => {
+            lines.push(Line::from("  - MANIFEST.json is missing."));
+        }
+        omega_core::os_products::OsManifestStatus::Invalid => {
+            lines.push(Line::from("  - MANIFEST.json is invalid JSON."));
+        }
+        omega_core::os_products::OsManifestStatus::Valid => {}
+    }
+    if !e.readiness.runtime_present {
+        lines.push(Line::from("  - No runtime entrypoint/directory was found."));
+    }
+    if !e.readiness.tests_present {
+        lines.push(Line::from("  - No test surface was found."));
+    }
+    if e.readiness.event_schema_status.as_deref() == Some("stub") {
+        lines.push(Line::from("  - Event schema is explicitly marked stub."));
+    }
+    if e.readiness.master_present
+        && e.readiness.runtime_present
+        && e.readiness.tests_present
+        && matches!(
+            e.readiness.manifest,
+            omega_core::os_products::OsManifestStatus::Valid
+        )
+        && e.readiness.event_schema_status.as_deref() != Some("stub")
+    {
+        lines.push(Line::from(
+            "  No static surface gaps found. Runtime verification is still required.",
+        ));
     }
 
     lines.extend([
@@ -3701,10 +3761,10 @@ fn render_os_detail(app: &App) -> Vec<Line<'static>> {
         )),
         Line::from(vec![
             Span::styled("  Enter  ", Style::default().fg(th::accent()).add_modifier(Modifier::BOLD)),
-            Span::raw(if integrated {
-                "💬 Open the MASTER AGENT of this OS (run / extend it)"
+            Span::raw(if e.readiness.master_present {
+                "Open this OS's MASTER.md prompt in an agent session"
             } else {
-                "💬 Open the MASTER AGENT of this OS (pre-integration mode)"
+                "Open the generic OS integration prompt (MASTER.md missing)"
             }),
         ]),
         Line::from(vec![
@@ -3736,7 +3796,7 @@ fn render_info_aisb_agents(app: &App) -> (Vec<Line<'static>>, usize) {
             // Count derived from the roster (see InfoSection::label) so the
             // blurb can't drift when an agent joins.
             format!(
-                "  AISB = AI Super Brain — {} Matrix agents the Master delegates to.",
+                "  AISB = AI Super Brain — {} Matrix roles available to the Atlas service.",
                 agents.len()
             ),
             Style::default().fg(th::accent()).add_modifier(Modifier::BOLD),
@@ -4472,7 +4532,10 @@ fn draw_help(frame: &mut Frame, app: &mut App, area: Rect) {
             Span::styled("Esc", cy),
             Span::styled("  = back", wh),
         ]),
-        Line::from(Span::styled("    Same pattern on Sessions, Settings, Projects.", gr)),
+        Line::from(Span::styled(
+            "    Same pattern on Sessions, Settings, Projects, System, and OS.",
+            gr,
+        )),
         Line::from(""),
 
         section("Sessions"),
@@ -4520,6 +4583,7 @@ fn draw_help(frame: &mut Frame, app: &mut App, area: Rect) {
         key("P", "Set up provisioning keys"),
         key("B", "Refresh billing"),
         key("O", "Open OmegaMC dashboard"),
+        key("U", "Update OmegaOS"),
         Line::from(""),
 
         section("Settings"),
@@ -4533,7 +4597,7 @@ fn draw_help(frame: &mut Frame, app: &mut App, area: Rect) {
         key("↑ / ↓", "Browse projects"),
         key("Enter", "Focus detail; Enter again → open in terminal"),
         key("d", "Dispatch oracle to selected project"),
-        key("p", "Run planner for selected project"),
+        key("p", "Create a plan with /omg-planner for the selected project"),
         key("n", "Register an existing folder as a project"),
         key("T", "Toggle the project's Telegram topic"),
         key("x", "Delete… (1 OmegaOS · 2 + local folder · 3 + GitHub)"),
@@ -4551,7 +4615,7 @@ fn draw_help(frame: &mut Frame, app: &mut App, area: Rect) {
 
         section("Chat (Sessions, when chat-focused)"),
         key("Tab", "Return to session list"),
-        key("Shift+Tab", "Forward to Claude (cycle modes)"),
+        key("Shift+Tab", "Forward Shift+Tab to the focused agent session"),
         key("Esc", "Sent to the agent (escape vim/less/prompts) — Tab goes back"),
         key("Ctrl+X", "Close (kill) the focused session"),
         key("Ctrl+R", "Reload the TUI (re-exec the binary)"),
@@ -4587,7 +4651,9 @@ fn draw_help(frame: &mut Frame, app: &mut App, area: Rect) {
 
     let cmds = [
         ("omega", "Launch TUI"),
-        ("omega master", "Attach AISB Master"),
+        ("omega aisb-view", "Open read-only AISB conversation viewer"),
+        ("omega aisb-chat", "Open interactive Telegram chat REPL"),
+        ("omega plan-create [dir]", "Create a project plan with /omg-planner"),
         ("omega list", "List sessions"),
         ("omega pdf --demo --send", "Generate + send PDF to Telegram"),
         ("omega orchestrate <P> <M>", "Full mission pipeline"),
@@ -4609,7 +4675,6 @@ fn draw_help(frame: &mut Frame, app: &mut App, area: Rect) {
         section("Status Icons"),
         Line::from(vec![
             Span::raw("    "),
-            Span::styled("★ ", cy), Span::styled("Master   ", gr),
             Span::styled("◆ ", cy), Span::styled("Oracle   ", gr),
             Span::styled("● ", cy), Span::styled("Worker   ", gr),
             Span::styled("⌂ ", cy), Span::styled("Home   ", gr),
@@ -5147,5 +5212,87 @@ mod responsive_tests {
             Span::raw("abcde"),
         ]);
         assert_eq!(wrapped_row_count(std::slice::from_ref(&line), 5), 3);
+    }
+}
+
+#[cfg(test)]
+mod help_contract_tests {
+    use super::*;
+    use omega_core::config::OmegaConfig;
+    use ratatui::{backend::TestBackend, Terminal};
+
+    #[test]
+    fn help_exposes_update_and_provider_neutral_chat_without_hidden_master_role() {
+        let mut app = App::new(OmegaConfig::default());
+        let mut terminal = Terminal::new(TestBackend::new(180, 140)).unwrap();
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                draw_help(frame, &mut app, area);
+            })
+            .unwrap();
+        let rendered = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+
+        assert!(rendered.contains("Update OmegaOS"), "Monitor U action is missing");
+        assert!(rendered.contains("focused agent session"));
+        assert!(rendered.contains("AISB conversation viewer"));
+        assert!(!rendered.contains("AISB Master"));
+        assert!(!rendered.contains("Forward to Claude"));
+    }
+}
+
+#[cfg(test)]
+mod os_readiness_render_tests {
+    use super::*;
+    use omega_core::config::OmegaConfig;
+    use omega_core::os_products::{
+        OsEntry, OsManifestStatus, OsProduct, OsReadiness, OsReadinessLevel,
+    };
+
+    fn text(lines: &[Line<'static>]) -> String {
+        lines
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn os_detail_reports_static_evidence_without_claiming_tests_passed() {
+        let mut app = App::new(OmegaConfig::default());
+        app.os_entries = vec![OsEntry {
+            product: OsProduct::all()[0],
+            readiness: OsReadiness {
+                level: OsReadinessLevel::Testable,
+                directory_present: true,
+                master_present: true,
+                payload_present: true,
+                manifest: OsManifestStatus::Valid,
+                runtime_present: true,
+                tests_present: true,
+                event_schema_status: Some("stub".to_string()),
+            },
+            path: Some(std::path::PathBuf::from("/tmp/os")),
+            bot_linked: false,
+        }];
+
+        let rendered = text(&render_os_detail(&app));
+        assert!(rendered.contains("runtime + tests present (not executed)"));
+        assert!(rendered.contains("present (not executed)"));
+        assert!(rendered.contains("Event schema"));
+        assert!(rendered.contains("stub"));
+        assert!(!rendered.contains("integrated"));
+        assert!(!rendered.contains("tests passed"));
     }
 }

@@ -1,17 +1,15 @@
 ---
 name: QUALITY-ARSENAL-PREAMBLE
 description: >
-  Shared doctrine, invariants, and contracts for all 15 Quality Arsenal forensic
-  audits (/codeaudit, /debugaudit, /uiuxaudit, /flowaudit, /featureaudit, /perfaudit,
-  /secaudit, /a11yaudit, /seoaudit, /copyaudit, /dxaudit, /motionaudit, /dataaudit,
-  /apiaudit, /automationaudit, /logicaudit). Every audit MUST implement these contracts.
+  Shared doctrine, invariants, and contracts for every audit declared in the
+  Quality Arsenal registry. Every registered audit MUST implement these contracts.
   Referenced by /metaudit for compliance verification.
   NOT a user-invokable skill — this is a shared source of truth.
 ---
 
 # Quality Arsenal Preamble v1.0
 
-> *"One doctrine, fourteen implementations, zero drift."*
+> *"One doctrine, twenty-three implementations, zero drift."*
 
 Every Gestalt-Popper forensic audit in the Quality Arsenal inherits the contracts below. Deviations are either (a) declared explicitly with rationale, or (b) a bug caught by `/metaudit`.
 
@@ -45,7 +43,7 @@ Before any finding, any fix, any conclusion: **observe the actual runtime behavi
 
 ---
 
-## 2. SCOPED INVOCATION FLAGS (MANDATORY across all 14)
+## 2. SCOPED INVOCATION FLAGS (MANDATORY across all registered audits)
 
 Every audit parses these flags identically. Rule 43 (Linear pipeline) depends on this compatibility.
 
@@ -54,7 +52,7 @@ Every audit parses these flags identically. Rule 43 (Linear pipeline) depends on
 | `--url={page_url}` | Scope URL-based walkthroughs to this page | Linear ticket audits |
 | `--files={comma-separated-paths}` | Scope code-side checks to these files | Targeted code fixes |
 | `--scope={1-line description}` | Free-text scope note in outputs | Multi-audit orchestration |
-| `--ticket={TICKET_ID}` | Link audit to Linear ticket, write results to `.linear-fix/{TICKET}/{audit}.json` | Rule 43 pipeline |
+| `--ticket={TICKET_ID}` | Link audit to Linear ticket, write evidence below `audits/.linear-fix/{TICKET}/.<audit-id>/` | Rule 43 pipeline |
 | `--no-fix` | Dry-run scoring only; skip fix execution | Review before authorize |
 | `--focus={area}` | Per-audit narrower scope with FULL phase depth | Targeted concerns |
 
@@ -71,8 +69,8 @@ Every audit parses these flags identically. Rule 43 (Linear pipeline) depends on
 Every audit acquires a lock at Phase 0 to prevent simultaneous runs from stomping outputs.
 
 ```bash
-LOCKFILE=".{audit}/.lock"
-mkdir -p ".{audit}"
+LOCKFILE="audits/.<audit-id>/.lock"
+mkdir -p "audits/.<audit-id>"
 if [ -f "$LOCKFILE" ]; then
   LOCK_AGE=$(($(date +%s) - $(stat -c %Y "$LOCKFILE" 2>/dev/null || echo 0)))
   if [ $LOCK_AGE -lt 14400 ]; then  # 4h max; rule 46 allows long audits
@@ -86,7 +84,7 @@ echo $$ > "$LOCKFILE"
 trap "rm -f $LOCKFILE" EXIT
 ```
 
-Rule 43's parallel DYNAMIC audit chain (`/codeaudit` + `/uiuxaudit` + `/flowaudit` + `/debugaudit` on the same ticket) uses distinct `.{audit}/` directories, so locks don't collide across different audits — only duplicate invocations of the same audit are blocked.
+Rule 43's parallel DYNAMIC audit chain (`/codeaudit` + `/uiuxaudit` + `/flowaudit` + `/debugaudit` on the same ticket) uses distinct `audits/.<audit-id>/` directories, so locks don't collide across different audits — only duplicate invocations of the same audit are blocked.
 
 ---
 
@@ -100,7 +98,7 @@ while score < target_threshold (80 for solo run, 100 for rule-43 ticket audit):
     iteration += 1
     apply fixes from fix-plan.json
     re-run failing phases
-    record score trajectory in .{audit}/iterations.md
+    record score trajectory in audits/.<audit-id>/iterations.md
     if iteration >= 5:
         mark remaining findings as NEEDS_REVIEW in verdict.json
         send Telegram SOS with iterations.md path
@@ -113,7 +111,9 @@ Zero tolerance for silent infinite loops. 5 is a hard cap, not a suggestion.
 
 ## 5. NON-UI CONTEXT HANDLING (MANDATORY per audit)
 
-Not every project has UI/URLs/flows. Each audit declares its compatibility:
+Not every project has UI/URLs/flows. The table below covers the core surface
+audits; every additional registry entry declares the same applicability contract
+inside its own `SKILL.md`:
 
 | Project type | /codeaudit | /debugaudit | /uiuxaudit | /flowaudit | /featureaudit | /perfaudit | /secaudit | /a11yaudit | /seoaudit | /copyaudit | /dxaudit | /motionaudit | /dataaudit | /apiaudit |
 |--------------|-----------|-------------|-----------|-----------|---------------|-----------|-----------|-----------|-----------|-----------|----------|--------------|-----------|-----------|
@@ -135,7 +135,7 @@ Every audit declares outputs. Before reporting success, verify they exist with v
 ### Required outputs per audit
 
 ```
-.{audit}/
+audits/.<audit-id>/
 ├── session.log              # timestamps, scope, args, duration
 ├── verdict.json             # machine-readable score + findings (schema below)
 ├── verdict.md               # human-readable final report
@@ -261,7 +261,7 @@ When two audits produce findings on the same file:line or same concern:
    - verdict.json.preamble_version == "1.0"
 2. If any check fails:
    - Do NOT report success
-   - Write .{audit}/OUTPUT_GATE_FAILED.md with details
+   - Write audits/.<audit-id>/OUTPUT_GATE_FAILED.md with details
    - Exit non-zero, Telegram SOS
 3. Only mark audit "complete" when all checks pass.
 ```
@@ -285,7 +285,7 @@ Every audit sends structured notifications. Use helper: `~/.omega/bin/audit-noti
 
 ## 8. DISCOVERY-DRIFT CHECK (MANDATORY on resumed audits)
 
-If `.{audit}/discovery/` exists and is older than 1h:
+If `audits/.<audit-id>/discovery/` exists and is older than 1h:
 1. Re-run light discovery pass
 2. Diff against existing inventory
 3. If diff detected: flag as DRIFT, abort or user-confirm
@@ -295,7 +295,7 @@ If `.{audit}/discovery/` exists and is older than 1h:
 
 ## 9. SELF-TELEMETRY (MANDATORY)
 
-Emit `.{audit}/telemetry.json` at completion (schema in §6). Used by `/metaudit` + capacity planning.
+Emit `audits/.<audit-id>/telemetry.json` at completion (schema in §6). Used by `/metaudit` + capacity planning.
 
 ---
 

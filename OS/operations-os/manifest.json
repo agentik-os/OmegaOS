@@ -1,0 +1,126 @@
+{
+  "schema_version": "2.0.0",
+  "id": "operations-os",
+  "num": 46,
+  "name": "Operations {OS}",
+  "version": "0.1.0",
+  "status": "scaffold",
+  "group": {
+    "key": "operate",
+    "label": "05 · OPERATE",
+    "purpose": "Turn chaos into repeatable execution"
+  },
+  "tagline": "Process diagnosis and work simplification before automation.",
+  "inherits_from": "operations-automation-os",
+  "commands": [
+    {
+      "name": "/ops-scope",
+      "mode": "SCOPE",
+      "summary": "Set and agree the process boundary: first trigger, last output, roles."
+    },
+    {
+      "name": "/ops-interview",
+      "mode": "INTERVIEW",
+      "summary": "Interview every role that touches the work, including for the workarounds."
+    },
+    {
+      "name": "/ops-observe",
+      "mode": "OBSERVE",
+      "summary": "Record a real run with timings, with consent."
+    },
+    {
+      "name": "/ops-map",
+      "mode": "MAP",
+      "summary": "Build the current-state map with handoffs, waits, decisions and rework loops."
+    },
+    {
+      "name": "/ops-measure",
+      "mode": "MEASURE",
+      "summary": "Put numbers on each step, marking unknowns as unknown."
+    },
+    {
+      "name": "/ops-waste",
+      "mode": "MEASURE",
+      "summary": "Separate waste from controls, each with its evidence."
+    },
+    {
+      "name": "/ops-simplify",
+      "mode": "SIMPLIFY",
+      "summary": "Run the ladder in order: eliminate, simplify, standardise, delegate, automate."
+    },
+    {
+      "name": "/ops-exceptions",
+      "mode": "MEASURE",
+      "summary": "Enumerate the abnormal runs and their rate."
+    },
+    {
+      "name": "/ops-target",
+      "mode": "TARGET",
+      "summary": "Design the target operating model with its controls and exception paths."
+    },
+    {
+      "name": "/ops-readiness",
+      "mode": "READINESS",
+      "summary": "Issue the automation readiness verdict and assemble the handoff packet."
+    }
+  ],
+  "dependencies": {
+    "requires": [
+      "context-memory-os"
+    ],
+    "emits": [
+      "operations.boundary.agreed",
+      "operations.process.mapped",
+      "operations.process.measured",
+      "operations.waste.identified",
+      "operations.process.simplified",
+      "operations.target.defined",
+      "operations.automation.readiness",
+      "operations.control.gap"
+    ],
+    "consumes_from": [
+      "kpi-analytics-os",
+      "client-os",
+      "delivery-cs-os",
+      "process-sop-os"
+    ]
+  },
+  "targets": {
+    "claude": {
+      "supported": true
+    },
+    "chatgpt": {
+      "supported": true
+    },
+    "gemini": {
+      "supported": true
+    },
+    "codex": {
+      "supported": true
+    }
+  },
+  "entrypoints": {
+    "spec": "OS.md",
+    "system": "SYSTEM.md",
+    "skill": "SKILL.md",
+    "setup": "SETUP.md",
+    "workflows": "WORKFLOWS/",
+    "commands": "COMMANDS/",
+    "prompts": "PROMPTS/",
+    "references": "REFERENCES/",
+    "memory": "MEMORY/",
+    "tools": "TOOLS/",
+    "evals": "EVALS/",
+    "examples": "EXAMPLES/",
+    "interfaces": "INTERFACES/",
+    "adapters": "ADAPTERS/"
+  },
+  "requires_human_approval_for": [
+    "removing a step that touches money, compliance, safety or a client commitment",
+    "changing who performs a step",
+    "publishing a current-state map that names individuals and their timings",
+    "declaring a process ready for automation",
+    "retiring a control",
+    "observing a person at work"
+  ]
+}

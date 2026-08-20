@@ -241,9 +241,8 @@ impl SessionLog {
             })
             .collect();
 
-        candidates.sort_by_key(|e| {
-            std::cmp::Reverse(e.metadata().ok().and_then(|m| m.modified().ok()))
-        });
+        candidates
+            .sort_by_key(|e| std::cmp::Reverse(e.metadata().ok().and_then(|m| m.modified().ok())));
         candidates.first().map(|e| e.path())
     }
 }

@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "decision-rule.schema.json",
+  "title": "DecisionRule",
+  "type": "object",
+  "required": [
+    "rule_id",
+    "trigger",
+    "inputs",
+    "condition",
+    "action",
+    "expected_output",
+    "confidence",
+    "traceability"
+  ],
+  "properties": {
+    "rule_id": {
+      "type": "string"
+    },
+    "trigger": {
+      "type": "string"
+    },
+    "inputs": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "condition": {
+      "type": "string"
+    },
+    "action": {
+      "type": "string"
+    },
+    "expected_output": {
+      "type": "string"
+    },
+    "exceptions": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "escalation": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "confidence": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "traceability": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "additionalProperties": true
+}

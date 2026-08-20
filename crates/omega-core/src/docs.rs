@@ -237,9 +237,21 @@ mod tests {
     fn discovers_and_groups_the_tree() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
-        write(root, "GETTING-STARTED.md", "# Getting Started\n\nInstall it.\n");
-        write(root, "canon/README.md", "# OmegaOS\n\n![badge](x)\nThe OS.\n");
-        write(root, "reference/09-cmd.md", "# Commands\n\nEvery command.\n");
+        write(
+            root,
+            "GETTING-STARTED.md",
+            "# Getting Started\n\nInstall it.\n",
+        );
+        write(
+            root,
+            "canon/README.md",
+            "# OmegaOS\n\n![badge](x)\nThe OS.\n",
+        );
+        write(
+            root,
+            "reference/09-cmd.md",
+            "# Commands\n\nEvery command.\n",
+        );
         // Not markdown — must be ignored.
         write(root, "notes.txt", "nope");
 

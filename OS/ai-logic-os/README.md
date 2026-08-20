@@ -1,10 +1,10 @@
 # AI Logic OS
 
-AgentikOS operative system — Systems group — **integrated** (v1.0).
+AgentikOS operative system, Systems group, **integrated** (v1.0).
 
 The workflow-optimization AND agentic-system-challenge OS. It audits a process,
 decides what to automate, arbitrates deterministic code vs AI judgment, and
-specs an automation before it is built — and, the improvement, it CHALLENGES an
+specs an automation before it is built, and, the improvement, it CHALLENGES an
 agentic system (OmegaOS itself, an agent, a skill, an LLM pipeline, a coding
 tool, an AI use case): where a model does an `if`'s job, where a consequential
 output is unverifiable, where an irreversible action lacks a human gate, where
@@ -18,7 +18,7 @@ skill (Deposit, 2026-08-11), extended with the system-challenger layer.
 |---|---|
 | `pack/` | SKILL.md + `references/workflow-optimizer.md` (the operator's core doctrine, verbatim) + `references/system-challenger.md` (the agentic-system challenge extension: 5 questions, agent triage, staying current, auditing OmegaOS against its own Laws) |
 | `MASTER.md` | The master agent (TUI Enter + Telegram bot brain) |
-| `bin/omega-ailogic` | The OmegaOS command — opens the AI Logic master agent (conversational + diagnostic; no state CLI) |
+| `bin/omega-ailogic` | The OmegaOS command: opens the AI Logic master agent (conversational + diagnostic; no state CLI) |
 | `commands/codex-ai-logic-os.md` | The OpenAI/Codex command (installed to `~/.codex/prompts/ai-logic-os.md`) |
 
 The Claude command is the `ai-logic-os` skill (at `skills/ai-logic-os/`),
@@ -31,10 +31,10 @@ aliases.
 terminal, or the OS master agent (TUI OS tab -> Enter, Telegram bot via `T`).
 
 Two jobs:
-- **Optimize a workflow** — map → instrument → triage (Codifier / Augmenter /
+- **Optimize a workflow**: map → instrument → triage (Codifier / Augmenter /
   Garder humain / Supprimer) → design → spec → measure → loop. Deletions first;
   spec only the first move.
-- **Challenge an agentic system** — the 5 questions, each cited; the costliest
+- **Challenge an agentic system**: the 5 questions, each cited; the costliest
   missing primitive first; a mandatory "what I do NOT recommend" section.
 
 ## The improvement (vs the raw skill)

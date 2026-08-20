@@ -1,0 +1,80 @@
+{
+  "schema_version": "2.0.0",
+  "id": "ownership-os",
+  "num": 53,
+  "name": "Ownership {OS}",
+  "version": "0.1.0",
+  "status": "scaffold",
+  "group": {
+    "key": "own",
+    "label": "06 \u00b7 OWN",
+    "purpose": "Turn work into assets"
+  },
+  "tagline": "What you own, through which entity, and on what terms.",
+  "inherits_from": null,
+  "commands": [
+    "/entity-map",
+    "/position",
+    "/terms",
+    "/vesting",
+    "/reconcile",
+    "/consents",
+    "/obligations",
+    "/counsel-pack"
+  ],
+  "dependencies": {
+    "requires": [
+      "context-memory-os"
+    ],
+    "consumes": [
+      "ipasset.title.assigned",
+      "exit.structure.proposed",
+      "change.approved"
+    ],
+    "emits": [
+      "ownership.entity.registered",
+      "ownership.position.valued",
+      "ownership.term.flagged",
+      "ownership.obligation.due"
+    ]
+  },
+  "targets": {
+    "claude": {
+      "supported": true
+    },
+    "chatgpt": {
+      "supported": true
+    },
+    "gemini": {
+      "supported": true
+    },
+    "codex": {
+      "supported": true
+    }
+  },
+  "entrypoints": {
+    "spec": "OS.md",
+    "system": "SYSTEM.md",
+    "skill": "SKILL.md",
+    "setup": "SETUP.md",
+    "workflows": "WORKFLOWS/",
+    "commands": "COMMANDS/",
+    "prompts": "PROMPTS/",
+    "references": "REFERENCES/",
+    "memory": "MEMORY/",
+    "tools": "TOOLS/",
+    "evals": "EVALS/",
+    "examples": "EXAMPLES/",
+    "interfaces": "INTERFACES/",
+    "adapters": "ADAPTERS/"
+  },
+  "requires_human_approval_for": [
+    "promoting an extracted or asserted value to verified in the register",
+    "changing an existing position, class, right, percentage or grant schedule",
+    "recording a share transfer, issuance, cancellation or dilution event",
+    "emitting ownership.position.valued to Wealth {OS}",
+    "emitting a consent map to Exit & Liquidity {OS}",
+    "creating or removing an entity in the entity map",
+    "sharing a register extract, terms extract or source document with any third party, including the user's own advisers"
+  ]
+}

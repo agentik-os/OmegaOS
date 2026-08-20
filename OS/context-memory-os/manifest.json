@@ -1,0 +1,124 @@
+{
+  "schema_version": "2.0.0",
+  "id": "context-memory-os",
+  "num": 66,
+  "name": "Context & Memory {OS}",
+  "version": "0.1.0",
+  "status": "scaffold",
+  "group": {
+    "key": "systems",
+    "label": "08 · AI & SYSTEMS",
+    "purpose": "Intelligence infrastructure for everything"
+  },
+  "tagline": "The canonical shared context and persistence layer for every OS.",
+  "inherits_from": "context-memory-os",
+  "commands": [
+    {
+      "name": "/memory",
+      "mode": "retrieve",
+      "summary": "Search or inspect memory, with provenance attached."
+    },
+    {
+      "name": "/remember",
+      "mode": "capture",
+      "summary": "Propose a memory write."
+    },
+    {
+      "name": "/ingest",
+      "mode": "capture",
+      "summary": "Ingest a file or event as a screened, hashed source."
+    },
+    {
+      "name": "/context",
+      "mode": "compile",
+      "summary": "Compile a purpose scoped context pack."
+    },
+    {
+      "name": "/snapshot",
+      "mode": "snapshot",
+      "summary": "Create an immutable versioned canonical state."
+    },
+    {
+      "name": "/decision-log",
+      "mode": "capture",
+      "summary": "Record a decision, its rationale and its review date."
+    },
+    {
+      "name": "/contradiction",
+      "mode": "resolve",
+      "summary": "Open, inspect or adjudicate conflicting records."
+    },
+    {
+      "name": "/memory-audit",
+      "mode": "govern",
+      "summary": "Audit provenance, permissions, age and access."
+    },
+    {
+      "name": "/forget",
+      "mode": "forget",
+      "summary": "Correct, archive or delete authorized memory, with a receipt."
+    },
+    {
+      "name": "/export-memory",
+      "mode": "govern",
+      "summary": "Produce a human readable export of everything remembered."
+    }
+  ],
+  "dependencies": {
+    "consumes": [
+      "memory.record.staged",
+      "review.learning.pack.created",
+      "knowledge.claim.confirmed"
+    ],
+    "emits": [
+      "memory.source.ingested",
+      "memory.record.staged",
+      "memory.record.verified",
+      "memory.record.superseded",
+      "memory.context.compiled",
+      "memory.contradiction.opened",
+      "memory.correction.applied",
+      "memory.deletion.completed",
+      "memory.context.snapshot.created"
+    ]
+  },
+  "targets": {
+    "claude": {
+      "supported": true
+    },
+    "chatgpt": {
+      "supported": true
+    },
+    "gemini": {
+      "supported": true
+    },
+    "codex": {
+      "supported": true
+    }
+  },
+  "entrypoints": {
+    "spec": "OS.md",
+    "system": "SYSTEM.md",
+    "skill": "SKILL.md",
+    "setup": "SETUP.md",
+    "workflows": "WORKFLOWS/",
+    "commands": "COMMANDS/",
+    "prompts": "PROMPTS/",
+    "references": "REFERENCES/",
+    "memory": "MEMORY/",
+    "tools": "TOOLS/",
+    "evals": "EVALS/",
+    "examples": "EXAMPLES/",
+    "interfaces": "INTERFACES/",
+    "adapters": "ADAPTERS/"
+  },
+  "requires_human_approval_for": [
+    "canonicalizing an inference about the user they did not state themselves",
+    "merging two entities that might be different people, projects or accounts",
+    "sharing context across a project boundary",
+    "deleting a record another OS has cited",
+    "exporting the full memory",
+    "changing a retention policy or a permission scope",
+    "accepting a bulk ingestion whose source cannot be attributed"
+  ]
+}

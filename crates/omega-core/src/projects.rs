@@ -30,9 +30,24 @@ pub struct DiscoveredProject {
 /// OS media folders. Pruned by EXACT name match at any depth (hidden dirs are
 /// pruned separately).
 const PRUNE: &[&str] = &[
-    "node_modules", "target", "vendor", "venv", "__pycache__", "dist",
-    "build", "out", "coverage", "Library", "Applications", "Movies",
-    "Music", "Pictures", "Photos", "Public", "Templates", "snap",
+    "node_modules",
+    "target",
+    "vendor",
+    "venv",
+    "__pycache__",
+    "dist",
+    "build",
+    "out",
+    "coverage",
+    "Library",
+    "Applications",
+    "Movies",
+    "Music",
+    "Pictures",
+    "Photos",
+    "Public",
+    "Templates",
+    "snap",
 ];
 
 /// How deep below $HOME the walk goes. 5 reaches e.g.
@@ -100,7 +115,11 @@ fn is_project_dir(path: &Path) -> bool {
 fn last_active_days(path: &Path) -> Option<u64> {
     let mut newest: Option<std::time::SystemTime> = None;
     for probe in [".git/HEAD", ".git/FETCH_HEAD", ""] {
-        let p = if probe.is_empty() { path.to_path_buf() } else { path.join(probe) };
+        let p = if probe.is_empty() {
+            path.to_path_buf()
+        } else {
+            path.join(probe)
+        };
         if let Ok(meta) = std::fs::metadata(&p) {
             if let Ok(m) = meta.modified() {
                 if newest.is_none_or(|n| m > n) {
@@ -166,11 +185,15 @@ fn walk(
         return;
     }
     // Symlink-loop guard: canonicalize once per visited dir.
-    let Ok(canon) = dir.canonicalize() else { return };
+    let Ok(canon) = dir.canonicalize() else {
+        return;
+    };
     if !visited.insert(canon) {
         return;
     }
-    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
     for entry in entries.flatten() {
         let p = entry.path();
         if !p.is_dir() {
@@ -246,8 +269,14 @@ mod tests {
         let names: Vec<&str> = found.iter().map(|p| p.name.as_str()).collect();
         assert!(names.contains(&"app"), "git project found: {names:?}");
         assert!(names.contains(&"tool"), "manifest project found: {names:?}");
-        assert!(!names.contains(&"fake-pkg"), "node_modules pruned: {names:?}");
-        assert!(!names.contains(&"subcrate"), "no descent into projects: {names:?}");
+        assert!(
+            !names.contains(&"fake-pkg"),
+            "node_modules pruned: {names:?}"
+        );
+        assert!(
+            !names.contains(&"subcrate"),
+            "no descent into projects: {names:?}"
+        );
         // Container is the home-relative parent.
         let app_p = found.iter().find(|p| p.name == "app").unwrap();
         assert_eq!(app_p.container, "Station/Side");

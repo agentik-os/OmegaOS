@@ -1,0 +1,111 @@
+{
+  "schema_version": "2.0.0",
+  "id": "ai-logic-os",
+  "num": 65,
+  "name": "AI Logic {OS}",
+  "version": "0.1.0",
+  "status": "scaffold",
+  "group": {
+    "key": "systems",
+    "label": "08 · AI & SYSTEMS",
+    "purpose": "Intelligence infrastructure for everything"
+  },
+  "tagline": "When to use deterministic code and when to use model judgment.",
+  "inherits_from": "ai-logic-os",
+  "commands": [
+    {
+      "name": "/ai-logic arbitrate <step>",
+      "mode": "arbitrate",
+      "summary": "Put one named step in exactly one bin: codify, augment, keep human, or delete."
+    },
+    {
+      "name": "/ai-logic map <process>",
+      "mode": "map",
+      "summary": "Turn a process that lives in people's heads into numbered steps with owner and duration."
+    },
+    {
+      "name": "/ai-logic baseline <process>",
+      "mode": "baseline",
+      "summary": "Establish volume, time, error rate and cost, or specify the measurement device."
+    },
+    {
+      "name": "/ai-logic triage",
+      "mode": "triage",
+      "summary": "Bin every step of a mapped and measured process, deletions announced first."
+    },
+    {
+      "name": "/ai-logic math <candidate>",
+      "mode": "math",
+      "summary": "Annual gain against build plus maintenance, with every input visible."
+    },
+    {
+      "name": "/ai-logic verifier <output>",
+      "mode": "arbitrate",
+      "summary": "Name the falsifier a consequential model output must carry, or refuse the step."
+    },
+    {
+      "name": "/ai-logic challenge <system>",
+      "mode": "challenge",
+      "summary": "Interrogate an agentic system against five questions, every finding cited."
+    },
+    {
+      "name": "/ai-logic spec",
+      "mode": "spec",
+      "summary": "Specify the first approved move only, build ready, with a done test and rollback."
+    }
+  ],
+  "dependencies": {
+    "requires": [
+      "context-memory-os"
+    ],
+    "consumes": [
+      "memory.context.compiled",
+      "operations.map.approved",
+      "evaluation.score.recorded",
+      "ailogic.arbitration.requested"
+    ],
+    "emits": [
+      "ailogic.arbitration.decided",
+      "ailogic.baseline.recorded",
+      "ailogic.challenge.reported",
+      "ailogic.verifier.specified",
+      "memory.record.staged"
+    ]
+  },
+  "targets": {
+    "claude": {
+      "supported": true
+    },
+    "chatgpt": {
+      "supported": true
+    },
+    "gemini": {
+      "supported": true
+    },
+    "codex": {
+      "supported": true
+    }
+  },
+  "entrypoints": {
+    "spec": "OS.md",
+    "system": "SYSTEM.md",
+    "skill": "SKILL.md",
+    "setup": "SETUP.md",
+    "workflows": "WORKFLOWS/",
+    "commands": "COMMANDS/",
+    "prompts": "PROMPTS/",
+    "references": "REFERENCES/",
+    "memory": "MEMORY/",
+    "tools": "TOOLS/",
+    "evals": "EVALS/",
+    "examples": "EXAMPLES/",
+    "interfaces": "INTERFACES/",
+    "adapters": "ADAPTERS/"
+  },
+  "requires_human_approval_for": [
+    "recording a verdict that contradicts a decision the user already shipped",
+    "writing an estimated rather than observed baseline into canonical memory",
+    "recommending deletion of a process that has a named external consumer",
+    "accepting execution statistics as a replacement for a human gate on an irreversible action"
+  ]
+}

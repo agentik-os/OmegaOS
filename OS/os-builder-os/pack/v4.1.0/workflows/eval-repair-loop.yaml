@@ -1,0 +1,24 @@
+version: 1.0.0
+workflow_id: builder.eval_repair_loop
+inputs:
+  - OS_MANIFEST.yaml
+  - EVAL_SUITE.yaml
+loop:
+  max_iterations: 10
+  steps:
+    - run_deterministic_validators
+    - run_scenario_evals
+    - run_rubric_graders
+    - run_adversarial_gauntlet
+    - classify_findings
+    - identify_root_causes
+    - patch_smallest_coherent_surface
+    - add_regression_case
+    - rerun_affected_suites
+stop_when:
+  - all_hard_gates_pass
+  - no_unresolved_critical_or_high_findings
+  - overall_quality_threshold_met
+on_max_iterations:
+  - mark_build_not_releasable
+  - preserve_reports_and_partial_artifacts

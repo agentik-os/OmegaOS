@@ -1494,10 +1494,7 @@ fn abort_with(paths: &LoginPaths, requested_pid: u32) -> AbortResult {
             )
         }
         Err(error) => {
-            return abort_settlement_failure(
-                "active Codex login flow record is unreadable",
-                error,
-            )
+            return abort_settlement_failure("active Codex login flow record is unreadable", error)
         }
     };
     if requested_pid == 0 || requested_pid != record.supervisor_pid {
@@ -1506,10 +1503,7 @@ fn abort_with(paths: &LoginPaths, requested_pid: u32) -> AbortResult {
     let store = match paths.store() {
         Ok(store) => store,
         Err(error) => {
-            return abort_settlement_failure(
-                "could not open the canonical credential store",
-                error,
-            )
+            return abort_settlement_failure("could not open the canonical credential store", error)
         }
     };
 

@@ -1,0 +1,98 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "source.schema.json",
+  "title": "SourceRecord",
+  "type": "object",
+  "required": [
+    "source_id",
+    "title",
+    "source_type",
+    "provenance",
+    "access_basis",
+    "retrieved_at"
+  ],
+  "properties": {
+    "source_id": {
+      "type": "string"
+    },
+    "title": {
+      "type": "string",
+      "minLength": 1
+    },
+    "authors": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "publication_date": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "edition": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "source_type": {
+      "enum": [
+        "book",
+        "primary_research",
+        "systematic_review",
+        "official",
+        "standard",
+        "technical_documentation",
+        "expert_consensus",
+        "practitioner_case",
+        "postmortem",
+        "dataset",
+        "benchmark",
+        "other"
+      ]
+    },
+    "provenance": {
+      "type": "string"
+    },
+    "access_basis": {
+      "enum": [
+        "full_lawful_access",
+        "user_provided",
+        "licensed",
+        "public_full_text",
+        "official_summary",
+        "reliable_secondary",
+        "partial_excerpt",
+        "model_prior_knowledge",
+        "unknown"
+      ]
+    },
+    "retrieved_at": {
+      "type": "string"
+    },
+    "language": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "subdomains": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "quality": {
+      "type": "object"
+    },
+    "limitations": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "additionalProperties": true
+}

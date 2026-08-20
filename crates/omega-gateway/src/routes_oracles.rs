@@ -49,7 +49,9 @@ use serde_json::json;
 type ApiError = (StatusCode, Json<serde_json::Value>);
 
 pub async fn list() -> Json<OraclesResponse> {
-    let missions = tokio::task::spawn_blocking(crate::missions::list).await.unwrap_or_default();
+    let missions = tokio::task::spawn_blocking(crate::missions::list)
+        .await
+        .unwrap_or_default();
     // Never 500 on a degraded rmux read (same posture as routes_sessions::list):
     // a failed liveness probe just means every entry reports live: false.
     let live_sessions = match tokio::task::spawn_blocking(crate::rmux::list_sessions).await {
@@ -62,7 +64,12 @@ pub async fn list() -> Json<OraclesResponse> {
         .map(|m| {
             let session = m.key.clone();
             let live = live_sessions.contains(&session);
-            OracleEntry { key: m.key.clone(), session, live, mission: Some(m) }
+            OracleEntry {
+                key: m.key.clone(),
+                session,
+                live,
+                mission: Some(m),
+            }
         })
         .collect();
     Json(OraclesResponse { oracles })
@@ -73,15 +80,24 @@ fn not_found(msg: impl Into<String>) -> ApiError {
 }
 
 fn bad_gateway(msg: impl Into<String>) -> ApiError {
-    (StatusCode::BAD_GATEWAY, Json(json!({ "error": msg.into() })))
+    (
+        StatusCode::BAD_GATEWAY,
+        Json(json!({ "error": msg.into() })),
+    )
 }
 
 fn bad_request(msg: impl Into<String>) -> ApiError {
-    (StatusCode::BAD_REQUEST, Json(json!({ "error": msg.into() })))
+    (
+        StatusCode::BAD_REQUEST,
+        Json(json!({ "error": msg.into() })),
+    )
 }
 
 fn gateway_timeout(msg: impl Into<String>) -> ApiError {
-    (StatusCode::GATEWAY_TIMEOUT, Json(json!({ "error": msg.into() })))
+    (
+        StatusCode::GATEWAY_TIMEOUT,
+        Json(json!({ "error": msg.into() })),
+    )
 }
 
 fn timeline_to_response(tl: omega_core::timeline::OracleTimeline) -> TimelineResponse {
@@ -93,7 +109,11 @@ fn timeline_to_response(tl: omega_core::timeline::OracleTimeline) -> TimelineRes
         events: tl
             .events
             .into_iter()
-            .map(|e| TimelineEventEntry { at: e.at.to_rfc3339(), marker: e.marker.to_string(), text: e.text })
+            .map(|e| TimelineEventEntry {
+                at: e.at.to_rfc3339(),
+                marker: e.marker.to_string(),
+                text: e.text,
+            })
             .collect(),
     }
 }
@@ -113,7 +133,9 @@ pub async fn timeline(Path(session): Path<String>) -> Result<Json<TimelineRespon
 
     match built {
         Some(tl) => Ok(Json(timeline_to_response(tl))),
-        None => Err(not_found(format!("no timeline for oracle '{session}' (no OracleState on disk)"))),
+        None => Err(not_found(format!(
+            "no timeline for oracle '{session}' (no OracleState on disk)"
+        ))),
     }
 }
 
@@ -216,7 +238,8 @@ pub async fn gate(Path(session): Path<String>) -> Result<Json<GateStatusResponse
     .await
     .map_err(|e| bad_gateway(format!("gate task panicked: {e}")))?;
 
-    let result = result_read.map_err(|e| bad_gateway(format!("failed to read gate result: {e}")))?;
+    let result =
+        result_read.map_err(|e| bad_gateway(format!("failed to read gate result: {e}")))?;
     if let Some(r) = result {
         return Ok(Json(GateStatusResponse::Result(gate_result_to_response(r))));
     }
@@ -224,7 +247,9 @@ pub async fn gate(Path(session): Path<String>) -> Result<Json<GateStatusResponse
     if let Some(r) = rubric {
         return Ok(Json(GateStatusResponse::RubricOnly(rubric_to_response(r))));
     }
-    Err(not_found(format!("no gate result or rubric for oracle '{session}'")))
+    Err(not_found(format!(
+        "no gate result or rubric for oracle '{session}'"
+    )))
 }
 
 /// Shared by [`reap`] and [`resurrect`]: a session/oracle name must be
@@ -279,7 +304,10 @@ pub async fn reap(Path(session): Path<String>) -> Result<Json<ReapResponse>, Api
     // I-2 (Codex cross-model review, 2026-08-11): see
     // routes_sessions.rs::create's identical comment.
     let output = tokio::task::spawn_blocking(move || {
-        crate::omega_cli::run_with_timeout(&["reap", "--", target.as_str()], crate::omega_cli::cli_timeout())
+        crate::omega_cli::run_with_timeout(
+            &["reap", "--", target.as_str()],
+            crate::omega_cli::cli_timeout(),
+        )
     })
     .await
     .map_err(|e| bad_gateway(format!("reap task panicked: {e}")))?
@@ -310,7 +338,10 @@ pub async fn reap(Path(session): Path<String>) -> Result<Json<ReapResponse>, Api
             Json(json!({ "error": "omega reap failed (see gateway logs)" })),
         ));
     }
-    Ok(Json(ReapResponse { reaped: true, output: output.stdout }))
+    Ok(Json(ReapResponse {
+        reaped: true,
+        output: output.stdout,
+    }))
 }
 
 /// `POST /v1/oracles/{session}/resurrect` — runs `omega resurrect --
@@ -355,5 +386,8 @@ pub async fn resurrect(Path(session): Path<String>) -> Result<Json<ResurrectResp
             Json(json!({ "error": "omega resurrect failed (see gateway logs)" })),
         ));
     }
-    Ok(Json(ResurrectResponse { resurrected: true, output: output.stdout }))
+    Ok(Json(ResurrectResponse {
+        resurrected: true,
+        output: output.stdout,
+    }))
 }

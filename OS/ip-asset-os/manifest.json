@@ -1,0 +1,133 @@
+{
+  "schema_version": "2.0.0",
+  "id": "ip-asset-os",
+  "num": 54,
+  "name": "IP & Asset {OS}",
+  "version": "0.1.0",
+  "status": "scaffold",
+  "group": {
+    "key": "own",
+    "label": "06 · OWN",
+    "purpose": "Turn work into assets"
+  },
+  "tagline": "Intellectual property and durable assets: create, protect, license.",
+  "inherits_from": null,
+  "commands": [
+    {
+      "name": "/ip register",
+      "mode": "INVENTORY",
+      "does": "Add or update one asset in the register, attach its holder, run the title check.",
+      "returns": "The asset row with its title status and the next named gap."
+    },
+    {
+      "name": "/ip inventory",
+      "mode": "INVENTORY",
+      "does": "Sweep every asset category for assets that are not in the register yet.",
+      "returns": "Assets found, assets added, and what could not be resolved without the user."
+    },
+    {
+      "name": "/ip title",
+      "mode": "TITLE",
+      "does": "Establish chain of title for an asset and name the document that proves it.",
+      "returns": "Title status proven, unproven or disputed, with the proving or missing document."
+    },
+    {
+      "name": "/ip protect",
+      "mode": "PROTECT",
+      "does": "Decide protection posture per jurisdiction: register, hold as trade secret, or accept unregistered.",
+      "returns": "The decision with its reason, and where registration is chosen, the counsel brief to instruct."
+    },
+    {
+      "name": "/ip license",
+      "mode": "LICENSE",
+      "does": "Record a grant out or in with exclusivity, territory, term, field of use and revocation trigger.",
+      "returns": "The licence record, its executed or unexecuted status, and any exclusivity conflict found."
+    },
+    {
+      "name": "/ip calendar",
+      "mode": "CALENDAR",
+      "does": "Maintain the renewal and deadline calendar and push dated obligations to Execution {OS}.",
+      "returns": "Dated obligations with lead times and named human owners, unknown dates surfaced first."
+    },
+    {
+      "name": "/ip watch",
+      "mode": "WATCH",
+      "does": "Triage a suspected infringement against the register.",
+      "returns": "A classification of ignore, monitor or escalate to counsel, with the evidence attached."
+    },
+    {
+      "name": "/ip value",
+      "mode": "VALUE",
+      "does": "Record a valuation estimate with its method, inputs and date.",
+      "returns": "The valuation record, labelled an estimate and never an appraisal."
+    },
+    {
+      "name": "/ip schedule",
+      "mode": "INVENTORY",
+      "does": "Render the register in diligence shape, unproven assets included.",
+      "returns": "The IP schedule with title status, protection posture, encumbrances and licences out."
+    },
+    {
+      "name": "/ip brief",
+      "mode": "PROTECT",
+      "does": "Assemble the counsel brief a professional is instructed from.",
+      "returns": "The brief, plus a request for approval before anyone is instructed."
+    }
+  ],
+  "dependencies": {
+    "requires": [
+      "context-memory-os"
+    ],
+    "consumes": [
+      "ownership.entity.registered",
+      "change.approved"
+    ],
+    "emits": [
+      "ipasset.registered",
+      "ipasset.title.assigned",
+      "ipasset.license.granted",
+      "ipasset.renewal.due",
+      "ipasset.valuation.recorded"
+    ]
+  },
+  "targets": {
+    "claude": {
+      "supported": true
+    },
+    "chatgpt": {
+      "supported": true
+    },
+    "gemini": {
+      "supported": true
+    },
+    "codex": {
+      "supported": true
+    }
+  },
+  "entrypoints": {
+    "spec": "OS.md",
+    "system": "SYSTEM.md",
+    "skill": "SKILL.md",
+    "setup": "SETUP.md",
+    "workflows": "WORKFLOWS/",
+    "commands": "COMMANDS/",
+    "prompts": "PROMPTS/",
+    "references": "REFERENCES/",
+    "memory": "MEMORY/",
+    "tools": "TOOLS/",
+    "evals": "EVALS/",
+    "examples": "EXAMPLES/",
+    "interfaces": "INTERFACES/",
+    "adapters": "ADAPTERS/"
+  },
+  "requires_human_approval_for": [
+    "instructing a lawyer, trademark attorney, patent attorney or tax professional, because it opens a matter and a cost",
+    "filing or submitting anything to a registry: application, renewal, assignment recordal, opposition, office action response",
+    "signing or executing any assignment, licence, NDA, settlement or demand letter",
+    "paying or receiving any amount: filing fees, renewal fees, attorney invoices, royalties",
+    "recording a licence grant, an assignment, or a change of holder of record",
+    "sending anything to a third party, including a licence offer, a demand letter or a trade secret disclosure",
+    "marking an asset title status as proven",
+    "publishing an IP schedule or valuation outside the user's own systems"
+  ]
+}

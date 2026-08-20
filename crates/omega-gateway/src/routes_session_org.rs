@@ -17,7 +17,10 @@ use axum::{
 type ApiError = (StatusCode, Json<serde_json::Value>);
 
 fn bad_request(msg: impl Into<String>) -> ApiError {
-    (StatusCode::BAD_REQUEST, Json(serde_json::json!({ "error": msg.into() })))
+    (
+        StatusCode::BAD_REQUEST,
+        Json(serde_json::json!({ "error": msg.into() })),
+    )
 }
 
 /// Byte-length cap on `label`/`folder`. This is app-generated freeform
@@ -34,7 +37,9 @@ const MAX_FOLDER_LEN: usize = 200;
 /// `GET /v1/session-org` — the whole overlay map. Empty when no session has
 /// ever been tagged.
 pub async fn get_all(State(state): State<AppState>) -> Json<SessionOrgResponse> {
-    Json(SessionOrgResponse { entries: state.session_org.get_all() })
+    Json(SessionOrgResponse {
+        entries: state.session_org.get_all(),
+    })
 }
 
 /// `PUT /v1/session-org/{name}` — FULL REPLACE of that session's overlay
@@ -55,14 +60,25 @@ pub async fn set(
         return Err(bad_request("invalid session name"));
     }
     if req.label.as_ref().is_some_and(|s| s.len() > MAX_LABEL_LEN) {
-        return Err(bad_request(format!("label too long (max {MAX_LABEL_LEN} bytes)")));
+        return Err(bad_request(format!(
+            "label too long (max {MAX_LABEL_LEN} bytes)"
+        )));
     }
-    if req.folder.as_ref().is_some_and(|s| s.len() > MAX_FOLDER_LEN) {
-        return Err(bad_request(format!("folder too long (max {MAX_FOLDER_LEN} bytes)")));
+    if req
+        .folder
+        .as_ref()
+        .is_some_and(|s| s.len() > MAX_FOLDER_LEN)
+    {
+        return Err(bad_request(format!(
+            "folder too long (max {MAX_FOLDER_LEN} bytes)"
+        )));
     }
 
-    let entry =
-        SessionOrgEntry { label: req.label, folder: req.folder, pinned: req.pinned.unwrap_or(false) };
+    let entry = SessionOrgEntry {
+        label: req.label,
+        folder: req.folder,
+        pinned: req.pinned.unwrap_or(false),
+    };
     state.session_org.set(&name, entry.clone());
     Ok(Json(entry))
 }

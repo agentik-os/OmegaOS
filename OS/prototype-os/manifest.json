@@ -1,0 +1,120 @@
+{
+  "schema_version": "2.0.0",
+  "id": "prototype-os",
+  "num": 23,
+  "name": "Prototype {OS}",
+  "version": "0.1.0",
+  "status": "scaffold",
+  "group": {
+    "key": "build",
+    "label": "03 · BUILD",
+    "purpose": "Turn evidence into products"
+  },
+  "tagline": "The cheapest artifact that answers the riskiest open question.",
+  "inherits_from": null,
+  "commands": [
+    {
+      "name": "/prototype",
+      "surface": "session",
+      "does": "Open the OS and propose the triage from open upstream questions"
+    },
+    {
+      "name": "triage",
+      "surface": "session",
+      "does": "Rank open questions by cost of being wrong against cost of answering"
+    },
+    {
+      "name": "question <text>",
+      "surface": "session",
+      "does": "Rewrite a worry into a falsifiable question with a threshold"
+    },
+    {
+      "name": "spike <id>",
+      "surface": "session",
+      "does": "Throwaway implementation of the technically risky part only"
+    },
+    {
+      "name": "flow <id>",
+      "surface": "session",
+      "does": "Comprehension or interaction test with a fixed protocol"
+    },
+    {
+      "name": "fake <id>",
+      "surface": "session",
+      "does": "Demand test measuring observed behaviour, not stated intent"
+    },
+    {
+      "name": "bench <id>",
+      "surface": "session",
+      "does": "Reproducible measurement against a pre-agreed threshold"
+    },
+    {
+      "name": "verdict <id>",
+      "surface": "session",
+      "does": "Rule CONFIRMED, REFUTED or INCONCLUSIVE and name what it settles"
+    },
+    {
+      "name": "teardown <id>",
+      "surface": "session",
+      "does": "Delete the artifact, revoke its access, record the removal"
+    },
+    {
+      "name": "ledger",
+      "surface": "session",
+      "does": "Every prototype, its verdict and its expiry, live ones flagged"
+    }
+  ],
+  "dependencies": {
+    "requires": [
+      "blueprint-os"
+    ],
+    "consumes": [
+      "blueprint.handoff.frozen",
+      "design.handoff.completed",
+      "design.prototype.requested",
+      "validation.question.opened"
+    ],
+    "emits": [
+      "prototype.verdict.recorded",
+      "prototype.assumption.refuted",
+      "prototype.artifact.torn_down"
+    ]
+  },
+  "targets": {
+    "claude": {
+      "supported": true
+    },
+    "chatgpt": {
+      "supported": true
+    },
+    "gemini": {
+      "supported": true
+    },
+    "codex": {
+      "supported": true
+    }
+  },
+  "entrypoints": {
+    "spec": "OS.md",
+    "system": "SYSTEM.md",
+    "skill": "SKILL.md",
+    "setup": "SETUP.md",
+    "workflows": "WORKFLOWS/",
+    "commands": "COMMANDS/",
+    "prompts": "PROMPTS/",
+    "references": "REFERENCES/",
+    "memory": "MEMORY/",
+    "tools": "TOOLS/",
+    "evals": "EVALS/",
+    "examples": "EXAMPLES/",
+    "interfaces": "INTERFACES/",
+    "adapters": "ADAPTERS/"
+  },
+  "requires_human_approval_for": [
+    "using any real customer data, even sampled or anonymised",
+    "exposing an artifact to real users, including a smoke test that collects an email or takes money",
+    "spending beyond the agreed budget ceiling for one question",
+    "keeping an artifact past its expiry date",
+    "recording a verdict that reverses an approved Blueprint decision"
+  ]
+}

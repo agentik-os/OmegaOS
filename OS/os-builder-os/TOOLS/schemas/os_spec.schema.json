@@ -1,0 +1,133 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentik.os/schemas/os_spec.schema.json",
+  "title": "OS Spec",
+  "description": "The normalised intake and specification of one candidate OS, produced by phase 0 (Intake) and completed through phase 1 (Capability Definition). This is the object the whole build reads from. A field left out is a field the build will guess, and a guessed boundary is the most expensive defect OS Builder produces.",
+  "type": "object",
+  "required": [
+    "name",
+    "slug",
+    "capability",
+    "primary_user",
+    "problem",
+    "desired_outcome",
+    "primary_artifact",
+    "workflow",
+    "scope",
+    "non_scope",
+    "security_level"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "name": {
+      "type": "string",
+      "minLength": 2,
+      "description": "Display name, rendered as '<name> {OS}'."
+    },
+    "slug": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]*$",
+      "description": "Directory name under OS/ and the id used everywhere. Must not collide with an existing entry in OS/_registry.json."
+    },
+    "capability": {
+      "type": "string",
+      "minLength": 20,
+      "description": "The repeatable professional capability in one sentence, explainable without the words folder, prompt or model."
+    },
+    "primary_user": {
+      "type": "string",
+      "minLength": 3,
+      "description": "Who operates it, and what they already know. Decides how much the skill layer must teach."
+    },
+    "problem": {
+      "type": "string",
+      "minLength": 20,
+      "description": "The observable failure today. Never stated as the absence of the solution."
+    },
+    "desired_outcome": {
+      "type": "string",
+      "minLength": 10,
+      "description": "What is true afterwards that is not true now."
+    },
+    "primary_artifact": {
+      "type": "string",
+      "minLength": 3,
+      "description": "The one thing it produces that a person keeps. An OS with no primary artifact is a chat persona."
+    },
+    "workflow": {
+      "type": "array",
+      "minItems": 3,
+      "items": { "type": "string" },
+      "description": "The ordered operating steps. Three steps is the floor: fewer means a checklist, not a workflow."
+    },
+    "scope": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "type": "string" },
+      "description": "What it does."
+    },
+    "non_scope": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "type": "string" },
+      "description": "What it deliberately refuses to do. Never empty: an OS with no non scope absorbs every adjacent request until its boundary means nothing."
+    },
+    "security_level": {
+      "enum": ["public", "internal", "confidential", "sensitive", "regulated"],
+      "description": "The MAXIMUM sensitivity class this OS will handle, not the typical one."
+    },
+    "environment": {
+      "type": "array",
+      "items": { "enum": ["claude", "codex", "chatgpt", "gemini", "repository", "runtime"] },
+      "description": "Targets that must work. Anything absent here still needs a declared degradation in ADAPTERS/."
+    },
+    "adjacent_systems": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["slug", "seam"],
+        "additionalProperties": false,
+        "properties": {
+          "slug": { "type": "string", "description": "Must resolve against OS/_registry.json." },
+          "seam": { "type": "string", "description": "Where this OS stops and that one starts." },
+          "direction": { "enum": ["upstream", "downstream", "peer"] }
+        }
+      }
+    },
+    "constraints": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Time, budget, tooling, jurisdiction, house rules."
+    },
+    "modes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "entry_condition", "produces", "done_when"],
+        "additionalProperties": false,
+        "properties": {
+          "name": { "type": "string" },
+          "entry_condition": { "type": "string" },
+          "produces": { "type": "string" },
+          "done_when": { "type": "string" }
+        }
+      },
+      "description": "One row per operating mode. Becomes OS.md section 3."
+    },
+    "human_approval_for": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Actions the OS must never take without an explicit human decision. Never empty for an OS that can act on the world."
+    },
+    "stop_conditions": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "The situations in which the correct output is a refusal. Every OS must be capable of saying STOP."
+    },
+    "decision": {
+      "enum": ["build_os", "split_capability", "use_lighter_artifact", "extend_existing_os", "refuse"],
+      "description": "The verdict of the SHOULD THIS BE AN OS tree. Recorded even when it is BUILD, so a later reader knows the question was asked."
+    },
+    "decision_reason": { "type": "string" }
+  }
+}

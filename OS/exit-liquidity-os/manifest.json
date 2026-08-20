@@ -1,0 +1,155 @@
+{
+  "schema_version": "2.0.0",
+  "id": "exit-liquidity-os",
+  "num": 56,
+  "name": "Exit & Liquidity {OS}",
+  "version": "0.1.0",
+  "status": "scaffold",
+  "group": {
+    "key": "own",
+    "label": "06 · OWN",
+    "purpose": "Turn work into assets"
+  },
+  "tagline": "Prepare, time and run a liquidity event.",
+  "inherits_from": null,
+  "commands": [
+    {
+      "name": "/exit-readiness",
+      "mode": "ASSESS",
+      "does": "Score sellability against what a buyer will test, and classify every gap as paperwork, value or structural.",
+      "returns": "A readiness score and a gap list, each gap classified with an owner and a date.",
+      "emits": [
+        "exit.readiness.scored"
+      ]
+    },
+    {
+      "name": "/exit-index",
+      "mode": "INDEX",
+      "does": "Build the diligence readiness index: the buyer request list with exists, location, owner and state per line.",
+      "returns": "The index, the count of absent lines, and the absences blocking the earliest gate.",
+      "emits": [
+        "exit.dataroom.indexed"
+      ]
+    },
+    {
+      "name": "/exit-value",
+      "mode": "VALUE",
+      "does": "Produce an internal working valuation range from the operator's own numbers under stated assumptions.",
+      "returns": "A low, base and high, the assumption under each, and the sensitivities. Labelled internal, never a formal valuation or fairness opinion.",
+      "emits": []
+    },
+    {
+      "name": "/exit-acquirers",
+      "mode": "MAP",
+      "does": "Map who plausibly buys this asset, why, what they have bought before, and the contact state per name.",
+      "returns": "The acquirer landscape with a stated reason to buy and a recorded contact state per candidate. Contacts nobody.",
+      "emits": []
+    },
+    {
+      "name": "/exit-structure",
+      "mode": "STRUCTURE",
+      "does": "Write the structure preference and the walk-away before any offer exists, and assemble the tax question pack.",
+      "returns": "The preference, marked provisional until the tax professional has reviewed it, plus the questions for that review.",
+      "emits": [
+        "exit.structure.proposed"
+      ]
+    },
+    {
+      "name": "/exit-questions",
+      "mode": "STRUCTURE",
+      "does": "Assemble a question pack for a named adviser: lawyer, accountant or tax professional.",
+      "returns": "The questions, the documents each needs attached, and the decision each unblocks.",
+      "emits": []
+    },
+    {
+      "name": "/exit-release",
+      "mode": "RUN",
+      "does": "Request approval to release one document to one named outside party, per document and per recipient.",
+      "returns": "The approval request, and on approval an append only disclosure log entry naming document, recipient, date, approving human and confidentiality agreement.",
+      "emits": []
+    },
+    {
+      "name": "/exit-timeline",
+      "mode": "RUN",
+      "does": "Show the exit timeline, its gates, and which gate is currently blocking.",
+      "returns": "The gates in order, what each requires, and the blocking item with its owner.",
+      "emits": []
+    },
+    {
+      "name": "/exit-obligations",
+      "mode": "OBLIGATIONS",
+      "does": "Track what survives the close: earn-out milestones, escrow releases, transition services, restrictive covenants.",
+      "returns": "Each obligation with its date, owner and release condition, and what falls due in the requested window.",
+      "emits": [
+        "exit.obligation.tracked"
+      ]
+    },
+    {
+      "name": "/exit-proceeds",
+      "mode": "VALUE",
+      "does": "Hand the expected proceeds range to Wealth {OS}, net of the deductions this OS can identify.",
+      "returns": "The range, plus the deductions it cannot identify named as open questions for the accountant and tax professional.",
+      "emits": [
+        "exit.proceeds.expected"
+      ]
+    }
+  ],
+  "dependencies": {
+    "requires": [
+      "context-memory-os",
+      "business-strategy-os"
+    ],
+    "consumes": [
+      "strategy.value_driver.measured",
+      "ownership.entity.registered",
+      "ipasset.title.assigned",
+      "change.approved"
+    ],
+    "emits": [
+      "exit.readiness.scored",
+      "exit.dataroom.indexed",
+      "exit.structure.proposed",
+      "exit.proceeds.expected",
+      "exit.obligation.tracked"
+    ]
+  },
+  "targets": {
+    "claude": {
+      "supported": true
+    },
+    "chatgpt": {
+      "supported": true
+    },
+    "gemini": {
+      "supported": true
+    },
+    "codex": {
+      "supported": true
+    }
+  },
+  "entrypoints": {
+    "spec": "OS.md",
+    "system": "SYSTEM.md",
+    "skill": "SKILL.md",
+    "setup": "SETUP.md",
+    "workflows": "WORKFLOWS/",
+    "commands": "COMMANDS/",
+    "prompts": "PROMPTS/",
+    "references": "REFERENCES/",
+    "memory": "MEMORY/",
+    "tools": "TOOLS/",
+    "evals": "EVALS/",
+    "examples": "EXAMPLES/",
+    "interfaces": "INTERFACES/",
+    "adapters": "ADAPTERS/"
+  },
+  "requires_human_approval_for": [
+    "releasing any document, number or summary to any outside party, approved per document and per recipient",
+    "opening, populating or granting access to a data room",
+    "recording a structure preference as settled, which additionally requires review by a tax professional",
+    "presenting an internal valuation range as anything other than internal",
+    "emitting exit.structure.proposed to Ownership {OS}, since it touches the legal shape of what the operator owns",
+    "contacting, or drafting under the operator's name for, any named acquirer",
+    "signing, transferring, receiving or moving money, which this OS never executes"
+  ]
+}

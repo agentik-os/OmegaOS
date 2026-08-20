@@ -1,0 +1,113 @@
+{
+  "schema_version": "2.0.0",
+  "id": "meeting-os",
+  "num": 43,
+  "name": "Meeting {OS}",
+  "version": "0.1.0",
+  "status": "scaffold",
+  "group": {
+    "key": "operate",
+    "label": "05 · OPERATE",
+    "purpose": "Turn chaos into repeatable execution"
+  },
+  "tagline": "Meetings that produce decisions and owners, or do not happen.",
+  "inherits_from": null,
+  "commands": [
+    {
+      "name": "/meeting-test",
+      "mode": "TRIAGE",
+      "summary": "Decide whether the meeting should exist, with its person-hour cost."
+    },
+    {
+      "name": "/meeting-agenda",
+      "mode": "PREPARE",
+      "summary": "Build an agenda where every item names a decision, a decider and a time box."
+    },
+    {
+      "name": "/meeting-brief",
+      "mode": "PREPARE",
+      "summary": "Assemble and circulate the pre-read, including prior decisions on the topic."
+    },
+    {
+      "name": "/meeting-run",
+      "mode": "RUN",
+      "summary": "Run the room to decisions, parking what cannot be decided with its unblock condition."
+    },
+    {
+      "name": "/meeting-record",
+      "mode": "RECORD",
+      "summary": "Write the decision record and action items with one owner and one date each."
+    },
+    {
+      "name": "/meeting-followup",
+      "mode": "FOLLOW UP",
+      "summary": "Close or renegotiate every open action before the next occurrence."
+    },
+    {
+      "name": "/meeting-audit",
+      "mode": "AUDIT",
+      "summary": "Judge a recurring meeting on evidence: keep, shrink, merge or kill."
+    },
+    {
+      "name": "/meeting-decline",
+      "mode": "TRIAGE",
+      "summary": "Write the refusal, naming the asynchronous alternative and its date."
+    }
+  ],
+  "dependencies": {
+    "requires": [
+      "context-memory-os"
+    ],
+    "emits": [
+      "meeting.declined",
+      "meeting.agenda.published",
+      "meeting.decision.recorded",
+      "meeting.action.assigned",
+      "meeting.action.closed",
+      "meeting.series.audited"
+    ],
+    "consumes_from": [
+      "project-os",
+      "kpi-analytics-os",
+      "client-os",
+      "decision-os"
+    ]
+  },
+  "targets": {
+    "claude": {
+      "supported": true
+    },
+    "chatgpt": {
+      "supported": true
+    },
+    "gemini": {
+      "supported": true
+    },
+    "codex": {
+      "supported": true
+    }
+  },
+  "entrypoints": {
+    "spec": "OS.md",
+    "system": "SYSTEM.md",
+    "skill": "SKILL.md",
+    "setup": "SETUP.md",
+    "workflows": "WORKFLOWS/",
+    "commands": "COMMANDS/",
+    "prompts": "PROMPTS/",
+    "references": "REFERENCES/",
+    "memory": "MEMORY/",
+    "tools": "TOOLS/",
+    "evals": "EVALS/",
+    "examples": "EXAMPLES/",
+    "interfaces": "INTERFACES/",
+    "adapters": "ADAPTERS/"
+  },
+  "requires_human_approval_for": [
+    "declining or cancelling a meeting somebody else called",
+    "sending an agenda, a pre-read or a decision record to external attendees",
+    "assigning an action to a named person who was not present",
+    "recording a decision as final when the named decider has not confirmed it",
+    "killing or merging a recurring meeting other people rely on"
+  ]
+}

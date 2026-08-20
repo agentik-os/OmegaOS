@@ -2,13 +2,13 @@
 name: audit-orchestrator
 description: >
   Intelligent audit orchestrator — detects project type + user intent, recommends
-  optimal audits with 3 power levels (Quick/Standard/Forensic). Use when user
+  optimal audits with three bounded modes (Focused/Standard/Forensic). Use when user
   says "/audit", "what should I audit", "full audit", "audit my project",
   "audit fast", "audit deep", "find issues", "improve quality", "production
   ready check", "ship-ready audit". Auto-detects project stack and intent
   keywords (speed, security, design, content, accessibility, full) to pick
   best 1-N audits. Dispatches in parallel waves. Reads results from
-  audits/.{name}audit/verdict.json after each run.
+  audits/.<audit-id>/verdict.json after each run.
 disable-model-invocation: false
 ---
 
@@ -22,7 +22,7 @@ RIGHT audits at the RIGHT power level, dispatch them, and synthesize results.
 ```bash
 /audit-orchestrator               # interactive: ask user what to audit
 /audit-orchestrator full          # run all 23 audits in parallel
-/audit-orchestrator quick         # top 5 most-impactful audits at Quick level
+/audit-orchestrator quick         # compatibility alias: focused top 5, full phases
 /audit-orchestrator standard      # smart selection at Standard level (default)
 /audit-orchestrator forensic      # deep Gestalt-Popper on selected audits
 /audit-orchestrator security      # secaudit + apiaudit + dataaudit
@@ -51,20 +51,25 @@ RIGHT audits at the RIGHT power level, dispatch them, and synthesize results.
 | `/motionaudit` | Animation design | Transitions, easing, motion brand DNA |
 | `/automationaudit` | Cron/scripts | Daemon health, scheduled tasks reliability |
 | `/logicaudit` | Architecture | Algorithm efficiency, redundant logic |
+| `/i18naudit` | Internationalization | Locale coverage, RTL, hardcoded copy |
 | `/retentionaudit` | Product/CPO | Feature opportunities, RICE roadmap (READ-ONLY) |
+| `/depaudit` | Supply chain | Dependencies, licenses, lockfiles, SBOM |
+| `/privacyaudit` | Privacy | PII, consent, retention, GDPR/CCPA |
+| `/releaseaudit` | Release safety | CI/CD, rollback, migrations, provenance |
+| `/observabilityaudit` | Observability | Signals, alerts, traces, incident diagnosis |
 
 ## The 3 Power Levels
 
-### ⚡ Level 1 — Quick (5-15 min)
-- Top 5 critical findings only
-- Skip Plan + Fix phases
-- Output: `audits/.{name}audit/quick-report.md` (no verdict.json scoring)
-- Use case: gut-check before a meeting, fast triage
+### ⚡ Level 1 — Focused
+- Select the top 5 highest-impact audits, but execute every required phase
+- Narrow scope with `--focus`; never weaken Plan, Fix, Re-audit, or scoring
+- Output: complete `audits/.<audit-id>/verdict.json` + reports
+- The legacy `quick` invocation is a compatibility alias for this mode
 
 ### 🎯 Level 2 — Standard (30-60 min, DEFAULT)
 - Full phases: Audit → Plan → Fix → Re-audit
 - Score normalized /100
-- Output: complete `audits/.{name}audit/verdict.json` + reports
+- Output: complete `audits/.<audit-id>/verdict.json` + reports
 - Use case: regular quality cycle, pre-PR validation
 
 ### 🔬 Level 3 — Forensic (1-4h per audit)
@@ -105,7 +110,7 @@ When user says ambiguous request like "audit my project":
 
 3. PICK POWER LEVEL
    - Default: Standard (Level 2)
-   - User mentions "quick/fast/rapide" → Quick (Level 1)
+   - User mentions "quick/fast/rapide" → Focused (Level 1, full phase depth)
    - User mentions "deep/forensic/production/launch/100" → Forensic (Level 3)
 
 4. CHECK PROJECT MATURITY
@@ -164,9 +169,9 @@ The confirmation step depends on WHO is running this:
 When user says "full audit" / "audit complet" / "tous les audits":
 
 1. Dispatch ALL 23 audits in 3 parallel waves (file-safety partitioned):
-   - **Wave 1** (read-only, can parallel): codeaudit, logicaudit, dataaudit, apiaudit, seoaudit, featureaudit, retentionaudit, copyaudit, dxaudit
-   - **Wave 2** (after Wave 1 verdicts exist): secaudit (reads apiaudit), perfaudit, debugaudit, automationaudit
-   - **Wave 3** (UI bundle, after Wave 1): uiuxaudit, refontaudit, motionaudit, a11yaudit, flowaudit
+   - **Wave 1** (independent inventory, can parallel): codeaudit, logicaudit, dataaudit, apiaudit, seoaudit, featureaudit, retentionaudit, copyaudit, dxaudit, i18naudit, depaudit, privacyaudit
+   - **Wave 2** (consumes Wave 1 evidence): secaudit, perfaudit, debugaudit, automationaudit, releaseaudit, observabilityaudit
+   - **Wave 3** (experience bundle, after Wave 1): uiuxaudit, refontaudit, motionaudit, a11yaudit, flowaudit
 2. After all done, generate `audits/SYNTHESIS.md` aggregating scores
 3. Score the project: average /100 across all audits + flag any < 80
 4. Telegram report with verdict + button to view each detailed report
@@ -190,8 +195,9 @@ status:
 
 ## Output Convention
 
-ALL audits MUST write to `audits/.{name}audit/` (the canonical post-2026-05-13
-location). Never to `./.{name}audit/` at project root. The new audit-orchestrator
+ALL audits MUST write to `audits/.<audit-id>/`, where `<audit-id>` is the exact
+identifier from `skills/audits/registry.toml`. Never write a machine audit root
+at the project root. The audit-orchestrator
 + audit-tracker skills assume this canonical path.
 
 ## Anti-patterns
@@ -217,7 +223,7 @@ You: emit plan markdown
 User: "y"   (interactive only; dispatched skips straight to dispatch)
   ↓
 You: dispatch 3 audits in parallel via tmux work sessions
-You: monitor verdict.json files appearing under audits/.{name}/
+You: monitor verdict.json files appearing under audits/.<audit-id>/
 You: when all 3 done, write audits/SYNTHESIS.md
 You: send Telegram report with aggregate score + per-audit links
 ```
@@ -259,7 +265,7 @@ single Workflow fan-out, not one after another:
 - **Track C — Maturity probe** (step 4): empty-scaffold vs mature vs pre-launch
   ("go-live trio") classification from git age + src density.
 - **Track D — Prior-state read**: load existing `audits/SYNTHESIS.md` +
-  `audits/.{name}audit/verdict.json` freshness (fresh / stale / expired) so
+  `audits/.<audit-id>/verdict.json` freshness (fresh / stale / expired) so
   already-fresh audits are skipped, not re-run.
 
 These tracks are read-only and touch different inputs → safe to parallelize

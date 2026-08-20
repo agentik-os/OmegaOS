@@ -1,0 +1,116 @@
+{
+  "schema_version": "2.0.0",
+  "id": "project-os",
+  "num": 42,
+  "name": "Project {OS}",
+  "version": "0.1.0",
+  "status": "scaffold",
+  "group": {
+    "key": "operate",
+    "label": "05 · OPERATE",
+    "purpose": "Turn chaos into repeatable execution"
+  },
+  "tagline": "Scope, plan and land a project without losing the thread.",
+  "inherits_from": null,
+  "commands": [
+    {
+      "name": "/project-scope",
+      "mode": "SCOPE",
+      "summary": "Write the scope statement: done test, out-of-scope list, constraints, assumptions."
+    },
+    {
+      "name": "/project-plan",
+      "mode": "PLAN",
+      "summary": "Build the milestone plan with owners, dates, dependencies and the named critical path."
+    },
+    {
+      "name": "/project-status",
+      "mode": "RUN",
+      "summary": "Report position against plan, slip in days, blockers and the next decision due."
+    },
+    {
+      "name": "/project-risk",
+      "mode": "RUN",
+      "summary": "Maintain the risk register: risk, trigger, response, owner, review date."
+    },
+    {
+      "name": "/project-change",
+      "mode": "REPLAN",
+      "summary": "Open a priced change record with its effect on the landing date."
+    },
+    {
+      "name": "/project-recover",
+      "mode": "RECOVER",
+      "summary": "Present the recovery option set: cut scope, extend, add capacity, or stop."
+    },
+    {
+      "name": "/project-land",
+      "mode": "LAND",
+      "summary": "Run acceptance and closeout, with actual versus planned."
+    },
+    {
+      "name": "/project-abort",
+      "mode": "ABORT",
+      "summary": "Stop the project deliberately, naming what is salvaged and what is written off."
+    }
+  ],
+  "dependencies": {
+    "requires": [
+      "context-memory-os"
+    ],
+    "emits": [
+      "project.scope.agreed",
+      "project.plan.published",
+      "project.status.reported",
+      "project.slip.reported",
+      "project.change.requested",
+      "project.landed",
+      "project.aborted"
+    ],
+    "consumes_from": [
+      "client-os",
+      "team-delegation-os",
+      "kpi-analytics-os",
+      "decision-os",
+      "execution-os"
+    ]
+  },
+  "targets": {
+    "claude": {
+      "supported": true
+    },
+    "chatgpt": {
+      "supported": true
+    },
+    "gemini": {
+      "supported": true
+    },
+    "codex": {
+      "supported": true
+    }
+  },
+  "entrypoints": {
+    "spec": "OS.md",
+    "system": "SYSTEM.md",
+    "skill": "SKILL.md",
+    "setup": "SETUP.md",
+    "workflows": "WORKFLOWS/",
+    "commands": "COMMANDS/",
+    "prompts": "PROMPTS/",
+    "references": "REFERENCES/",
+    "memory": "MEMORY/",
+    "tools": "TOOLS/",
+    "evals": "EVALS/",
+    "examples": "EXAMPLES/",
+    "interfaces": "INTERFACES/",
+    "adapters": "ADAPTERS/"
+  },
+  "requires_human_approval_for": [
+    "committing to a date communicated to a client or a stakeholder",
+    "accepting a scope change that moves the landing date or the budget",
+    "reassigning a milestone owner",
+    "declaring a project landed",
+    "aborting a project",
+    "escalating a change to Review & Governance {OS}"
+  ]
+}

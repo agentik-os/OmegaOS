@@ -1,0 +1,165 @@
+{
+  "schema_version": "2.0.0",
+  "id": "stepper-os",
+  "num": 24,
+  "name": "Stepper {OS}",
+  "version": "0.1.0",
+  "status": "scaffold",
+  "group": {
+    "key": "build",
+    "label": "03 · BUILD",
+    "purpose": "Turn evidence into products"
+  },
+  "tagline": "The dependency-aware step graph and its deterministic verification gate.",
+  "inherits_from": "stepper-os",
+  "commands": [
+    {
+      "name": "omega-stepper init",
+      "surface": "cli",
+      "does": "Scaffold the manifest, the spec tree and a first step"
+    },
+    {
+      "name": "omega-stepper validate",
+      "surface": "cli",
+      "does": "Schema, uniqueness, reference resolution, DAG acyclicity"
+    },
+    {
+      "name": "omega-stepper resume",
+      "surface": "cli",
+      "does": "Reconcile interrupted attempts back to FAILED"
+    },
+    {
+      "name": "omega-stepper status",
+      "surface": "cli",
+      "does": "Raw and weighted progress with per-status counts"
+    },
+    {
+      "name": "omega-stepper plan",
+      "surface": "cli",
+      "does": "Ranked READY candidates plus the safe execution wave"
+    },
+    {
+      "name": "omega-stepper show <id>",
+      "surface": "cli",
+      "does": "Full spec and runtime state of one step"
+    },
+    {
+      "name": "omega-stepper agent-brief <id>",
+      "surface": "cli",
+      "does": "Emit the self-contained brief a coding agent executes"
+    },
+    {
+      "name": "omega-stepper start <id>",
+      "surface": "cli",
+      "does": "Claim a READY step and open an attempt"
+    },
+    {
+      "name": "omega-stepper verify <id>",
+      "surface": "cli",
+      "does": "Run the deterministic checks without changing state"
+    },
+    {
+      "name": "omega-stepper done <id>",
+      "surface": "cli",
+      "does": "Verify then close, DONE only on a full pass"
+    },
+    {
+      "name": "omega-stepper fail <id>",
+      "surface": "cli",
+      "does": "Mark the current attempt failed"
+    },
+    {
+      "name": "omega-stepper block <id>",
+      "surface": "cli",
+      "does": "Block a step on an external decision or dependency"
+    },
+    {
+      "name": "omega-stepper unblock <id>",
+      "surface": "cli",
+      "does": "Lift a block and return the step to PENDING"
+    },
+    {
+      "name": "omega-stepper review <id> <role>",
+      "surface": "cli",
+      "does": "Record a review verdict for a role gate"
+    },
+    {
+      "name": "omega-stepper report",
+      "surface": "cli",
+      "does": "Markdown status report, weighted and raw"
+    },
+    {
+      "name": "omega-stepper events",
+      "surface": "cli",
+      "does": "Tail of the append-only event log"
+    },
+    {
+      "name": "omega-stepper release-check",
+      "surface": "cli",
+      "does": "Plan completion at the target priority"
+    },
+    {
+      "name": "/stepper-os",
+      "surface": "session",
+      "does": "Open the execution OS and drive the loop"
+    }
+  ],
+  "dependencies": {
+    "requires": [
+      "blueprint-os"
+    ],
+    "consumes": [
+      "blueprint.handoff.frozen",
+      "blueprint.delta.published",
+      "design.handoff.completed",
+      "prototype.verdict.recorded",
+      "defect.opened",
+      "security.finding.opened"
+    ],
+    "emits": [
+      "stepper.graph.build_ready",
+      "stepper.step.done",
+      "stepper.step.escalated",
+      "stepper.decision.requested",
+      "stepper.release_check.passed"
+    ]
+  },
+  "targets": {
+    "claude": {
+      "supported": true
+    },
+    "chatgpt": {
+      "supported": true
+    },
+    "gemini": {
+      "supported": true
+    },
+    "codex": {
+      "supported": true
+    }
+  },
+  "entrypoints": {
+    "spec": "OS.md",
+    "system": "SYSTEM.md",
+    "skill": "SKILL.md",
+    "setup": "SETUP.md",
+    "workflows": "WORKFLOWS/",
+    "commands": "COMMANDS/",
+    "prompts": "PROMPTS/",
+    "references": "REFERENCES/",
+    "memory": "MEMORY/",
+    "tools": "TOOLS/",
+    "evals": "EVALS/",
+    "examples": "EXAMPLES/",
+    "interfaces": "INTERFACES/",
+    "adapters": "ADAPTERS/"
+  },
+  "requires_human_approval_for": [
+    "freezing the graph as BUILD READY",
+    "changing the target priority for the release gate",
+    "raising max_fix_attempts after a ceiling escalation",
+    "overriding a review gate, which an agent never does alone",
+    "accepting a step whose definition of done is a human review rather than a deterministic check",
+    "unblocking a step that was blocked on an upstream decision"
+  ]
+}

@@ -226,7 +226,9 @@ pub async fn require_device(
     // Query tokens exist for WebSocket clients that cannot set headers.
     // Request logging must therefore never log full request URIs.
     let token = header_token.or_else(|| query.get("token").cloned());
-    let Some(token) = token else { return Err(StatusCode::UNAUTHORIZED) };
+    let Some(token) = token else {
+        return Err(StatusCode::UNAUTHORIZED);
+    };
     let Some(device) = DeviceStore::open(&state.dir).verify(&token) else {
         return Err(StatusCode::UNAUTHORIZED);
     };
@@ -235,7 +237,10 @@ pub async fn require_device(
 }
 
 async fn whoami(Extension(device): Extension<Device>) -> Json<WhoamiResponse> {
-    Json(WhoamiResponse { device_id: device.id, name: device.name })
+    Json(WhoamiResponse {
+        device_id: device.id,
+        name: device.name,
+    })
 }
 
 pub fn build_router(state: AppState) -> Router {
@@ -245,7 +250,10 @@ pub fn build_router(state: AppState) -> Router {
             "/v1/sessions",
             get(crate::routes_sessions::list).post(crate::routes_sessions::create),
         )
-        .route("/v1/sessions/{name}/stream", get(crate::routes_sessions::stream))
+        .route(
+            "/v1/sessions/{name}/stream",
+            get(crate::routes_sessions::stream),
+        )
         .route(
             "/v1/sessions/{name}/keys",
             axum::routing::post(crate::routes_sessions::send_keys),
@@ -270,6 +278,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/v1/oracles", get(crate::routes_oracles::list))
         .route("/v1/rules", get(crate::routes_rules::list))
         .route("/v1/agents", get(crate::routes_agents::list))
+        .route("/v1/system-agents", get(crate::routes_system_agents::list))
         .route(
             "/v1/agents/{name}/install",
             axum::routing::post(crate::routes_agents::install_check),
@@ -279,6 +288,15 @@ pub fn build_router(state: AppState) -> Router {
             get(crate::routes_agents::install_stream),
         )
         .route("/v1/skills", get(crate::routes_skills::list))
+        .route(
+            "/v1/skills/{name}",
+            get(crate::routes_skills::get).put(crate::routes_skills::update),
+        )
+        .route(
+            "/v1/skills/{name}/agent",
+            axum::routing::post(crate::routes_skills::ask_agent),
+        )
+        .route("/v1/os", get(crate::routes_os::list))
         .route("/v1/projects", get(crate::routes_projects::list))
         .route("/v1/marketing", get(crate::routes_marketing::list))
         .route("/v1/files", get(crate::routes_files::list))
@@ -286,7 +304,10 @@ pub fn build_router(state: AppState) -> Router {
         .route("/v1/audits", get(crate::routes_audit::list))
         .route("/v1/audit", axum::routing::post(crate::routes_audit::check))
         .route("/v1/audit/stream", get(crate::routes_audit::stream))
-        .route("/v1/dispatch", axum::routing::post(crate::routes_dispatch::create))
+        .route(
+            "/v1/dispatch",
+            axum::routing::post(crate::routes_dispatch::create),
+        )
         // B1 fix: axum 0.8's `Multipart` extractor falls back to its own
         // internal 2 MiB default body limit when no `DefaultBodyLimit` layer
         // is set, silently overriding `MAX_DEPOSIT_BYTES` (the crate's own
@@ -300,7 +321,9 @@ pub fn build_router(state: AppState) -> Router {
         .route(
             "/v1/deposit",
             axum::routing::post(crate::routes_deposit::create).layer(
-                axum::extract::DefaultBodyLimit::max(crate::routes_deposit::MAX_DEPOSIT_BYTES + 8192),
+                axum::extract::DefaultBodyLimit::max(
+                    crate::routes_deposit::MAX_DEPOSIT_BYTES + 8192,
+                ),
             ),
         )
         .route("/v1/events", get(crate::routes_events::events))
@@ -316,29 +339,44 @@ pub fn build_router(state: AppState) -> Router {
             "/v1/accounts/{slug}/default",
             axum::routing::post(crate::routes_accounts::set_default),
         )
-        .route("/v1/accounts/{slug}/login", get(crate::routes_accounts::login))
+        .route(
+            "/v1/accounts/{slug}/login",
+            get(crate::routes_accounts::login),
+        )
         .route(
             "/v1/accounts/{slug}/apikey",
             axum::routing::post(crate::routes_accounts::apikey),
         )
-        .route(
-            "/v1/session-org",
-            get(crate::routes_session_org::get_all),
-        )
+        .route("/v1/session-org", get(crate::routes_session_org::get_all))
         .route(
             "/v1/session-org/{name}",
             axum::routing::put(crate::routes_session_org::set),
         )
         .route("/v1/master/chat", get(crate::routes_master::chat))
-        .route("/v1/oracles/{session}/timeline", get(crate::routes_oracles::timeline))
-        .route("/v1/oracles/{session}/gate", get(crate::routes_oracles::gate))
-        .route("/v1/oracles/{session}/reap", axum::routing::post(crate::routes_oracles::reap))
+        .route(
+            "/v1/oracles/{session}/timeline",
+            get(crate::routes_oracles::timeline),
+        )
+        .route(
+            "/v1/oracles/{session}/gate",
+            get(crate::routes_oracles::gate),
+        )
+        .route(
+            "/v1/oracles/{session}/reap",
+            axum::routing::post(crate::routes_oracles::reap),
+        )
         .route(
             "/v1/oracles/{session}/resurrect",
             axum::routing::post(crate::routes_oracles::resurrect),
         )
-        .route("/v1/orchestrate/stream", get(crate::routes_orchestrate::stream))
-        .route("/v1/new-project/stream", get(crate::routes_new_project::stream))
+        .route(
+            "/v1/orchestrate/stream",
+            get(crate::routes_orchestrate::stream),
+        )
+        .route(
+            "/v1/new-project/stream",
+            get(crate::routes_new_project::stream),
+        )
         .route("/v1/doctor", get(crate::routes_box::doctor))
         .route("/v1/usage", get(crate::routes_box::usage))
         .route("/v1/box-info", get(crate::routes_box::box_info))
@@ -363,7 +401,10 @@ pub fn build_router(state: AppState) -> Router {
         // IMPORTANT: route_layer only wraps routes registered BEFORE it is
         // called. Add every new protected .route(...) ABOVE this line, or it
         // ships unauthenticated.
-        .route_layer(middleware::from_fn_with_state(state.clone(), require_device));
+        .route_layer(middleware::from_fn_with_state(
+            state.clone(),
+            require_device,
+        ));
     Router::new()
         .route("/v1/health", get(health))
         .route("/v1/pair", axum::routing::post(crate::routes_pair::pair))

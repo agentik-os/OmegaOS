@@ -1,0 +1,183 @@
+{
+  "schema_version": "2.0.0",
+  "id": "growth-os",
+  "num": 38,
+  "name": "Growth {OS}",
+  "version": "0.1.0",
+  "status": "scaffold",
+  "group": {
+    "key": "grow",
+    "label": "04 · GROW",
+    "purpose": "Turn value into distribution and revenue"
+  },
+  "tagline": "Loops, experiments and the channels that compound.",
+  "inherits_from": null,
+  "commands": [
+    {
+      "name": "/growth",
+      "does": "Opens the growth view: live loops, running experiments and the top of the backlog.",
+      "returns": "Running experiments first, with any unregistered threshold flagged before anything else."
+    },
+    {
+      "name": "/loop-map",
+      "does": "Maps the business's loops and separates them from funnels wearing the name.",
+      "returns": "Each loop with cycle time, coefficient and cost; non-closing candidates listed as funnels with the failing step."
+    },
+    {
+      "name": "/loop-audit",
+      "does": "Walks one loop step by step and ranks steps by effect on cycle time and coefficient.",
+      "returns": "The weakest step, its effect size, and the data behind the ranking."
+    },
+    {
+      "name": "/hypothesis",
+      "does": "Turns an observation into a falsifiable hypothesis tied to a loop step.",
+      "returns": "Mechanism, expected effect size and the cheapest test that could falsify it."
+    },
+    {
+      "name": "/backlog",
+      "does": "Ranks the experiment backlog by information gained per unit of cost and time.",
+      "returns": "The ranked list with a stated ranking reason per entry."
+    },
+    {
+      "name": "/experiment-design",
+      "does": "Fixes target metric, guardrail metric, sample, duration, success threshold and stopping rule.",
+      "returns": "A pre-registered design that becomes immutable once the experiment runs."
+    },
+    {
+      "name": "/experiment-run",
+      "does": "Registers the experiment as running and produces the change proposal for its owning OS.",
+      "returns": "The running record, the change proposal, and the OS that must apply it under its own gate."
+    },
+    {
+      "name": "/experiment-read",
+      "does": "Reads a stopped experiment against the threshold fixed beforehand.",
+      "returns": "A verdict with both target and guardrail movements, or an underpowered report and no verdict."
+    },
+    {
+      "name": "/channel-economics",
+      "does": "Scores a channel on acquisition cost against the revenue its cohorts actually retained.",
+      "returns": "Cost per retained cohort, flagged provisional while the retention window is open."
+    },
+    {
+      "name": "/scale",
+      "does": "Proposes scaling a channel to its owning OS with a spend ceiling attached.",
+      "returns": "A scale proposal requiring human approval before any spend."
+    },
+    {
+      "name": "/kill",
+      "does": "Records the decision to stop a channel and the economics behind it.",
+      "returns": "A kill record durable enough to answer the next person who wants to retry the channel."
+    },
+    {
+      "name": "/growth-review",
+      "does": "Reviews loops, running experiments and channel economics on the operator's cadence.",
+      "returns": "What compounds, what leaks, what should stop, and which backlog entries are now obsolete."
+    }
+  ],
+  "dependencies": {
+    "consumes_from": [
+      "content-os",
+      "sales-os",
+      "revenue-os",
+      "delivery-cs-os",
+      "kpi-analytics-os"
+    ],
+    "emits_to": [
+      "content-os",
+      "sales-os",
+      "offer-os",
+      "pricing-os",
+      "affiliate-os",
+      "kpi-analytics-os",
+      "business-strategy-os"
+    ],
+    "handoffs": [
+      {
+        "to": "content-os",
+        "artifact": "content performance"
+      },
+      {
+        "to": "sales-os",
+        "artifact": "conversion by stage"
+      },
+      {
+        "to": "revenue-os",
+        "artifact": "revenue and retention by cohort"
+      },
+      {
+        "to": "delivery-cs-os",
+        "artifact": "retention and adoption signals"
+      },
+      {
+        "to": "kpi-analytics-os",
+        "artifact": "the metric definitions"
+      },
+      {
+        "to": "content-os",
+        "artifact": "loop map and experiment backlog"
+      },
+      {
+        "to": "sales-os",
+        "artifact": "loop map and experiment backlog"
+      },
+      {
+        "to": "offer-os",
+        "artifact": "loop map and experiment backlog"
+      },
+      {
+        "to": "pricing-os",
+        "artifact": "loop map and experiment backlog"
+      },
+      {
+        "to": "affiliate-os",
+        "artifact": "loop map and experiment backlog"
+      },
+      {
+        "to": "kpi-analytics-os",
+        "artifact": "experiment verdict"
+      },
+      {
+        "to": "business-strategy-os",
+        "artifact": "experiment verdict"
+      }
+    ]
+  },
+  "targets": {
+    "claude": {
+      "supported": true
+    },
+    "chatgpt": {
+      "supported": true
+    },
+    "gemini": {
+      "supported": true
+    },
+    "codex": {
+      "supported": true
+    }
+  },
+  "entrypoints": {
+    "spec": "OS.md",
+    "system": "SYSTEM.md",
+    "skill": "SKILL.md",
+    "setup": "SETUP.md",
+    "workflows": "WORKFLOWS/",
+    "commands": "COMMANDS/",
+    "prompts": "PROMPTS/",
+    "references": "REFERENCES/",
+    "memory": "MEMORY/",
+    "tools": "TOOLS/",
+    "evals": "EVALS/",
+    "examples": "EXAMPLES/",
+    "interfaces": "INTERFACES/",
+    "adapters": "ADAPTERS/"
+  },
+  "requires_human_approval_for": [
+    "any experiment that changes customer-facing pricing, including a temporary discount",
+    "any spend, of any size, on any channel",
+    "any experiment run on live customers where the customer is not told",
+    "any experiment whose guardrail is a trust, safety or support metric",
+    "scaling a channel beyond a spend ceiling the operator previously set",
+    "publishing an experiment result externally"
+  ]
+}

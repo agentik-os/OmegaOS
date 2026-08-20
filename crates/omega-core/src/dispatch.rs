@@ -1,13 +1,114 @@
 use crate::config::OmegaConfig;
 use crate::done::DoneSignal;
 use crate::oracle_lifecycle::{
-    OraclePromptGenerator, OracleRegistry, OracleRegistryEntry, OracleRegistryStatus, OracleState,
+    mission_ledger_path, OraclePromptGenerator, OracleRegistry, OracleRegistryEntry,
+    OracleRegistryStatus, OracleState,
 };
 use crate::routing;
 use crate::session::SessionManager;
 use anyhow::{bail, Result};
 use std::path::Path;
 use std::time::Duration;
+
+/// Resolve and validate the authoritative mission behind a live oracle.
+///
+/// Session names and state JSON are compatibility indexes only. A followup is
+/// allowed to address them solely after their provenance resolves to an
+/// existing, non-closing V3 mission. Historical/pre-V3 projections therefore
+/// fail closed into the ordinary new-oracle path.
+fn validate_followup_authority(
+    state_dir: &Path,
+    oracle_name: &str,
+) -> Result<(
+    OracleState,
+    crate::mission_ledger::MissionLedger,
+    crate::mission_ledger::MissionProjection,
+)> {
+    let state = OracleState::read(state_dir, oracle_name)?
+        .ok_or_else(|| anyhow::anyhow!("oracle {oracle_name} has no state projection"))?;
+    let ledger = crate::mission_ledger::MissionLedger::open(mission_ledger_path(state_dir))?;
+    let projection = state.require_ledger_authority(&ledger)?;
+    if matches!(
+        projection.state,
+        crate::mission::MissionState::Accepted
+            | crate::mission::MissionState::Reporting
+            | crate::mission::MissionState::Delivered
+            | crate::mission::MissionState::Failed
+            | crate::mission::MissionState::Cancelled
+    ) {
+        bail!(
+            "oracle {oracle_name} points at mission {} in closing state {:?}",
+            projection.mission_id.as_str(),
+            projection.state
+        );
+    }
+    Ok((state, ledger, projection))
+}
+
+/// Append a followup to the mission already owned by `oracle_name`.
+///
+/// This function intentionally has no `Mission::new` or `create_mission` path:
+/// a followup can only append to the stamped mission. It is public so Telegram
+/// and future transports can share the same invariant without reimplementing
+/// it. Optimistic concurrency retries are bounded and each call keeps one
+/// stable idempotency key.
+pub fn append_followup_event(
+    state_dir: &Path,
+    oracle_name: &str,
+    mission_text: &str,
+    confirmed: bool,
+) -> Result<crate::mission_ledger::AppendOutcome> {
+    let (state, ledger, _) = validate_followup_authority(state_dir, oracle_name)?;
+    let followup_id = crate::mission::MissionId::new();
+    let idempotency_key = format!(
+        "followup:{}:{}",
+        state.mission_id.as_str(),
+        followup_id.as_str()
+    );
+
+    for attempt in 0..3 {
+        let projection = ledger.mission(&state.mission_id)?.ok_or_else(|| {
+            anyhow::anyhow!(
+                "mission {} disappeared before followup append",
+                state.mission_id.as_str()
+            )
+        })?;
+        if matches!(
+            projection.state,
+            crate::mission::MissionState::Accepted
+                | crate::mission::MissionState::Reporting
+                | crate::mission::MissionState::Delivered
+                | crate::mission::MissionState::Failed
+                | crate::mission::MissionState::Cancelled
+        ) {
+            bail!(
+                "mission {} closed before followup append",
+                state.mission_id.as_str()
+            );
+        }
+        let mut event = crate::mission_ledger::AppendEvent::new(
+            state.mission_id.clone(),
+            projection.version,
+            idempotency_key.clone(),
+            oracle_name,
+            "mission_followup_received",
+        );
+        event.correlation_id = Some(followup_id.as_str().to_string());
+        event.payload = serde_json::json!({
+            "oracle": oracle_name,
+            "text": mission_text,
+            "delivery_confirmed": confirmed,
+        });
+        match ledger.append(event) {
+            Ok(outcome) => return Ok(outcome),
+            Err(crate::mission_ledger::LedgerError::VersionConflict { .. }) if attempt < 2 => {
+                continue;
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
+    unreachable!("bounded followup retry either returns or errors")
+}
 
 /// N20: Claude's `/goal` rejects conditions longer than ~4000 chars; an
 /// over-long goal silently aborts the whole dispatch. We cap at 4000.
@@ -672,8 +773,7 @@ impl WorkerContext {
             .output()
         {
             if output.status.success() {
-                self.git_branch =
-                    Some(String::from_utf8_lossy(&output.stdout).trim().to_string());
+                self.git_branch = Some(String::from_utf8_lossy(&output.stdout).trim().to_string());
             }
         }
 
@@ -855,6 +955,15 @@ impl Dispatcher {
         // ── BEFORE THE KEYSTROKE ─────────────────────────────────────────────
         // Every `return` in this block is a NotSent: no byte has left, the
         // mission exists nowhere, and a spawn is both safe and necessary.
+        if let Err(error) = validate_followup_authority(&self.config.state_dir, oracle) {
+            tracing::warn!(
+                oracle = %oracle,
+                project = %project,
+                error = %error,
+                "followup target has no valid V3 authority; spawning instead"
+            );
+            return FollowupOutcome::NotSent;
+        }
         if !self.wait_for_typeable_pane(oracle).await {
             tracing::warn!(
                 oracle = %oracle, project = %project,
@@ -873,6 +982,19 @@ impl Dispatcher {
                 oracle = %oracle, project = %project,
                 "followup target stopped qualifying while we waited for its composer \
                  (closed, signalled, or gone) — spawning instead"
+            );
+            return FollowupOutcome::NotSent;
+        }
+        // The composer probe can consume most of the eight-second bound. The
+        // legacy route may still look live while the authoritative mission has
+        // entered Accepted/Reporting/Delivered, so revalidate the ledger at the
+        // final look rather than relying on the earlier check.
+        if let Err(error) = validate_followup_authority(&self.config.state_dir, oracle) {
+            tracing::warn!(
+                oracle = %oracle,
+                project = %project,
+                error = %error,
+                "followup authority closed or changed during composer probe; spawning instead"
             );
             return FollowupOutcome::NotSent;
         }
@@ -956,8 +1078,10 @@ impl Dispatcher {
         // recognise that. When it fails, the operator is told the text is in
         // the live session and unproven, which is the truth; spawning here is
         // what turned one mission into two.
-        let confirmed =
-            sent_cleanly && self.confirm_followup_accepted(oracle, before, mission).await;
+        let confirmed = sent_cleanly
+            && self
+                .confirm_followup_accepted(oracle, before, mission)
+                .await;
 
         // The live oracle's own timeline records the followup either way — an
         // unconfirmed one is exactly what an operator reading `omega timeline`
@@ -977,6 +1101,21 @@ impl Dispatcher {
                 mission.chars().take(140).collect::<String>()
             ),
         );
+        if let Err(error) =
+            append_followup_event(&self.config.state_dir, oracle, mission, confirmed)
+        {
+            // The text may already be in the remote TUI, so this cannot
+            // authorize a second delivery. Degrade to the explicit unconfirmed
+            // outcome and leave the local timeline entry as reconciliation
+            // evidence.
+            tracing::error!(
+                oracle = %oracle,
+                project = %project,
+                error = %error,
+                "followup reached the session but could not be committed to the authoritative ledger"
+            );
+            return SentOutcome::Unconfirmed;
+        }
         if confirmed {
             tracing::info!(
                 oracle = %oracle, project = %project,
@@ -1148,11 +1287,10 @@ impl Dispatcher {
         // keyword signals ("ship", "god mode") must not be lost to
         // restructuring.
         let decision = routing::classify_mission(mission);
-        let mission_record =
-            crate::mission::Mission::new(project, mission, work_path.clone());
-        let ledger = crate::mission_ledger::MissionLedger::open(
-            self.config.state_dir.join("mission-engine-v3.sqlite3"),
-        )?;
+        let mission_record = crate::mission::Mission::new(project, mission, work_path.clone());
+        let ledger = crate::mission_ledger::MissionLedger::open(mission_ledger_path(
+            &self.config.state_dir,
+        ))?;
         ledger.create_mission(
             &mission_record,
             &format!("dispatch:{}:create", mission_record.id.as_str()),
@@ -1167,12 +1305,13 @@ impl Dispatcher {
         );
         classified.next_mission_state = Some(crate::mission::MissionState::Classified);
         classified.payload = serde_json::to_value(&decision)?;
-        ledger.append(classified)?;
+        let classified_outcome = ledger.append(classified)?;
 
         // The legacy OracleState is now a projection carrying the same stable
         // mission identity. It remains for existing readers during migration,
         // but is never allowed to invent an empty mission for this path.
-        let oracle_state = OracleState::new(&oracle_name, &mission_record);
+        let oracle_state =
+            OracleState::from_ledger(&oracle_name, &mission_record, &classified_outcome)?;
         oracle_state.write(&self.config.state_dir)?;
 
         let ship = OraclePromptGenerator::should_ship(mission);
@@ -1240,6 +1379,24 @@ impl Dispatcher {
             git_sync.warning().map(|w| format!("\n{w}")).unwrap_or_default()
         ));
 
+        // The per-mission override wins over the configured default. Resolve
+        // the typed provider before compiling rules so provider-only doctrine
+        // cannot leak or disappear through a neutral prompt.
+        let agent = match agent_override {
+            Some(name) => crate::agents::Agent::from_name(name).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "unknown agent '{}' — expected one of: claude, codex, gemini, pi, hermes, glm, kimi, shell",
+                    name
+                )
+            })?,
+            None => crate::agents::Agent::from_name(&self.config.agent_command).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "configured agent `{}` is unknown; refusing to dispatch on an implicit provider",
+                    self.config.agent_command
+                )
+            })?,
+        };
+
         // THE FUNNEL — every dispatched agent (any LLM backend) MUST receive
         // its role-scoped Laws + operational rules via this single call.
         // This closes the gap where CLI/RPC-dispatched oracles previously
@@ -1247,32 +1404,27 @@ impl Dispatcher {
         // Narrowed to THIS mission (rules::agent_context_block_for_mission):
         // universal rules + Laws in full, domain rules indexed unless the
         // mission mentions their topic. Nothing is hidden, only un-inlined.
-        let ctx = crate::rules::agent_context_block_for_mission(
+        let compiled = crate::rules::compile_rule_context_for_provider(
             crate::rules::RuleScope::Oracle,
-            &prompt,
-        );
-        if !ctx.is_empty() {
+            Some(&prompt),
+            crate::orchestration::provider_family_for_agent(agent),
+        )
+        .map_err(|error| {
+            anyhow::anyhow!(
+                "cannot compile oracle policy context for {}: {}",
+                agent.name(),
+                error
+            )
+        })?;
+        if !compiled.markdown.is_empty() {
             prompt.push_str("\n\n");
-            prompt.push_str(&ctx);
+            prompt.push_str(&compiled.markdown);
         }
 
         // Claude-only smart spawn (2026-w20 features): /goal + --effort +
         // budget caps. Gemini/GLM/Pi/Hermes fall back to the bare launcher
         // with the same prompt; Codex gets its own parity lane below.
         //
-        // The per-mission override wins over the configured default; an
-        // unknown name is a caller error, so fail loud rather than silently
-        // dispatching the mission onto the wrong provider.
-        let agent = match agent_override {
-            Some(name) => crate::agents::Agent::from_name(name).ok_or_else(|| {
-                anyhow::anyhow!(
-                    "unknown agent '{}' — expected one of: claude, codex, gemini, pi, hermes, glm, shell",
-                    name
-                )
-            })?,
-            None => crate::agents::Agent::from_name(&self.config.agent_command)
-                .unwrap_or(crate::agents::Agent::Codex),
-        };
         let mut required = vec![
             crate::providers::ProviderCapability::Reasoning,
             crate::providers::ProviderCapability::ToolCalling,
@@ -1416,13 +1568,7 @@ impl Dispatcher {
             }
 
             self.session_mgr
-                .create_agent_session_with_opts(
-                    &oracle_name,
-                    &work_dir,
-                    agent,
-                    Some(&prompt),
-                    opts,
-                )
+                .create_agent_session_with_opts(&oracle_name, &work_dir, agent, Some(&prompt), opts)
                 .await?;
         } else {
             // Non-Claude oracles (Codex/GLM/Gemini/Pi/Hermes).
@@ -1462,7 +1608,11 @@ impl Dispatcher {
         );
         // AUDIT JOURNAL: record the dispatch under ~/.omega/audit/<project>/ (best-effort).
         {
-            let dir = self.config.state_dir.parent().map(|p| p.join("audit").join(project));
+            let dir = self
+                .config
+                .state_dir
+                .parent()
+                .map(|p| p.join("audit").join(project));
             if let Some(dir) = dir {
                 let _ = std::fs::create_dir_all(&dir);
                 let line = format!(
@@ -1473,7 +1623,11 @@ impl Dispatcher {
                     serde_json::to_string(&mission.chars().take(500).collect::<String>()).unwrap_or_else(|_| "\"\"".into()),
                 );
                 use std::io::Write;
-                if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(dir.join("audit.jsonl")) {
+                if let Ok(mut f) = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(dir.join("audit.jsonl"))
+                {
                     let _ = f.write_all(line.as_bytes());
                 }
             }
@@ -1540,23 +1694,36 @@ impl Dispatcher {
             &state.project,
         );
 
+        let agent =
+            crate::agents::Agent::from_name(&self.config.agent_command).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "configured agent `{}` is unknown; refusing to resurrect on an implicit provider",
+                    self.config.agent_command
+                )
+            })?;
         let mut prompt = build_resume_prompt(&state, &self.config.state_dir);
         // THE FUNNEL — a resurrected oracle gets its Oracle-scoped doctrine too.
         // Narrowed to THIS mission (rules::agent_context_block_for_mission):
         // universal rules + Laws in full, domain rules indexed unless the
         // mission mentions their topic. Nothing is hidden, only un-inlined.
-        let ctx = crate::rules::agent_context_block_for_mission(
+        let compiled = crate::rules::compile_rule_context_for_provider(
             crate::rules::RuleScope::Oracle,
-            &prompt,
-        );
-        if !ctx.is_empty() {
+            Some(&prompt),
+            crate::orchestration::provider_family_for_agent(agent),
+        )
+        .map_err(|error| {
+            anyhow::anyhow!(
+                "cannot compile resurrected oracle policy context for {}: {}",
+                agent.name(),
+                error
+            )
+        })?;
+        if !compiled.markdown.is_empty() {
             prompt.push_str("\n\n");
-            prompt.push_str(&ctx);
+            prompt.push_str(&compiled.markdown);
         }
 
         let work_dir = state.working_dir.to_string_lossy().to_string();
-        let agent = crate::agents::Agent::from_name(&self.config.agent_command)
-            .unwrap_or(crate::agents::Agent::Codex);
         crate::providers::ProvidersConfig::negotiate_provider(
             Some(agent.name()),
             &[
@@ -1648,11 +1815,7 @@ impl Dispatcher {
             .collect()
     }
 
-    pub async fn wait_for_done(
-        &self,
-        session_name: &str,
-        timeout: Duration,
-    ) -> Result<DoneSignal> {
+    pub async fn wait_for_done(&self, session_name: &str, timeout: Duration) -> Result<DoneSignal> {
         let done_path = self
             .config
             .state_dir
@@ -1705,7 +1868,10 @@ pub enum ResurrectOutcome {
 /// simply the one reader that never asked.
 ///
 /// Returns the label to print and whether the worker is finished.
-fn reconciled_worker_status(state_dir: &Path, w: &crate::oracle_lifecycle::WorkerEntry) -> (String, bool) {
+fn reconciled_worker_status(
+    state_dir: &Path,
+    w: &crate::oracle_lifecycle::WorkerEntry,
+) -> (String, bool) {
     match DoneSignal::read(state_dir, &w.session_name) {
         Ok(Some(sig)) => (format!("{:?}", sig.status), true),
         // No signal on disk: the registry entry is all we know. A terminal
@@ -1760,7 +1926,11 @@ fn build_resume_prompt(state: &OracleState, state_dir: &Path) -> String {
                 "- '{}' [{}]{} — session {}\n",
                 w.task_name,
                 label,
-                if *is_finished { " ✓ signal on disk" } else { "" },
+                if *is_finished {
+                    " ✓ signal on disk"
+                } else {
+                    ""
+                },
                 w.session_name
             ));
         }
@@ -1790,7 +1960,12 @@ mod followup_routing_tests {
     use crate::oracle_lifecycle::{OracleRegistryEntry, OracleRegistryStatus};
     use chrono::{Duration as ChronoDuration, Utc};
 
-    fn entry(name: &str, project: &str, status: OracleRegistryStatus, age_secs: i64) -> OracleRegistryEntry {
+    fn entry(
+        name: &str,
+        project: &str,
+        status: OracleRegistryStatus,
+        age_secs: i64,
+    ) -> OracleRegistryEntry {
         OracleRegistryEntry {
             oracle_name: name.to_string(),
             project: project.to_string(),
@@ -1897,7 +2072,14 @@ mod followup_routing_tests {
             OracleRegistryStatus::Active,
             30,
         )];
-        let route = route_dispatch(&entries, "dentistrygpt", &[], |_| Some(false), no_signal, false);
+        let route = route_dispatch(
+            &entries,
+            "dentistrygpt",
+            &[],
+            |_| Some(false),
+            no_signal,
+            false,
+        );
         assert_eq!(route, DispatchRoute::Spawn { preferred: None });
     }
 
@@ -1953,16 +2135,38 @@ mod followup_routing_tests {
     #[test]
     fn freshest_live_oracle_wins() {
         let entries = vec![
-            entry("oracle-dentistrygpt", "dentistrygpt", OracleRegistryStatus::Active, 600),
-            entry("oracle-dentistrygpt-4", "dentistrygpt", OracleRegistryStatus::Active, 10),
-            entry("oracle-dentistrygpt-2", "dentistrygpt", OracleRegistryStatus::Active, 300),
+            entry(
+                "oracle-dentistrygpt",
+                "dentistrygpt",
+                OracleRegistryStatus::Active,
+                600,
+            ),
+            entry(
+                "oracle-dentistrygpt-4",
+                "dentistrygpt",
+                OracleRegistryStatus::Active,
+                10,
+            ),
+            entry(
+                "oracle-dentistrygpt-2",
+                "dentistrygpt",
+                OracleRegistryStatus::Active,
+                300,
+            ),
         ];
         let live = vec![
             "oracle-dentistrygpt".to_string(),
             "oracle-dentistrygpt-2".to_string(),
             "oracle-dentistrygpt-4".to_string(),
         ];
-        let route = route_dispatch(&entries, "dentistrygpt", &live, |_| Some(false), no_signal, false);
+        let route = route_dispatch(
+            &entries,
+            "dentistrygpt",
+            &live,
+            |_| Some(false),
+            no_signal,
+            false,
+        );
         assert_eq!(
             route,
             DispatchRoute::Followup {
@@ -1974,7 +2178,12 @@ mod followup_routing_tests {
     /// Another project's live oracle must never capture this project's mission.
     #[test]
     fn other_projects_oracle_is_never_a_target() {
-        let entries = vec![entry("oracle-Verba", "Verba", OracleRegistryStatus::Active, 30)];
+        let entries = vec![entry(
+            "oracle-Verba",
+            "Verba",
+            OracleRegistryStatus::Active,
+            30,
+        )];
         let route = route_dispatch(
             &entries,
             "dentistrygpt",
@@ -2017,8 +2226,7 @@ mod followup_routing_tests {
     // agree. `tests/fixtures/` already held eight captures.
 
     /// Two real composers, captured from live agent sessions.
-    const REAL_COMPOSER_STOPPED: &str =
-        include_str!("../tests/fixtures/GOLDEN-stalled-real.txt");
+    const REAL_COMPOSER_STOPPED: &str = include_str!("../tests/fixtures/GOLDEN-stalled-real.txt");
     const REAL_COMPOSER_WORKING: &str =
         include_str!("../tests/fixtures/MoonBaseCapital-claude.txt");
     /// A real capture whose transcript ECHOES the question hint while the
@@ -2044,9 +2252,12 @@ mod followup_routing_tests {
         include_str!("../tests/fixtures/adv-shell-ps1-inlinearrow.txt");
     const REAL_SHELL_OHMYBASH: &str = include_str!("../tests/fixtures/adv-shell-ps1-ohmybash.txt");
     const REAL_SHELL_ANGLE: &str = include_str!("../tests/fixtures/adv-shell-ps1-angle.txt");
-    const REAL_SHELL_PLAINNAME: &str = include_str!("../tests/fixtures/adv-shell-ps1-plainname.txt");
-    const REAL_SHELL_BARESIGIL: &str = include_str!("../tests/fixtures/adv-shell-ps1-baresigil.txt");
-    const REAL_SHELL_ROOTSIGIL: &str = include_str!("../tests/fixtures/adv-shell-ps1-rootsigil.txt");
+    const REAL_SHELL_PLAINNAME: &str =
+        include_str!("../tests/fixtures/adv-shell-ps1-plainname.txt");
+    const REAL_SHELL_BARESIGIL: &str =
+        include_str!("../tests/fixtures/adv-shell-ps1-baresigil.txt");
+    const REAL_SHELL_ROOTSIGIL: &str =
+        include_str!("../tests/fixtures/adv-shell-ps1-rootsigil.txt");
     const REAL_DRAFT_BLANK_FIRST_LINE: &str =
         include_str!("../tests/fixtures/GOLDEN-draft-blank-first-line.txt");
     const REAL_OPTIONS_ABOVE_COMPOSER: &str =
@@ -2089,7 +2300,10 @@ mod followup_routing_tests {
             ("PS1 \\W \\$", REAL_SHELL_BARESIGIL),
             ("PS1 omegaos #", REAL_SHELL_ROOTSIGIL),
             ("draft under a bare marker", REAL_DRAFT_BLANK_FIRST_LINE),
-            ("selection list above the composer", REAL_OPTIONS_ABOVE_COMPOSER),
+            (
+                "selection list above the composer",
+                REAL_OPTIONS_ABOVE_COMPOSER,
+            ),
         ] {
             assert!(
                 !pane_ready_for_followup(pane),
@@ -2138,11 +2352,23 @@ mod followup_routing_tests {
             ("MoonBaseCapital-claude", REAL_COMPOSER_WORKING),
             ("GOLDEN-self-echo-false-question", REAL_SELF_ECHO),
             ("GOLDEN-question-real", REAL_QUESTION),
-            ("adv-question-option-under-rule", REAL_QUESTION_OPTION_UNDER_RULE),
+            (
+                "adv-question-option-under-rule",
+                REAL_QUESTION_OPTION_UNDER_RULE,
+            ),
             ("adv-question-with-rule-arrow", REAL_QUESTION_RULE_ARROW),
-            ("adv-question-with-rule-blockquote", REAL_QUESTION_RULE_BLOCKQUOTE),
-            ("adv-question-stale-interrupt", REAL_QUESTION_STALE_INTERRUPT),
-            ("adv-option-list-above-composer", REAL_OPTIONS_ABOVE_COMPOSER),
+            (
+                "adv-question-with-rule-blockquote",
+                REAL_QUESTION_RULE_BLOCKQUOTE,
+            ),
+            (
+                "adv-question-stale-interrupt",
+                REAL_QUESTION_STALE_INTERRUPT,
+            ),
+            (
+                "adv-option-list-above-composer",
+                REAL_OPTIONS_ABOVE_COMPOSER,
+            ),
             ("GOLDEN-draft-blank-first-line", REAL_DRAFT_BLANK_FIRST_LINE),
         ] {
             if crate::session_monitor::question_ui_visible(pane) {
@@ -2162,10 +2388,19 @@ mod followup_routing_tests {
     fn real_question_modals_are_never_ready() {
         for (name, pane) in [
             ("GOLDEN-question-real", REAL_QUESTION),
-            ("adv-question-option-under-rule", REAL_QUESTION_OPTION_UNDER_RULE),
+            (
+                "adv-question-option-under-rule",
+                REAL_QUESTION_OPTION_UNDER_RULE,
+            ),
             ("adv-question-with-rule-arrow", REAL_QUESTION_RULE_ARROW),
-            ("adv-question-with-rule-blockquote", REAL_QUESTION_RULE_BLOCKQUOTE),
-            ("adv-question-stale-interrupt", REAL_QUESTION_STALE_INTERRUPT),
+            (
+                "adv-question-with-rule-blockquote",
+                REAL_QUESTION_RULE_BLOCKQUOTE,
+            ),
+            (
+                "adv-question-stale-interrupt",
+                REAL_QUESTION_STALE_INTERRUPT,
+            ),
         ] {
             assert!(
                 !pane_ready_for_followup(pane),
@@ -2354,12 +2589,18 @@ mod followup_routing_tests {
         for (name, pane) in [
             ("empty capture", ""),
             ("blank screen", "\n\n   \n\n"),
-            ("rule drawn, composer not yet", "● Booting\n────────────────────────────────\n"),
+            (
+                "rule drawn, composer not yet",
+                "● Booting\n────────────────────────────────\n",
+            ),
             (
                 "composer drawn, status bar not yet",
                 "● Booting\n────────────────────────────────\n❯ \n",
             ),
-            ("agent starting up in its shell", "vibe@station:~/OmegaOS$ claude --model opus\n"),
+            (
+                "agent starting up in its shell",
+                "vibe@station:~/OmegaOS$ claude --model opus\n",
+            ),
         ] {
             assert!(
                 !pane_ready_for_followup(pane),
@@ -2418,9 +2659,12 @@ mod followup_routing_tests {
                 delivery,
             };
             let stdout = outcome.report_lines().join("\n");
-            let captured = re
-                .captures(&stdout)
-                .unwrap_or_else(|| panic!("bridge regex failed to match for {:?}:\n{}", delivery, stdout));
+            let captured = re.captures(&stdout).unwrap_or_else(|| {
+                panic!(
+                    "bridge regex failed to match for {:?}:\n{}",
+                    delivery, stdout
+                )
+            });
             assert_eq!(
                 captured.get(1).unwrap().as_str(),
                 "oracle-dentistrygpt-2",
@@ -2542,9 +2786,8 @@ mod followup_routing_tests {
     /// been.
     #[test]
     fn a_paste_queued_by_a_busy_agent_is_an_acceptance() {
-        let sent = crate::session_monitor::sent_slices(
-            "SENTINEL-QUEUED-FOLLOWUP alpha\nbravo charlie",
-        );
+        let sent =
+            crate::session_monitor::sent_slices("SENTINEL-QUEUED-FOLLOWUP alpha\nbravo charlie");
         let before = "── an older frame ──";
 
         // What the probe used to read: the composer's marker line carries the
@@ -2581,8 +2824,7 @@ mod followup_routing_tests {
     /// in captured text it is indistinguishable from a draft.
     #[test]
     fn a_consumed_paste_is_accepted_even_when_the_agent_suggests_the_next_prompt() {
-        let sent =
-            crate::session_monitor::sent_slices("SENTINEL-FOLLOWUP-TEXT line one\nline two");
+        let sent = crate::session_monitor::sent_slices("SENTINEL-FOLLOWUP-TEXT line one\nline two");
         assert!(
             composer_holds_text(PANE_CONSUMED_WITH_SUGGESTION),
             "the agent's own suggestion sits in the composer and reads as a draft"
@@ -2871,8 +3113,16 @@ mod resurrect_tests {
         let mission = Mission::new("Acme", "ship the feature", PathBuf::from("/tmp"));
         let mut state = OracleState::new("oracle-Acme-1", &mission);
         // Both are STALE `Running` in the registry — the dead oracle's last word.
-        state.register_worker(worker("Acme-worker-a", "task-a", WorkerEntryStatus::Running));
-        state.register_worker(worker("Acme-worker-b", "task-b", WorkerEntryStatus::Running));
+        state.register_worker(worker(
+            "Acme-worker-a",
+            "task-a",
+            WorkerEntryStatus::Running,
+        ));
+        state.register_worker(worker(
+            "Acme-worker-b",
+            "task-b",
+            WorkerEntryStatus::Running,
+        ));
 
         // Only worker A actually finished and said so on disk.
         let mut sig = DoneSignal::new("Acme-worker-a", DoneStatus::DoneClean, "done");
@@ -2896,5 +3146,107 @@ mod resurrect_tests {
         assert!(p.contains("Do NOT duplicate completed work"));
 
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+}
+
+#[cfg(test)]
+mod ledger_followup_tests {
+    use super::*;
+    use crate::mission::{Mission, MissionId, MissionState};
+    use crate::mission_ledger::{AppendEvent, MissionLedger};
+    use std::path::PathBuf;
+
+    #[test]
+    fn followup_appends_to_existing_mission_and_never_creates_another() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let ledger = MissionLedger::open(mission_ledger_path(tmp.path())).unwrap();
+        let mission = Mission::new("OmegaOS", "initial mission", PathBuf::from("/tmp/OmegaOS"));
+        ledger
+            .create_mission(
+                &mission,
+                &format!("test:{}:created", mission.id.as_str()),
+                "test",
+            )
+            .unwrap();
+        let mut classified = AppendEvent::new(
+            mission.id.clone(),
+            1,
+            format!("test:{}:classified", mission.id.as_str()),
+            "test",
+            "mission_classified",
+        );
+        classified.next_mission_state = Some(MissionState::Classified);
+        let classified = ledger.append(classified).unwrap();
+        let state = OracleState::from_ledger("oracle-OmegaOS", &mission, &classified).unwrap();
+        state.write(tmp.path()).unwrap();
+
+        let outcome = append_followup_event(
+            tmp.path(),
+            "oracle-OmegaOS",
+            "also verify the Telegram path",
+            true,
+        )
+        .unwrap();
+
+        assert_eq!(outcome.projection.mission_id, mission.id);
+        assert_eq!(outcome.event.kind, "mission_followup_received");
+        let events = ledger.events(&mission.id).unwrap();
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event.kind == "mission_created")
+                .count(),
+            1,
+            "a followup must not create a second mission record"
+        );
+        assert_eq!(
+            events.last().unwrap().payload["text"],
+            "also verify the Telegram path"
+        );
+        assert!(ledger
+            .mission(&MissionId("second-mission".to_string()))
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn legacy_or_terminal_projection_cannot_receive_a_followup() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let legacy = Mission::new("OmegaOS", "legacy", PathBuf::from("/tmp/OmegaOS"));
+        OracleState::new("oracle-legacy", &legacy)
+            .write(tmp.path())
+            .unwrap();
+        assert!(append_followup_event(tmp.path(), "oracle-legacy", "unsafe", true).is_err());
+
+        let ledger = MissionLedger::open(mission_ledger_path(tmp.path())).unwrap();
+        let mission = Mission::new("OmegaOS", "terminal", PathBuf::from("/tmp/OmegaOS"));
+        let created = ledger
+            .create_mission(
+                &mission,
+                &format!("test:{}:created", mission.id.as_str()),
+                "test",
+            )
+            .unwrap();
+        let state = OracleState::from_ledger("oracle-terminal", &mission, &created).unwrap();
+        state.write(tmp.path()).unwrap();
+        assert!(
+            validate_followup_authority(tmp.path(), "oracle-terminal").is_ok(),
+            "authority is open at the start of the simulated composer probe"
+        );
+        // Created -> Cancelled is a legal terminal transition.
+        let mut cancelled = AppendEvent::new(
+            mission.id.clone(),
+            1,
+            format!("test:{}:cancelled", mission.id.as_str()),
+            "test",
+            "mission_cancelled",
+        );
+        cancelled.next_mission_state = Some(MissionState::Cancelled);
+        ledger.append(cancelled).unwrap();
+        assert!(
+            validate_followup_authority(tmp.path(), "oracle-terminal").is_err(),
+            "the final pre-keystroke revalidation must notice closure during the probe"
+        );
+        assert!(append_followup_event(tmp.path(), "oracle-terminal", "too late", true).is_err());
     }
 }

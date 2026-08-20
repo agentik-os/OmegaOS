@@ -1,0 +1,120 @@
+{
+  "schema_version": "2.0.0",
+  "id": "team-delegation-os",
+  "num": 48,
+  "name": "Team & Delegation {OS}",
+  "version": "0.1.0",
+  "status": "scaffold",
+  "group": {
+    "key": "operate",
+    "label": "05 · OPERATE",
+    "purpose": "Turn chaos into repeatable execution"
+  },
+  "tagline": "Hand work off so it comes back right the first time.",
+  "inherits_from": null,
+  "commands": [
+    {
+      "name": "/delegate-pick",
+      "mode": "SELECT",
+      "summary": "Split the load into a delegate list and a keep list, with a reason on each side."
+    },
+    {
+      "name": "/delegate-match",
+      "mode": "MATCH",
+      "summary": "Choose the person and the authority level, on evidence."
+    },
+    {
+      "name": "/delegate-brief",
+      "mode": "BRIEF",
+      "summary": "Write the six required parts of a delegation brief."
+    },
+    {
+      "name": "/delegate-confirm",
+      "mode": "BRIEF",
+      "summary": "Test that the brief landed by having the receiver restate it."
+    },
+    {
+      "name": "/delegate-check",
+      "mode": "SUPPORT",
+      "summary": "Run an agreed check-in: on course, corrected, or blocked."
+    },
+    {
+      "name": "/delegate-receive",
+      "mode": "RECEIVE",
+      "summary": "Judge returned work against the brief, and name any gap once, completely."
+    },
+    {
+      "name": "/delegate-feedback",
+      "mode": "RECEIVE",
+      "summary": "Write correction on an observable behaviour with a specific alternative."
+    },
+    {
+      "name": "/delegate-level",
+      "mode": "ADJUST",
+      "summary": "Raise or lower authority on evidence, and say why."
+    },
+    {
+      "name": "/delegate-recall",
+      "mode": "RECALL",
+      "summary": "Take work back naming capacity, priority or fit, without a verdict on the person."
+    }
+  ],
+  "dependencies": {
+    "requires": [
+      "context-memory-os"
+    ],
+    "emits": [
+      "delegation.brief.issued",
+      "delegation.brief.confirmed",
+      "delegation.checkin.recorded",
+      "delegation.work.accepted",
+      "delegation.work.returned",
+      "delegation.authority.changed",
+      "delegation.work.recalled"
+    ],
+    "consumes_from": [
+      "process-sop-os",
+      "project-os",
+      "execution-os",
+      "operations-os"
+    ]
+  },
+  "targets": {
+    "claude": {
+      "supported": true
+    },
+    "chatgpt": {
+      "supported": true
+    },
+    "gemini": {
+      "supported": true
+    },
+    "codex": {
+      "supported": true
+    }
+  },
+  "entrypoints": {
+    "spec": "OS.md",
+    "system": "SYSTEM.md",
+    "skill": "SKILL.md",
+    "setup": "SETUP.md",
+    "workflows": "WORKFLOWS/",
+    "commands": "COMMANDS/",
+    "prompts": "PROMPTS/",
+    "references": "REFERENCES/",
+    "memory": "MEMORY/",
+    "tools": "TOOLS/",
+    "evals": "EVALS/",
+    "examples": "EXAMPLES/",
+    "interfaces": "INTERFACES/",
+    "adapters": "ADAPTERS/"
+  },
+  "requires_human_approval_for": [
+    "assigning work to a named person",
+    "changing someone's authority level, up or down",
+    "recalling work from someone",
+    "writing anything that records an individual's performance",
+    "committing someone else's time to an external deadline",
+    "escalating a person's repeated failure beyond the immediate working relationship"
+  ]
+}

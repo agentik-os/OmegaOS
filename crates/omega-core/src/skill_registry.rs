@@ -109,8 +109,9 @@ impl OwnedSkillRoot {
 /// Progressive metadata parsed from a SKILL.md frontmatter.
 ///
 /// Name and description are the only V1 hard requirements. The remaining
-/// fields are emitted into the canonical catalog now and reported as warnings
-/// when absent so the repository can migrate without a flag day.
+/// fields are emitted into the canonical catalog now and counted in structured
+/// coverage when absent so the repository can migrate without a flag day or a
+/// permanently noisy warning stream.
 #[derive(Debug, Clone, Deserialize)]
 pub struct SkillFrontmatter {
     pub name: String,
@@ -284,6 +285,28 @@ pub struct SkillCatalogEntry {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub verification: Option<VerificationMetadata>,
     pub provider_states: BTreeMap<String, ProviderState>,
+    /// Explicit migration debt without turning every legacy skill into a
+    /// warning. Consumers can report coverage or select migration batches.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub missing_progressive_fields: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MetadataCoverage {
+    pub total_skills: usize,
+    pub complete_skills: usize,
+    pub missing_by_field: BTreeMap<String, usize>,
+}
+
+/// One owned source tree used to compile the catalog.
+///
+/// `path` is a local refresh hint and is deliberately excluded from every
+/// deterministic digest. It lets installed readers prove that the shadow
+/// catalog still describes a checkout that remains available on the machine.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CatalogSourceRoot {
+    pub id: String,
+    pub path: PathBuf,
 }
 
 /// Canonical, deterministic shadow catalog.
@@ -294,6 +317,15 @@ pub struct SkillCatalogEntry {
 pub struct SkillCatalogV1 {
     pub schema_version: u32,
     pub content_digest: String,
+    /// Digest of `(root_id, relative_path, normalized SKILL.md digest)` only.
+    /// Unlike `content_digest`, this can be recomputed without parsing YAML.
+    #[serde(default)]
+    pub source_tree_digest: String,
+    /// Local source hints, not part of either deterministic digest.
+    #[serde(default)]
+    pub source_roots: Vec<CatalogSourceRoot>,
+    #[serde(default)]
+    pub metadata_coverage: MetadataCoverage,
     pub skills: Vec<SkillCatalogEntry>,
     pub warnings: Vec<CatalogWarning>,
 }
@@ -314,6 +346,7 @@ impl SkillCatalogV1 {
         let mut entries = Vec::new();
         let mut warnings = Vec::new();
         let mut root_ids = BTreeSet::new();
+        let mut source_roots = Vec::new();
         for root in roots {
             if root.id.trim().is_empty() {
                 anyhow::bail!("owned skill root id cannot be empty");
@@ -330,6 +363,10 @@ impl SkillCatalogV1 {
                     root.path.display()
                 );
             }
+            source_roots.push(CatalogSourceRoot {
+                id: root.id.clone(),
+                path: root_path.clone(),
+            });
             let mut skill_files = Vec::new();
             collect_skill_files(&root_path, &root_path, 0, &mut skill_files)?;
             skill_files.sort();
@@ -364,12 +401,32 @@ impl SkillCatalogV1 {
                 .then_with(|| a.message.cmp(&b.message))
         });
 
+        let metadata_coverage = metadata_coverage(&entries);
         let hash_input = serde_json::to_vec(&(CATALOG_SCHEMA_VERSION, &entries))
             .context("serializing canonical skill catalog")?;
         let content_digest = sha256_hex(&hash_input);
+        let mut source_tree_input = entries
+            .iter()
+            .map(|entry| {
+                (
+                    entry.root_id.clone(),
+                    entry.relative_path.clone(),
+                    entry.content_digest.clone(),
+                )
+            })
+            .collect::<Vec<_>>();
+        source_tree_input.sort();
+        let source_tree_digest = sha256_hex(
+            &serde_json::to_vec(&source_tree_input)
+                .context("serializing skill source-tree digest input")?,
+        );
+        source_roots.sort_by(|a, b| a.id.cmp(&b.id));
         Ok(Self {
             schema_version: CATALOG_SCHEMA_VERSION,
             content_digest,
+            source_tree_digest,
+            source_roots,
+            metadata_coverage,
             skills: entries,
             warnings,
         })
@@ -555,14 +612,6 @@ fn compile_skill(
     if frontmatter.verify.is_none() {
         missing.push("verify");
     }
-    if !missing.is_empty() {
-        warnings.push(CatalogWarning {
-            code: "progressive_metadata_missing".to_string(),
-            skill: name.clone(),
-            message: format!("progressive fields missing: {}", missing.join(", ")),
-        });
-    }
-
     let mut aliases = frontmatter.aliases;
     aliases.sort_by_key(|value| normalized_collision_key(value));
     aliases.dedup_by(|a, b| normalized_collision_key(a) == normalized_collision_key(b));
@@ -591,7 +640,25 @@ fn compile_skill(
         dependencies,
         verification,
         provider_states,
+        missing_progressive_fields: missing.into_iter().map(str::to_string).collect(),
     })
+}
+
+fn metadata_coverage(entries: &[SkillCatalogEntry]) -> MetadataCoverage {
+    let mut missing_by_field = BTreeMap::new();
+    for entry in entries {
+        for field in &entry.missing_progressive_fields {
+            *missing_by_field.entry(field.clone()).or_insert(0) += 1;
+        }
+    }
+    MetadataCoverage {
+        total_skills: entries.len(),
+        complete_skills: entries
+            .iter()
+            .filter(|entry| entry.missing_progressive_fields.is_empty())
+            .count(),
+        missing_by_field,
+    }
 }
 
 fn extract_frontmatter(content: &str) -> Result<&str> {
@@ -647,10 +714,10 @@ fn compile_provider_states(
                 reason.as_deref(),
                 missing_capabilities,
             )?,
-            // Compatibility is a progressive field during the V1 migration.
-            // Missing metadata therefore inherits portable/enabled behavior and
-            // emits `progressive_metadata_missing` above. Only an explicit
-            // excluded/unsupported declaration may disable a provider.
+            // Compatibility is progressive metadata. Missing declarations
+            // inherit portable/enabled behavior and are recorded in the
+            // catalog's coverage data. Only an explicit excluded/unsupported
+            // declaration may disable a provider.
             None => ProviderState::Enabled,
         };
         states.insert(provider, state);
@@ -1643,7 +1710,9 @@ mod tests {
         let a = SkillCatalogV1::compile(&[OwnedSkillRoot::new("omegaos", first.path())]).unwrap();
         let b = SkillCatalogV1::compile(&[OwnedSkillRoot::new("omegaos", second.path())]).unwrap();
         assert_eq!(a.content_digest, b.content_digest);
+        assert_eq!(a.source_tree_digest, b.source_tree_digest);
         assert_eq!(a.skills, b.skills);
+        assert_ne!(a.source_roots[0].path, b.source_roots[0].path);
 
         fs::write(
             second.path().join("alpha/SKILL.md"),
@@ -1653,6 +1722,7 @@ mod tests {
         let changed =
             SkillCatalogV1::compile(&[OwnedSkillRoot::new("omegaos", second.path())]).unwrap();
         assert_ne!(a.content_digest, changed.content_digest);
+        assert_ne!(a.source_tree_digest, changed.source_tree_digest);
     }
 
     #[test]
@@ -1719,7 +1789,7 @@ mod tests {
     }
 
     #[test]
-    fn catalog_emits_explicit_provider_states_and_progressive_warning() {
+    fn catalog_emits_explicit_provider_states_and_progressive_coverage() {
         let dir = tempfile::tempdir().unwrap();
         write_catalog_skill(
             dir.path(),
@@ -1736,10 +1806,12 @@ mod tests {
                 reason: "no adapter".to_string()
             }
         );
-        assert!(catalog
-            .warnings
-            .iter()
-            .any(|warning| warning.code == "progressive_metadata_missing"));
+        assert!(skill
+            .missing_progressive_fields
+            .contains(&"version".to_string()));
+        assert_eq!(catalog.metadata_coverage.total_skills, 1);
+        assert_eq!(catalog.metadata_coverage.complete_skills, 0);
+        assert_eq!(catalog.metadata_coverage.missing_by_field["version"], 1);
     }
 
     #[test]
@@ -1760,10 +1832,13 @@ mod tests {
                 "{provider} must remain enabled during progressive migration"
             );
         }
-        assert!(catalog.warnings.iter().any(|warning| {
-            warning.code == "progressive_metadata_missing"
-                && warning.message.contains("compatibility")
-        }));
+        assert!(skill
+            .missing_progressive_fields
+            .contains(&"compatibility".to_string()));
+        assert_eq!(
+            catalog.metadata_coverage.missing_by_field["compatibility"],
+            1
+        );
     }
 
     #[test]
@@ -1774,11 +1849,12 @@ mod tests {
         }
         let catalog =
             SkillCatalogV1::compile(&[OwnedSkillRoot::new("omegaos", repo_skills)]).unwrap();
-        // 245 = 232 + omniroute + alexandria's split-out + stepper-os +
+        // 246 = 232 + omniroute + alexandria's split-out + stepper-os +
         // builder-os + market-research-os + mindset-os + brainstorm-os +
         // habit-tracker-os + design-os + execution-os + storyteller-os +
-        // alignment-os + ai-logic-os (OS suite, 2026-08).
-        assert_eq!(catalog.skills.len(), 245);
+        // alignment-os + ai-logic-os (OS suite, 2026-08) + seductive-os
+        // (personal magnetism, 2026-08-12).
+        assert_eq!(catalog.skills.len(), 246);
         let names: BTreeSet<_> = catalog
             .skills
             .iter()
@@ -1802,6 +1878,7 @@ mod tests {
         assert!(names.contains("execution-os"));
         assert!(names.contains("storyteller-os"));
         assert!(names.contains("alignment-os"));
+        assert!(names.contains("seductive-os"));
         assert!(names.contains("ai-logic-os"));
         assert!(catalog
             .skills

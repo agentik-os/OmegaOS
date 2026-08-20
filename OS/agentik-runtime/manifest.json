@@ -1,0 +1,84 @@
+{
+  "schema_version": "2.0.0",
+  "id": "agentik-runtime",
+  "num": 1,
+  "name": "Agentik Runtime {OS}",
+  "version": "0.1.0",
+  "status": "scaffold",
+  "group": {
+    "key": "runtime",
+    "label": "00 · RUNTIME",
+    "purpose": "Run the entire Agentik ecosystem"
+  },
+  "tagline": "Install, configure, run, compose, update and evaluate every Agentik OS.",
+  "inherits_from": null,
+  "commands": [
+    "agentik",
+    "agentik compose",
+    "agentik install",
+    "agentik configure",
+    "agentik run",
+    "agentik update",
+    "agentik remove",
+    "agentik doctor",
+    "agentik eval",
+    "agentik list"
+  ],
+  "dependencies": {
+    "consumes": [
+      "memory.context.compiled"
+    ],
+    "emits": [
+      "runtime.stack.composed",
+      "runtime.os.installed",
+      "runtime.os.configured",
+      "runtime.os.started",
+      "runtime.os.updated",
+      "runtime.doctor.reported",
+      "runtime.eval.completed"
+    ],
+    "consumes_from": [
+      "context-memory-os"
+    ],
+    "emits_to": [
+      "context-memory-os"
+    ]
+  },
+  "targets": {
+    "claude": {
+      "supported": true
+    },
+    "chatgpt": {
+      "supported": true
+    },
+    "gemini": {
+      "supported": true
+    },
+    "codex": {
+      "supported": true
+    }
+  },
+  "entrypoints": {
+    "spec": "OS.md",
+    "system": "SYSTEM.md",
+    "skill": "SKILL.md",
+    "setup": "SETUP.md",
+    "workflows": "WORKFLOWS/",
+    "commands": "COMMANDS/",
+    "prompts": "PROMPTS/",
+    "references": "REFERENCES/",
+    "memory": "MEMORY/",
+    "tools": "TOOLS/",
+    "evals": "EVALS/",
+    "examples": "EXAMPLES/",
+    "interfaces": "INTERFACES/",
+    "adapters": "ADAPTERS/"
+  },
+  "requires_human_approval_for": [
+    "deleting or overwriting an installed OS or any of its configuration",
+    "sending any OS content or user configuration to an external service",
+    "granting an OS access to a data class its manifest did not previously declare",
+    "applying an update whose changelog marks the change as breaking",
+    "installing a whole stack in one step rather than one unit at a time"
+  ]
+}

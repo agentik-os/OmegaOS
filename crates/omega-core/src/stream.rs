@@ -522,7 +522,9 @@ pub fn rmux_bin() -> PathBuf {
 /// The shell loop the viewer session runs. Installed by `install.sh` from
 /// `scripts/omega-stream.sh`.
 pub fn stream_script_path() -> PathBuf {
-    crate::config::omega_dir().join("bin").join("omega-stream.sh")
+    crate::config::omega_dir()
+        .join("bin")
+        .join("omega-stream.sh")
 }
 
 /// The exact command string handed to `rmux new-session`.
@@ -545,12 +547,7 @@ pub fn viewer_command(target: &StreamTarget, interval: u32, lines: u32) -> Strin
 ///
 /// Equivalent to:
 /// `rmux new-session -d -s <viewer> "<script> <target> <session> <interval> <lines>"`
-pub fn viewer_argv(
-    viewer: &str,
-    target: &StreamTarget,
-    interval: u32,
-    lines: u32,
-) -> Vec<String> {
+pub fn viewer_argv(viewer: &str, target: &StreamTarget, interval: u32, lines: u32) -> Vec<String> {
     vec![
         "new-session".to_string(),
         "-d".to_string(),
@@ -690,9 +687,9 @@ pub async fn probe_host_bounded(host: Option<&str>, bound: Duration) -> ProbeOut
         },
         Ok(Ok(out)) => {
             if out.status.success() {
-                return ProbeOutcome::Sessions(parse_session_list(
-                    &String::from_utf8_lossy(&out.stdout),
-                ));
+                return ProbeOutcome::Sessions(parse_session_list(&String::from_utf8_lossy(
+                    &out.stdout,
+                )));
             }
             let code = out.status.code();
             let detail = last_error_line(&String::from_utf8_lossy(&out.stderr));
@@ -981,8 +978,13 @@ Host matrix
     #[test]
     fn ssh_hosts_on_junk_is_empty_not_a_panic() {
         assert!(parse_ssh_config("").hosts.is_empty());
-        assert!(parse_ssh_config("\n\n   \n# only comments\n").hosts.is_empty());
-        assert!(parse_ssh_config("Host\n").hosts.is_empty(), "bare keyword names nothing");
+        assert!(parse_ssh_config("\n\n   \n# only comments\n")
+            .hosts
+            .is_empty());
+        assert!(
+            parse_ssh_config("Host\n").hosts.is_empty(),
+            "bare keyword names nothing"
+        );
     }
 
     #[test]
@@ -1025,7 +1027,10 @@ Host matrix
                 !n.contains('.') && !n.contains(':') && !n.contains(' '),
                 "viewer name would be rewritten by rmux: {n}"
             );
-            assert!(n.starts_with("stream-"), "viewer names are recognizable: {n}");
+            assert!(
+                n.starts_with("stream-"),
+                "viewer names are recognizable: {n}"
+            );
         }
     }
 
@@ -1035,8 +1040,14 @@ Host matrix
             host: "box-1".to_string(),
             session: "a.b".to_string(),
         });
-        assert!(n.starts_with("stream-box-1-a-b-"), "readable stem kept: {n}");
-        assert!(!n.contains("--"), "sanitize must not leave a doubled separator: {n}");
+        assert!(
+            n.starts_with("stream-box-1-a-b-"),
+            "readable stem kept: {n}"
+        );
+        assert!(
+            !n.contains("--"),
+            "sanitize must not leave a doubled separator: {n}"
+        );
     }
 
     // ── F-002 · the viewer name is the identity of the mirror ────────────────
@@ -1063,7 +1074,10 @@ Host matrix
                 "a name over the cap is a name rmux will truncate again: {n} ({})",
                 n.len()
             );
-            assert!(n.starts_with("stream-"), "viewer names stay recognizable: {n}");
+            assert!(
+                n.starts_with("stream-"),
+                "viewer names stay recognizable: {n}"
+            );
         }
         // The old behaviour, pinned so a regression is unmistakable.
         assert_ne!(
@@ -1149,9 +1163,7 @@ Host matrix
     /// named becomes unfindable. Pinned so a hash change cannot be silent.
     #[test]
     fn the_fingerprint_is_stable_and_slug_safe() {
-        let name = viewer_name(&parse_target(
-            "audit-stream-collision-probe-session-name-A",
-        ));
+        let name = viewer_name(&parse_target("audit-stream-collision-probe-session-name-A"));
         assert_eq!(name, "stream-audit-stream-collision-probe-sessi-w2d5nm");
         assert_eq!(fingerprint("matrix:MAC-STREAM"), "brtzw8");
         assert_eq!(fingerprint(""), "j4ux45");
@@ -1159,7 +1171,8 @@ Host matrix
             let fp = fingerprint(label);
             assert_eq!(fp.len(), FINGERPRINT_LEN);
             assert!(
-                fp.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit()),
+                fp.chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit()),
                 "a fingerprint reaches rmux inside a session name: {fp}"
             );
         }
@@ -1287,7 +1300,11 @@ Host matrix
         );
         let squatter = parse_target("something-else");
         assert_eq!(
-            choose_viewer(&t, &ViewerSlot::Mirroring(squatter.clone()), &ViewerSlot::Free),
+            choose_viewer(
+                &t,
+                &ViewerSlot::Mirroring(squatter.clone()),
+                &ViewerSlot::Free
+            ),
             ViewerChoice::Conflict {
                 name: viewer_name(&t),
                 held_by: Some(squatter),
@@ -1325,7 +1342,10 @@ Host matrix
             },
             "with no free name left, refusing beats attaching to the wrong mirror"
         );
-        assert!(choice.name().is_none(), "a conflict names no viewer to attach");
+        assert!(
+            choice.name().is_none(),
+            "a conflict names no viewer to attach"
+        );
     }
 
     #[test]
@@ -1442,7 +1462,10 @@ Host matrix
     fn viewer_argv_is_the_documented_new_session_call() {
         let target = parse_target("matrix:MAC-STREAM");
         let argv = viewer_argv("stream-matrix-MAC-STREAM", &target, 3, 120);
-        assert_eq!(argv[..4], ["new-session", "-d", "-s", "stream-matrix-MAC-STREAM"]);
+        assert_eq!(
+            argv[..4],
+            ["new-session", "-d", "-s", "stream-matrix-MAC-STREAM"]
+        );
         assert_eq!(argv.len(), 5, "the loop is ONE command argument");
     }
 
@@ -1469,12 +1492,19 @@ Host matrix
             "the #S format must stay quoted: {remote_cmd}"
         );
         assert_eq!(argv[0], "ssh");
-        assert!(argv.iter().any(|a| a == "BatchMode=yes"), "probes never prompt");
         assert!(
-            argv.iter().any(|a| a == &format!("ConnectTimeout={SSH_CONNECT_TIMEOUT_SECS}")),
+            argv.iter().any(|a| a == "BatchMode=yes"),
+            "probes never prompt"
+        );
+        assert!(
+            argv.iter()
+                .any(|a| a == &format!("ConnectTimeout={SSH_CONNECT_TIMEOUT_SECS}")),
             "probes are bounded"
         );
-        assert!(argv.iter().any(|a| a == "matrix"), "the ALIAS is passed to ssh, never a resolved coordinate");
+        assert!(
+            argv.iter().any(|a| a == "matrix"),
+            "the ALIAS is passed to ssh, never a resolved coordinate"
+        );
         assert!(
             !argv.iter().any(|a| a.contains("42820") || a.contains('@')),
             "ssh resolves HostName/Port/User from its config: {argv:?}"
@@ -1505,7 +1535,16 @@ Host matrix
         assert!(is_safe_coordinate("oracle-OmegaOS"));
         assert!(is_safe_coordinate("MoonBaseCapital-claude"));
         assert!(is_safe_coordinate("box.local"));
-        for bad in ["", "a b", "a;rm -rf /", "a$(id)", "a`id`", "a|b", "a&b", "a'b"] {
+        for bad in [
+            "",
+            "a b",
+            "a;rm -rf /",
+            "a$(id)",
+            "a`id`",
+            "a|b",
+            "a&b",
+            "a'b",
+        ] {
             assert!(
                 !is_safe_coordinate(bad),
                 "coordinate reaches a shell command line, must be refused: {bad:?}"

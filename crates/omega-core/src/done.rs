@@ -1,11 +1,33 @@
-use anyhow::Result;
+use anyhow::{bail, Context, Result};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use std::io::Read;
+use std::net::IpAddr;
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::{Command, ExitStatus, Stdio};
 use std::time::{Duration as StdDuration, Instant};
 
 use crate::mission::{VerifierCheck, VerifierCheckKind};
+
+const MAX_COMPLETION_SIGNAL_BYTES: usize = 1024 * 1024;
+const MAX_VERIFIER_OUTPUT_BYTES: u64 = 1024 * 1024;
+const COMPLETION_SIGNAL_LOCK: &str = ".completion-signals.lock";
+
+fn read_bounded_private_json<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<Option<T>> {
+    let Some(bytes) = crate::config::read_private_optional(path)? else {
+        return Ok(None);
+    };
+    if bytes.len() > MAX_COMPLETION_SIGNAL_BYTES {
+        bail!(
+            "authority signal {} exceeds {} bytes",
+            path.display(),
+            MAX_COMPLETION_SIGNAL_BYTES
+        );
+    }
+    serde_json::from_slice(&bytes)
+        .with_context(|| format!("parsing authority signal {}", path.display()))
+        .map(Some)
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DoneSignal {
@@ -136,15 +158,17 @@ pub enum FailureMode {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "kind")]
 pub enum DoneArtifact {
-    /// Git commit SHA on origin/main (or a named branch).
+    /// Full Git commit SHA reachable from the live origin/main (or named
+    /// origin branch). A merely-local object is not proof.
     GitSha {
         sha: String,
         #[serde(default)]
         branch: Option<String>,
     },
-    /// Existing branch on the remote.
+    /// Existing branch confirmed against the live `origin` remote.
     GitBranch { name: String },
-    /// Path that must exist (relative to repo root or absolute).
+    /// Path that must exist after canonicalization inside the supplied repo
+    /// root. Absolute paths outside that root and symlink escapes are rejected.
     FilePath { path: String },
     /// Command + expected exit code (recorded from the actual run).
     Command { cmd: String, exit_code: i32 },
@@ -216,21 +240,33 @@ impl DoneSignal {
     }
 
     pub fn write(&self, state_dir: &Path) -> Result<()> {
+        crate::scope::validate_session_identity(&self.session)?;
         let path = state_dir.join(format!("worker-{}.done.json", self.session));
-        let tmp_path = state_dir.join(format!(".worker-{}.done.json.tmp", self.session));
-        let content = serde_json::to_string_pretty(self)?;
-        std::fs::write(&tmp_path, &content)?;
-        std::fs::rename(&tmp_path, &path)?;
+        let _lock = crate::scope::lock_private_state_file(state_dir, COMPLETION_SIGNAL_LOCK)?;
+        if let Some(existing) = read_bounded_private_json::<Self>(&path)? {
+            if existing.session != self.session {
+                bail!("existing done signal identity differs from its filename");
+            }
+        }
+        let content = serde_json::to_vec_pretty(self)?;
+        if content.len() > MAX_COMPLETION_SIGNAL_BYTES {
+            bail!("done signal exceeds the authority size limit");
+        }
+        crate::config::atomic_write_private(&path, &content)?;
         Ok(())
     }
 
     pub fn read(state_dir: &Path, session: &str) -> Result<Option<Self>> {
+        crate::scope::validate_session_identity(session)?;
         let path = state_dir.join(format!("worker-{}.done.json", session));
-        if !path.exists() {
-            return Ok(None);
+        let signal = read_bounded_private_json::<Self>(&path)?;
+        if signal
+            .as_ref()
+            .is_some_and(|signal| signal.session != session)
+        {
+            bail!("done signal identity differs from requested session");
         }
-        let content = std::fs::read_to_string(&path)?;
-        Ok(Some(serde_json::from_str(&content)?))
+        Ok(signal)
     }
 
     pub fn is_complete(&self) -> bool {
@@ -253,10 +289,14 @@ impl DoneSignal {
                 let path = entry.path();
                 if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
                     if name.starts_with("worker-") && name.ends_with(".done.json") {
-                        if let Ok(content) = std::fs::read_to_string(&path) {
-                            if let Ok(signal) = serde_json::from_str::<Self>(&content) {
-                                results.push(signal);
-                            }
+                        let Some(session) = name
+                            .strip_prefix("worker-")
+                            .and_then(|name| name.strip_suffix(".done.json"))
+                        else {
+                            continue;
+                        };
+                        if let Ok(Some(signal)) = Self::read(state_dir, session) {
+                            results.push(signal);
                         }
                     }
                 }
@@ -267,9 +307,14 @@ impl DoneSignal {
 
     /// Clean up done signal file after processing.
     pub fn remove(state_dir: &Path, session: &str) -> Result<()> {
+        crate::scope::validate_session_identity(session)?;
         let path = state_dir.join(format!("worker-{}.done.json", session));
-        if path.exists() {
-            std::fs::remove_file(&path)?;
+        let _lock = crate::scope::lock_private_state_file(state_dir, COMPLETION_SIGNAL_LOCK)?;
+        if let Some(signal) = read_bounded_private_json::<Self>(&path)? {
+            if signal.session != session {
+                bail!("done signal identity differs from requested removal");
+            }
+            crate::scope::remove_private_file(&path)?;
         }
         Ok(())
     }
@@ -370,7 +415,9 @@ fn verify_done_internal(
 
     for art in &done.artifacts {
         let (outcome, detail) = match art {
-            DoneArtifact::GitSha { sha, branch: _ } => check_git_sha(sha, repo_root),
+            DoneArtifact::GitSha { sha, branch } => {
+                check_git_sha(sha, branch.as_deref(), repo_root)
+            }
             DoneArtifact::GitBranch { name } => check_git_branch(name, repo_root),
             DoneArtifact::FilePath { path } => check_file_path(path, repo_root),
             DoneArtifact::Command { cmd, exit_code } => {
@@ -518,8 +565,11 @@ fn verify_predeclared_command(
         command.current_dir(root);
     }
 
-    let mut child = match command.spawn() {
-        Ok(child) => child,
+    let output = match run_bounded_command(
+        command,
+        StdDuration::from_secs(approved.timeout_secs.max(1)),
+    ) {
+        Ok(output) => output,
         Err(error) => {
             return (
                 CheckOutcome::Unverifiable,
@@ -527,49 +577,172 @@ fn verify_predeclared_command(
             )
         }
     };
-    let deadline = Instant::now() + StdDuration::from_secs(approved.timeout_secs.max(1));
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                let actual = status.code().unwrap_or(-1);
-                return if actual == *expected_exit_code {
-                    (
-                        CheckOutcome::Verified,
-                        format!(
-                            "predeclared verifier `{claimed_cmd}` reran with exit code {actual}"
-                        ),
-                    )
-                } else {
-                    (
-                        CheckOutcome::Contradicted,
-                        format!(
-                            "predeclared verifier `{claimed_cmd}` exited {actual}, expected {expected_exit_code}"
-                        ),
-                    )
-                };
+    let actual = output.status.code().unwrap_or(-1);
+    if actual == *expected_exit_code {
+        (
+            CheckOutcome::Verified,
+            format!("predeclared verifier `{claimed_cmd}` reran with exit code {actual}"),
+        )
+    } else {
+        (
+            CheckOutcome::Contradicted,
+            format!(
+                "predeclared verifier `{claimed_cmd}` exited {actual}, expected {expected_exit_code}"
+            ),
+        )
+    }
+}
+
+struct BoundedCommandOutput {
+    status: ExitStatus,
+    stdout: Vec<u8>,
+    stderr: Vec<u8>,
+}
+
+fn read_bounded_pipe(mut pipe: impl Read) -> std::io::Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    pipe.by_ref()
+        .take(MAX_VERIFIER_OUTPUT_BYTES + 1)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > MAX_VERIFIER_OUTPUT_BYTES {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "verifier output exceeded the 1 MiB limit",
+        ));
+    }
+    Ok(bytes)
+}
+
+fn run_bounded_command(
+    mut command: Command,
+    timeout: StdDuration,
+) -> std::io::Result<BoundedCommandOutput> {
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
+    let mut child = command.spawn()?;
+    let process_group = child.id();
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| std::io::Error::other("bounded command stdout pipe was not created"))?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| std::io::Error::other("bounded command stderr pipe was not created"))?;
+    let stdout_reader = std::thread::spawn(move || read_bounded_pipe(stdout));
+    let stderr_reader = std::thread::spawn(move || read_bounded_pipe(stderr));
+    let deadline = Instant::now() + timeout;
+    let status = loop {
+        match child.try_wait()? {
+            Some(status) => {
+                terminate_verifier_process_tree(&mut child, process_group)?;
+                break status;
             }
-            Ok(None) if Instant::now() < deadline => {
+            None if Instant::now() < deadline => {
                 std::thread::sleep(StdDuration::from_millis(10));
             }
-            Ok(None) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return (
-                    CheckOutcome::Unverifiable,
-                    format!(
-                        "predeclared verifier `{claimed_cmd}` timed out after {}s",
-                        approved.timeout_secs.max(1)
-                    ),
-                );
+            None => {
+                terminate_verifier_process_tree(&mut child, process_group)?;
+                let _ = stdout_reader.join();
+                let _ = stderr_reader.join();
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    format!("command timed out after {}s", timeout.as_secs()),
+                ));
             }
-            Err(error) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return (
-                    CheckOutcome::Unverifiable,
-                    format!("failed while waiting for verifier `{claimed_cmd}`: {error}"),
-                );
-            }
+        }
+    };
+    let stdout = stdout_reader
+        .join()
+        .map_err(|_| std::io::Error::other("stdout reader panicked"))??;
+    let stderr = stderr_reader
+        .join()
+        .map_err(|_| std::io::Error::other("stderr reader panicked"))??;
+    Ok(BoundedCommandOutput {
+        status,
+        stdout,
+        stderr,
+    })
+}
+
+#[cfg(unix)]
+fn signal_process_group(process_group: u32, signal: i32) -> std::io::Result<bool> {
+    unsafe extern "C" {
+        fn kill(pid: i32, signal: i32) -> i32;
+    }
+    let Ok(process_group) = i32::try_from(process_group) else {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "process group id exceeds i32",
+        ));
+    };
+    // Negative pid addresses the complete process group. ESRCH means every
+    // member already exited and is therefore success for containment.
+    let result = unsafe { kill(-process_group, signal) };
+    if result == 0 {
+        Ok(true)
+    } else {
+        let error = std::io::Error::last_os_error();
+        if error.raw_os_error() == Some(3) {
+            Ok(false)
+        } else {
+            Err(error)
+        }
+    }
+}
+
+#[cfg(unix)]
+fn process_group_exists(process_group: u32) -> std::io::Result<bool> {
+    signal_process_group(process_group, 0)
+}
+
+#[cfg(unix)]
+fn terminate_verifier_process_tree(
+    child: &mut std::process::Child,
+    process_group: u32,
+) -> std::io::Result<()> {
+    const SIGTERM: i32 = 15;
+    const SIGKILL: i32 = 9;
+    signal_process_group(process_group, SIGTERM)?;
+    let deadline = Instant::now() + StdDuration::from_millis(250);
+    while process_group_exists(process_group)? && Instant::now() < deadline {
+        let _ = child.try_wait()?;
+        std::thread::sleep(StdDuration::from_millis(10));
+    }
+    if process_group_exists(process_group)? {
+        signal_process_group(process_group, SIGKILL)?;
+        let _ = child.wait()?;
+        let kill_deadline = Instant::now() + StdDuration::from_millis(250);
+        while process_group_exists(process_group)? && Instant::now() < kill_deadline {
+            std::thread::sleep(StdDuration::from_millis(10));
+        }
+    }
+    if process_group_exists(process_group)? {
+        return Err(std::io::Error::other(
+            "verifier process group remained alive after SIGKILL",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn terminate_verifier_process_tree(
+    child: &mut std::process::Child,
+    _process_group: u32,
+) -> std::io::Result<()> {
+    match child.try_wait()? {
+        Some(_) => Ok(()),
+        None => {
+            child.kill()?;
+            child.wait()?;
+            Ok(())
         }
     }
 }
@@ -596,50 +769,40 @@ fn verify_predeclared_http(
             ),
         );
     };
-    let Some(authority_and_path) = claimed_url
-        .strip_prefix("https://")
-        .or_else(|| claimed_url.strip_prefix("http://"))
-    else {
-        return (
-            CheckOutcome::Unverifiable,
-            format!("predeclared URL has a non-HTTP scheme: {claimed_url}"),
-        );
+    let (host, port, pinned_ip) = match resolve_public_http_target(claimed_url) {
+        Ok(target) => target,
+        Err(error) => return (CheckOutcome::Unverifiable, error),
     };
-    let authority = authority_and_path.split('/').next().unwrap_or_default();
-    if authority.is_empty()
-        || authority.contains('@')
-        || claimed_url.chars().any(char::is_whitespace)
-        || claimed_url.chars().any(char::is_control)
-    {
-        return (
-            CheckOutcome::Unverifiable,
-            format!("predeclared URL is unsafe or malformed: {claimed_url}"),
-        );
-    }
 
     let timeout = approved.timeout_secs.max(1).to_string();
-    let output = Command::new("curl")
-        .args([
-            "--silent",
-            "--show-error",
-            "--output",
-            "/dev/null",
-            "--write-out",
-            "%{http_code}",
-            "--proto",
-            "=http,https",
-            "--max-time",
-            &timeout,
-            claimed_url,
-        ])
-        .stdin(Stdio::null())
-        .output();
+    let resolve = match pinned_ip {
+        IpAddr::V4(address) => format!("{host}:{port}:{address}"),
+        IpAddr::V6(address) => format!("{host}:{port}:[{address}]"),
+    };
+    let mut command = Command::new("curl");
+    command.args(pinned_http_curl_args(claimed_url, &resolve, &timeout));
+    let output = run_bounded_command(
+        command,
+        StdDuration::from_secs(approved.timeout_secs.max(1).saturating_add(1)),
+    );
     match output {
         Ok(output) if output.status.success() => {
             let actual = String::from_utf8_lossy(&output.stdout)
                 .trim()
                 .parse::<u16>();
             match actual {
+                Ok(actual) if matches!(actual, 401 | 403) => (
+                    CheckOutcome::Contradicted,
+                    format!(
+                        "predeclared HTTP verifier was unauthorized ({actual}): {claimed_url}"
+                    ),
+                ),
+                Ok(actual) if (300..400).contains(&actual) => (
+                    CheckOutcome::Contradicted,
+                    format!(
+                        "predeclared HTTP verifier returned a redirect ({actual}); redirects are never followed or accepted: {claimed_url}"
+                    ),
+                ),
                 Ok(actual) if actual == claimed_status => (
                     CheckOutcome::Verified,
                     format!(
@@ -673,7 +836,185 @@ fn verify_predeclared_http(
     }
 }
 
-fn check_git_sha(sha: &str, repo_root: Option<&Path>) -> (CheckOutcome, String) {
+fn pinned_http_curl_args(claimed_url: &str, resolve: &str, timeout: &str) -> Vec<String> {
+    vec![
+        // Must be argv[1]. curl reads ~/.curlrc before ordinary options;
+        // only a leading --disable prevents a user config from injecting
+        // --connect-to and bypassing the DNS pin below.
+        "--disable".to_string(),
+        "--silent".to_string(),
+        "--show-error".to_string(),
+        "--output".to_string(),
+        "/dev/null".to_string(),
+        "--write-out".to_string(),
+        "%{http_code}".to_string(),
+        "--proto".to_string(),
+        "=http,https".to_string(),
+        "--proto-redir".to_string(),
+        "=http,https".to_string(),
+        "--noproxy".to_string(),
+        "*".to_string(),
+        "--max-redirs".to_string(),
+        "0".to_string(),
+        "--resolve".to_string(),
+        resolve.to_string(),
+        "--max-time".to_string(),
+        timeout.to_string(),
+        claimed_url.to_string(),
+    ]
+}
+
+fn resolve_public_http_target(url: &str) -> Result<(String, u16, IpAddr), String> {
+    if url.chars().any(char::is_whitespace)
+        || url.chars().any(char::is_control)
+        || url.contains('\\')
+    {
+        return Err(format!("predeclared URL is unsafe or malformed: {url}"));
+    }
+    let (remainder, default_port) = if let Some(remainder) = url.strip_prefix("https://") {
+        (remainder, 443)
+    } else if let Some(remainder) = url.strip_prefix("http://") {
+        (remainder, 80)
+    } else {
+        return Err(format!("predeclared URL has a non-HTTP scheme: {url}"));
+    };
+    let authority_end = remainder.find(['/', '?', '#']).unwrap_or(remainder.len());
+    let authority = &remainder[..authority_end];
+    if authority.is_empty() || authority.contains('@') {
+        return Err(format!("predeclared URL has unsafe authority: {url}"));
+    }
+    let (host, port) = if let Some(bracketed) = authority.strip_prefix('[') {
+        let close = bracketed
+            .find(']')
+            .ok_or_else(|| format!("predeclared URL has malformed IPv6 authority: {url}"))?;
+        let host = &bracketed[..close];
+        let suffix = &bracketed[close + 1..];
+        let port = if suffix.is_empty() {
+            default_port
+        } else {
+            suffix
+                .strip_prefix(':')
+                .ok_or_else(|| format!("predeclared URL has malformed authority: {url}"))?
+                .parse::<u16>()
+                .map_err(|_| format!("predeclared URL has invalid port: {url}"))?
+        };
+        (host.to_string(), port)
+    } else {
+        let colon_count = authority.bytes().filter(|byte| *byte == b':').count();
+        if colon_count > 1 {
+            return Err(format!("predeclared IPv6 URL must use brackets: {url}"));
+        }
+        match authority.rsplit_once(':') {
+            Some((host, port)) => (
+                host.to_string(),
+                port.parse::<u16>()
+                    .map_err(|_| format!("predeclared URL has invalid port: {url}"))?,
+            ),
+            None => (authority.to_string(), default_port),
+        }
+    };
+    if port == 0 || host.is_empty() {
+        return Err(format!(
+            "predeclared URL has empty host or zero port: {url}"
+        ));
+    }
+    let normalized = host.trim_end_matches('.').to_ascii_lowercase();
+    if normalized.is_empty()
+        || normalized == "localhost"
+        || normalized.ends_with(".localhost")
+        || matches!(
+            normalized.as_str(),
+            "metadata" | "metadata.google.internal" | "instance-data"
+        )
+    {
+        return Err(format!(
+            "predeclared URL targets a local/metadata host: {url}"
+        ));
+    }
+    if !normalized
+        .bytes()
+        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b':'))
+        || normalized.starts_with('-')
+    {
+        return Err(format!("predeclared URL host has unsafe syntax: {url}"));
+    }
+    let addresses: Vec<IpAddr> = if let Ok(address) = normalized.parse() {
+        vec![address]
+    } else {
+        let mut resolver = Command::new("getent");
+        resolver.args(["ahosts", &normalized]);
+        let output = run_bounded_command(resolver, StdDuration::from_secs(10))
+            .map_err(|error| format!("bounded resolver failed for {host}: {error}"))?;
+        if !output.status.success() {
+            return Err(format!(
+                "cannot resolve predeclared URL host {host}: getent exited {:?}: {}",
+                output.status.code(),
+                String::from_utf8_lossy(&output.stderr).trim()
+            ));
+        }
+        let mut addresses = Vec::new();
+        for line in String::from_utf8_lossy(&output.stdout).lines() {
+            if let Some(address) = line
+                .split_whitespace()
+                .next()
+                .and_then(|value| value.parse::<IpAddr>().ok())
+            {
+                if !addresses.contains(&address) {
+                    addresses.push(address);
+                }
+            }
+        }
+        addresses
+    };
+    if addresses.is_empty() {
+        return Err(format!(
+            "predeclared URL host resolved to no addresses: {host}"
+        ));
+    }
+    if let Some(address) = addresses.iter().find(|address| !is_public_ip(**address)) {
+        return Err(format!(
+            "predeclared URL resolves to forbidden non-public address {address}: {url}"
+        ));
+    }
+    let pinned = addresses[0];
+    Ok((host, port, pinned))
+}
+
+fn is_public_ip(address: IpAddr) -> bool {
+    match address {
+        IpAddr::V4(address) => {
+            let octets = address.octets();
+            !matches!(
+                octets,
+                [0, ..]
+                    | [10, ..]
+                    | [127, ..]
+                    | [169, 254, ..]
+                    | [192, 168, ..]
+                    | [192, 0, 0, ..]
+                    | [192, 0, 2, ..]
+                    | [198, 51, 100, ..]
+                    | [203, 0, 113, ..]
+            ) && !(octets[0] == 100 && (64..=127).contains(&octets[1]))
+                && !(octets[0] == 172 && (16..=31).contains(&octets[1]))
+                && !(octets[0] == 198 && matches!(octets[1], 18 | 19))
+                && octets[0] < 224
+        }
+        IpAddr::V6(address) => {
+            if let Some(mapped) = address.to_ipv4_mapped() {
+                return is_public_ip(IpAddr::V4(mapped));
+            }
+            let segments = address.segments();
+            (segments[0] & 0xe000) == 0x2000 && !(segments[0] == 0x2001 && segments[1] == 0x0db8)
+        }
+    }
+}
+
+fn check_git_sha(
+    sha: &str,
+    branch: Option<&str>,
+    repo_root: Option<&Path>,
+) -> (CheckOutcome, String) {
     let Some(root) = repo_root else {
         // Nothing was looked up. Saying FABRICATED here is a lie.
         return (
@@ -681,28 +1022,101 @@ fn check_git_sha(sha: &str, repo_root: Option<&Path>) -> (CheckOutcome, String) 
             format!("no repo root supplied; SHA {sha} was not verified"),
         );
     };
-    let out = std::process::Command::new("git")
-        .args(["cat-file", "-e", sha])
-        .current_dir(root)
-        .status();
-    match out {
-        Ok(s) if s.success() => (
-            CheckOutcome::Verified,
-            format!("git SHA {} exists locally", sha),
-        ),
-        // git ran and answered: the object is not in this repo.
-        Ok(_) => (
+    if !(sha.len() == 40 || sha.len() == 64) || !sha.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return (
             CheckOutcome::Contradicted,
-            format!(
-                "claimed git SHA {} does NOT exist in repo — FABRICATED",
-                sha
-            ),
-        ),
+            format!("claimed git SHA has invalid full-object syntax: {sha}"),
+        );
+    }
+    let branch = match validate_git_branch(branch.unwrap_or("main"), root) {
+        Ok(branch) => branch,
+        Err(error) => return (CheckOutcome::Contradicted, error),
+    };
+    let mut cat_file = Command::new("git");
+    cat_file.args(["cat-file", "-e", sha]).current_dir(root);
+    let out = run_bounded_command(cat_file, StdDuration::from_secs(15));
+    match out {
+        Ok(output) if output.status.success() => {}
+        // git ran and answered: the object is not in this repo.
+        Ok(_) => {
+            return (
+                CheckOutcome::Contradicted,
+                format!(
+                    "claimed git SHA {} does NOT exist in repo — FABRICATED",
+                    sha
+                ),
+            )
+        }
         // git itself never ran (missing binary, io error) — that is our
         // failure, not the worker's.
-        Err(e) => (
+        Err(e) => {
+            return (
+                CheckOutcome::Unverifiable,
+                format!("git lookup failed for {}: {}", sha, e),
+            )
+        }
+    }
+    let remote_ref = format!("refs/heads/{branch}");
+    let mut ls_remote = Command::new("git");
+    ls_remote
+        .args(["ls-remote", "--exit-code", "origin", &remote_ref])
+        .current_dir(root)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_SSH_COMMAND", "ssh -oBatchMode=yes -oConnectTimeout=10");
+    let remote = run_bounded_command(ls_remote, StdDuration::from_secs(30));
+    let remote = match remote {
+        Ok(output) if output.status.success() => output,
+        Ok(output) => {
+            return (
+                CheckOutcome::Unverifiable,
+                format!(
+                    "could not confirm origin/{branch}: git ls-remote exited {:?}: {}",
+                    output.status.code(),
+                    String::from_utf8_lossy(&output.stderr).trim()
+                ),
+            )
+        }
+        Err(error) => {
+            return (
+                CheckOutcome::Unverifiable,
+                format!("could not run git ls-remote for origin/{branch}: {error}"),
+            )
+        }
+    };
+    let remote_tip = String::from_utf8_lossy(&remote.stdout)
+        .split_whitespace()
+        .next()
+        .unwrap_or_default()
+        .to_string();
+    if remote_tip.is_empty() || !remote_tip.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return (
             CheckOutcome::Unverifiable,
-            format!("git lookup failed for {}: {}", sha, e),
+            format!("origin/{branch} returned no valid object id"),
+        );
+    }
+    let mut merge_base = Command::new("git");
+    merge_base
+        .args(["merge-base", "--is-ancestor", sha, &remote_tip])
+        .current_dir(root);
+    match run_bounded_command(merge_base, StdDuration::from_secs(15)) {
+        Ok(output) if output.status.success() => (
+            CheckOutcome::Verified,
+            format!("git SHA {sha} is reachable from live origin/{branch} tip {remote_tip}"),
+        ),
+        Ok(output) if output.status.code() == Some(1) => (
+            CheckOutcome::Contradicted,
+            format!("claimed git SHA {sha} is not reachable from origin/{branch}"),
+        ),
+        Ok(output) => (
+            CheckOutcome::Unverifiable,
+            format!(
+                "git could not compare SHA {sha} with origin/{branch}: exit {:?}",
+                output.status.code()
+            ),
+        ),
+        Err(error) => (
+            CheckOutcome::Unverifiable,
+            format!("git ancestry check failed for {sha}: {error}"),
         ),
     }
 }
@@ -714,66 +1128,114 @@ fn check_git_branch(name: &str, repo_root: Option<&Path>) -> (CheckOutcome, Stri
             format!("no repo root supplied; branch {name} was not verified"),
         );
     };
-    let out = std::process::Command::new("git")
-        .args(["rev-parse", "--verify", name])
+    let branch = match validate_git_branch(name, root) {
+        Ok(branch) => branch,
+        Err(error) => return (CheckOutcome::Contradicted, error),
+    };
+    let remote_ref = format!("refs/heads/{branch}");
+    let mut ls_remote = Command::new("git");
+    ls_remote
+        .args(["ls-remote", "--exit-code", "origin", &remote_ref])
         .current_dir(root)
-        .output();
-    match out {
-        Ok(o) if o.status.success() => (
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_SSH_COMMAND", "ssh -oBatchMode=yes -oConnectTimeout=10");
+    match run_bounded_command(ls_remote, StdDuration::from_secs(30)) {
+        Ok(output) if output.status.success() => (
             CheckOutcome::Verified,
-            format!("git branch {} exists", name),
+            format!("git branch origin/{branch} exists on the live remote"),
         ),
-        Ok(_) => (
+        Ok(output) if output.status.code() == Some(2) => (
             CheckOutcome::Contradicted,
-            format!("claimed git branch {} NOT found — FABRICATED", name),
+            format!("claimed git branch origin/{branch} NOT found — FABRICATED"),
+        ),
+        Ok(output) => (
+            CheckOutcome::Unverifiable,
+            format!(
+                "live origin lookup failed for branch {branch}: exit {:?}: {}",
+                output.status.code(),
+                String::from_utf8_lossy(&output.stderr).trim()
+            ),
         ),
         Err(e) => (
             CheckOutcome::Unverifiable,
-            format!("git lookup failed for branch {}: {}", name, e),
+            format!("bounded git lookup failed for branch {branch}: {e}"),
         ),
     }
 }
 
+fn validate_git_branch(name: &str, repo_root: &Path) -> Result<String, String> {
+    let branch = name
+        .strip_prefix("refs/heads/")
+        .or_else(|| name.strip_prefix("refs/remotes/origin/"))
+        .or_else(|| name.strip_prefix("origin/"))
+        .unwrap_or(name);
+    if branch.is_empty() || branch.starts_with('-') || branch.chars().any(char::is_control) {
+        return Err(format!("claimed git branch is unsafe or malformed: {name}"));
+    }
+    let mut command = Command::new("git");
+    command
+        .args(["check-ref-format", "--branch", branch])
+        .current_dir(repo_root);
+    match run_bounded_command(command, StdDuration::from_secs(10)) {
+        Ok(output) if output.status.success() => Ok(branch.to_string()),
+        Ok(_) => Err(format!("claimed git branch is invalid: {name}")),
+        Err(error) => Err(format!("could not validate git branch {name}: {error}")),
+    }
+}
+
 fn check_file_path(path: &str, repo_root: Option<&Path>) -> (CheckOutcome, String) {
-    let candidate = Path::new(path);
-    let full = match (repo_root, candidate.is_absolute()) {
-        (_, true) => candidate.to_path_buf(),
-        (Some(root), false) => root.join(candidate),
-        (None, false) => {
-            // No root to resolve it against: the path was never looked up.
+    let Some(root) = repo_root else {
+        return (
+            CheckOutcome::Unverifiable,
+            format!("no repo root supplied; artifact path {path} was not verified"),
+        );
+    };
+    let root = match root.canonicalize() {
+        Ok(root) => root,
+        Err(error) => {
             return (
                 CheckOutcome::Unverifiable,
-                format!("relative claimed path {path} cannot be verified without a repo root"),
-            );
+                format!("cannot canonicalize artifact repo root: {error}"),
+            )
         }
     };
-    if full.exists() {
-        if let Some(root) = repo_root {
-            let root = root.canonicalize();
-            let full_canonical = full.canonicalize();
-            if let (Ok(root), Ok(full_canonical)) = (root, full_canonical) {
-                if !candidate.is_absolute() && !full_canonical.starts_with(root) {
-                    return (
-                        CheckOutcome::Contradicted,
-                        format!("claimed relative path escapes repo root: {path}"),
-                    );
-                }
-            }
-        }
-        (
-            CheckOutcome::Verified,
-            format!("file {} exists", full.display()),
-        )
+    let candidate = Path::new(path);
+    let full = if candidate.is_absolute() {
+        candidate.to_path_buf()
     } else {
-        // The lookup ran against the real filesystem and the file is absent.
-        (
+        root.join(candidate)
+    };
+    let canonical = match full.canonicalize() {
+        Ok(canonical) => canonical,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return (
+                CheckOutcome::Contradicted,
+                format!(
+                    "claimed file path {} does NOT exist — FABRICATED",
+                    full.display()
+                ),
+            )
+        }
+        Err(error) => {
+            return (
+                CheckOutcome::Unverifiable,
+                format!(
+                    "cannot canonicalize claimed path {}: {error}",
+                    full.display()
+                ),
+            )
+        }
+    };
+    if !canonical.starts_with(&root) {
+        return (
             CheckOutcome::Contradicted,
-            format!(
-                "claimed file path {} does NOT exist — FABRICATED",
-                full.display()
-            ),
-        )
+            format!("claimed artifact path escapes canonical repo root: {path}"),
+        );
     }
+    (
+        CheckOutcome::Verified,
+        format!("artifact {} exists inside repo", canonical.display()),
+    )
 }
 
 #[cfg(test)]
@@ -837,10 +1299,9 @@ mod done_v3_tests {
         assert!(!marker.exists());
     }
 
-    /// Create a throwaway git repo holding one real object, and return
-    /// (tempdir, that object's SHA). `git hash-object -w` needs no commit and
-    /// therefore no git identity, and the SHA it returns is one `git cat-file
-    /// -e` really confirms.
+    /// Create a throwaway repo with a real origin/main commit. Git artifacts
+    /// are accepted only when the object is reachable from the live remote
+    /// branch, not merely present in the local object database.
     fn repo_with_a_real_object() -> (tempfile::TempDir, String) {
         let temp = tempfile::tempdir().unwrap();
         let status = std::process::Command::new("git")
@@ -849,13 +1310,62 @@ mod done_v3_tests {
             .status()
             .expect("git init");
         assert!(status.success(), "git init failed");
+        for (key, value) in [
+            ("user.email", "omega-test@example.invalid"),
+            ("user.name", "Omega Test"),
+        ] {
+            assert!(std::process::Command::new("git")
+                .args(["config", key, value])
+                .current_dir(temp.path())
+                .status()
+                .unwrap()
+                .success());
+        }
         std::fs::write(temp.path().join("payload.txt"), b"ground truth").unwrap();
+        assert!(std::process::Command::new("git")
+            .args(["add", "payload.txt"])
+            .current_dir(temp.path())
+            .status()
+            .unwrap()
+            .success());
+        assert!(std::process::Command::new("git")
+            .args(["commit", "--quiet", "-m", "ground truth"])
+            .current_dir(temp.path())
+            .status()
+            .unwrap()
+            .success());
+        assert!(std::process::Command::new("git")
+            .args(["branch", "-M", "main"])
+            .current_dir(temp.path())
+            .status()
+            .unwrap()
+            .success());
+        let origin = temp.path().join("origin.git");
+        assert!(std::process::Command::new("git")
+            .args(["init", "--quiet", "--bare"])
+            .arg(&origin)
+            .status()
+            .unwrap()
+            .success());
+        assert!(std::process::Command::new("git")
+            .args(["remote", "add", "origin"])
+            .arg(&origin)
+            .current_dir(temp.path())
+            .status()
+            .unwrap()
+            .success());
+        assert!(std::process::Command::new("git")
+            .args(["push", "--quiet", "-u", "origin", "main"])
+            .current_dir(temp.path())
+            .status()
+            .unwrap()
+            .success());
         let out = std::process::Command::new("git")
-            .args(["hash-object", "-w", "payload.txt"])
+            .args(["rev-parse", "HEAD"])
             .current_dir(temp.path())
             .output()
-            .expect("git hash-object");
-        assert!(out.status.success(), "git hash-object failed");
+            .expect("git rev-parse");
+        assert!(out.status.success(), "git rev-parse failed");
         let sha = String::from_utf8_lossy(&out.stdout).trim().to_string();
         assert_eq!(sha.len(), 40, "expected a full object SHA, got {sha:?}");
         (temp, sha)
@@ -936,6 +1446,133 @@ mod done_v3_tests {
         assert!(verdict.passes, "{:?}", verdict.failures);
         assert!(verdict.checks[0].passed);
     }
+
+    #[cfg(unix)]
+    #[test]
+    fn verifier_reaps_background_descendants_before_accepting() {
+        let temp = tempfile::tempdir().unwrap();
+        let marker = temp.path().join("escaped-descendant");
+        let script = format!("(sleep 1; touch '{}') & exit 0", marker.display());
+        let command_text = ["/bin/sh", "-c", script.as_str()].join(" ");
+        let mut done = complete_signal();
+        done.artifacts.push(DoneArtifact::Command {
+            cmd: command_text.clone(),
+            exit_code: 0,
+        });
+        let verifier = VerifierCheck {
+            schema_version: crate::mission::CONTRACT_SCHEMA_VERSION,
+            check_id: "descendant-containment".to_string(),
+            kind: VerifierCheckKind::Command {
+                argv: vec!["/bin/sh".to_string(), "-c".to_string(), script],
+                cwd: None,
+                expected_exit_code: 0,
+            },
+            timeout_secs: 2,
+        };
+        let verdict = verify_done_against_contract(&done, None, &[verifier]);
+        assert!(verdict.passes, "{:?}", verdict.failures);
+        std::thread::sleep(StdDuration::from_millis(1_200));
+        assert!(
+            !marker.exists(),
+            "background verifier descendant escaped its process group"
+        );
+    }
+
+    #[test]
+    fn http_target_policy_rejects_ssrf_authorities() {
+        for url in [
+            "http://localhost/",
+            "http://127.0.0.1/",
+            "http://169.254.169.254/latest/meta-data/",
+            "http://10.1.2.3/",
+            "http://[::1]/",
+            "http://user@example.com/",
+            "http://example.com\\@127.0.0.1/",
+        ] {
+            assert!(
+                resolve_public_http_target(url).is_err(),
+                "unsafe target unexpectedly accepted: {url}"
+            );
+        }
+        assert_eq!(
+            resolve_public_http_target("https://8.8.8.8/health")
+                .unwrap()
+                .2,
+            "8.8.8.8".parse::<IpAddr>().unwrap()
+        );
+    }
+
+    #[test]
+    fn http_verifier_disables_curlrc_before_every_other_argument() {
+        let args = pinned_http_curl_args(
+            "https://example.com/health",
+            "example.com:443:93.184.216.34",
+            "5",
+        );
+        assert_eq!(args.first().map(String::as_str), Some("--disable"));
+        assert!(!args.iter().any(|arg| arg == "--connect-to"));
+        assert_eq!(
+            args.iter()
+                .filter(|arg| arg.as_str() == "--resolve")
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn artifact_path_is_confined_to_canonical_repo() {
+        let repo = tempfile::tempdir().unwrap();
+        let outside = tempfile::NamedTempFile::new().unwrap();
+        let (outcome, _) = check_file_path(outside.path().to_str().unwrap(), Some(repo.path()));
+        assert_eq!(outcome, CheckOutcome::Contradicted);
+    }
+
+    #[test]
+    fn completion_signal_authority_rejects_traversal_corruption_and_mismatch() {
+        let state = tempfile::tempdir().unwrap();
+        assert!(DoneSignal::read(state.path(), "../escape").is_err());
+        let mut traversal = DoneSignal::stub("../escape", DoneStatus::Pending);
+        assert!(traversal.write(state.path()).is_err());
+
+        let path = state.path().join("worker-worker-a.done.json");
+        crate::config::atomic_write_private(&path, b"not-json").unwrap();
+        assert!(DoneSignal::read(state.path(), "worker-a").is_err());
+
+        traversal.session = "worker-b".to_string();
+        crate::config::atomic_write_private(&path, &serde_json::to_vec_pretty(&traversal).unwrap())
+            .unwrap();
+        assert!(DoneSignal::read(state.path(), "worker-a").is_err());
+        assert!(DoneSignal::remove(state.path(), "worker-a").is_err());
+        assert!(path.exists(), "mismatched authority must not be deleted");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn completion_signal_is_private_and_rejects_symlink_or_hardlink() {
+        use std::os::unix::fs::{symlink, PermissionsExt};
+
+        let state = tempfile::tempdir().unwrap();
+        let signal = DoneSignal::stub("worker-a", DoneStatus::Pending);
+        signal.write(state.path()).unwrap();
+        let path = state.path().join("worker-worker-a.done.json");
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+
+        let hardlink = state.path().join("hardlink-copy");
+        std::fs::hard_link(&path, &hardlink).unwrap();
+        assert!(DoneSignal::read(state.path(), "worker-a").is_err());
+        std::fs::remove_file(&hardlink).unwrap();
+        DoneSignal::remove(state.path(), "worker-a").unwrap();
+
+        let target = state.path().join("target");
+        std::fs::write(&target, b"do-not-follow").unwrap();
+        symlink(&target, &path).unwrap();
+        assert!(DoneSignal::read(state.path(), "worker-a").is_err());
+        assert!(signal.write(state.path()).is_err());
+        assert_eq!(std::fs::read(&target).unwrap(), b"do-not-follow");
+    }
 }
 
 /// A structured record for when a worker is blocked but still executing a fallback.
@@ -963,25 +1600,44 @@ impl WorkerBlocked {
     }
 
     pub fn write(&self, state_dir: &Path) -> Result<()> {
+        crate::scope::validate_session_identity(&self.session)?;
         let path = state_dir.join(format!("worker-blocked-{}.json", self.session));
-        let content = serde_json::to_string_pretty(self)?;
-        std::fs::write(&path, content)?;
+        let _lock = crate::scope::lock_private_state_file(state_dir, COMPLETION_SIGNAL_LOCK)?;
+        if let Some(existing) = read_bounded_private_json::<Self>(&path)? {
+            if existing.session != self.session {
+                bail!("existing blocked signal identity differs from its filename");
+            }
+        }
+        let content = serde_json::to_vec_pretty(self)?;
+        if content.len() > MAX_COMPLETION_SIGNAL_BYTES {
+            bail!("blocked signal exceeds the authority size limit");
+        }
+        crate::config::atomic_write_private(&path, &content)?;
         Ok(())
     }
 
     pub fn read(state_dir: &Path, session: &str) -> Result<Option<Self>> {
+        crate::scope::validate_session_identity(session)?;
         let path = state_dir.join(format!("worker-blocked-{}.json", session));
-        if !path.exists() {
-            return Ok(None);
+        let signal = read_bounded_private_json::<Self>(&path)?;
+        if signal
+            .as_ref()
+            .is_some_and(|signal| signal.session != session)
+        {
+            bail!("blocked signal identity differs from requested session");
         }
-        let content = std::fs::read_to_string(&path)?;
-        Ok(Some(serde_json::from_str(&content)?))
+        Ok(signal)
     }
 
     pub fn clear(state_dir: &Path, session: &str) -> Result<()> {
+        crate::scope::validate_session_identity(session)?;
         let path = state_dir.join(format!("worker-blocked-{}.json", session));
-        if path.exists() {
-            std::fs::remove_file(&path)?;
+        let _lock = crate::scope::lock_private_state_file(state_dir, COMPLETION_SIGNAL_LOCK)?;
+        if let Some(signal) = read_bounded_private_json::<Self>(&path)? {
+            if signal.session != session {
+                bail!("blocked signal identity differs from requested clear");
+            }
+            crate::scope::remove_private_file(&path)?;
         }
         Ok(())
     }
@@ -994,10 +1650,14 @@ impl WorkerBlocked {
                 let path = entry.path();
                 if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
                     if name.starts_with("worker-blocked-") && name.ends_with(".json") {
-                        if let Ok(content) = std::fs::read_to_string(&path) {
-                            if let Ok(blocked) = serde_json::from_str::<Self>(&content) {
-                                results.push(blocked);
-                            }
+                        let Some(session) = name
+                            .strip_prefix("worker-blocked-")
+                            .and_then(|name| name.strip_suffix(".json"))
+                        else {
+                            continue;
+                        };
+                        if let Ok(Some(blocked)) = Self::read(state_dir, session) {
+                            results.push(blocked);
                         }
                     }
                 }
@@ -1090,24 +1750,40 @@ impl OracleDoneSignal {
         oracle.strip_prefix("oracle-").unwrap_or(oracle)
     }
 
+    fn validated_oracle_key(oracle: &str) -> Result<&str> {
+        crate::scope::validate_session_identity(oracle)?;
+        let key = Self::oracle_key(oracle);
+        crate::scope::validate_session_identity(key)?;
+        Ok(key)
+    }
+
     pub fn write(&self, state_dir: &Path) -> Result<()> {
-        let key = Self::oracle_key(&self.oracle);
+        let key = Self::validated_oracle_key(&self.oracle)?;
         let path = state_dir.join(format!("oracle-{}.done.json", key));
-        let tmp = state_dir.join(format!(".oracle-{}.done.json.tmp", key));
-        let content = serde_json::to_string_pretty(self)?;
-        std::fs::write(&tmp, &content)?;
-        std::fs::rename(&tmp, &path)?;
+        let _lock = crate::scope::lock_private_state_file(state_dir, COMPLETION_SIGNAL_LOCK)?;
+        if let Some(existing) = read_bounded_private_json::<Self>(&path)? {
+            if Self::validated_oracle_key(&existing.oracle)? != key {
+                bail!("existing oracle done signal identity differs from its filename");
+            }
+        }
+        let content = serde_json::to_vec_pretty(self)?;
+        if content.len() > MAX_COMPLETION_SIGNAL_BYTES {
+            bail!("oracle done signal exceeds the authority size limit");
+        }
+        crate::config::atomic_write_private(&path, &content)?;
         Ok(())
     }
 
     pub fn read(state_dir: &Path, oracle: &str) -> Result<Option<Self>> {
-        let key = Self::oracle_key(oracle);
+        let key = Self::validated_oracle_key(oracle)?;
         let path = state_dir.join(format!("oracle-{}.done.json", key));
-        if !path.exists() {
-            return Ok(None);
+        let signal = read_bounded_private_json::<Self>(&path)?;
+        if let Some(signal) = &signal {
+            if Self::validated_oracle_key(&signal.oracle)? != key {
+                bail!("oracle done signal identity differs from requested oracle");
+            }
         }
-        let content = std::fs::read_to_string(&path)?;
-        Ok(Some(serde_json::from_str(&content)?))
+        Ok(signal)
     }
 
     /// The per-path "already notified" side-marker the done-notify cron writes
@@ -1131,39 +1807,59 @@ impl OracleDoneSignal {
     /// matches the notifier's `oracle-*.done.json` glob (delivered once under
     /// its own marker path) but never collides with the new session's signal.
     /// Returns whether a stale signal actually existed.
-    pub fn clear(state_dir: &Path, oracle: &str) -> bool {
-        let key = Self::oracle_key(oracle);
+    pub fn clear_strict(state_dir: &Path, oracle: &str) -> Result<bool> {
+        let key = Self::validated_oracle_key(oracle)?;
+        let _lock = crate::scope::lock_private_state_file(state_dir, COMPLETION_SIGNAL_LOCK)?;
         // Re-arm the stuck-oracle alert for the recycled name: the cron's
         // once-per-oracle `<state-basename>.stuck-alerted` marker survives
         // the signal otherwise, silencing a genuine future stall under the
         // same name. Cover the legacy double-prefixed basename too (state
         // files were `oracle-oracle-X.state.json` before normalization).
-        let _ = std::fs::remove_file(state_dir.join(format!("oracle-{}.stuck-alerted", key)));
-        let _ =
-            std::fs::remove_file(state_dir.join(format!("oracle-oracle-{}.stuck-alerted", key)));
+        crate::scope::remove_private_file(
+            &state_dir.join(format!("oracle-{}.stuck-alerted", key)),
+        )?;
+        crate::scope::remove_private_file(
+            &state_dir.join(format!("oracle-oracle-{}.stuck-alerted", key)),
+        )?;
         let path = state_dir.join(format!("oracle-{}.done.json", key));
-        if !path.exists() {
-            let _ = std::fs::remove_file(Self::notified_path(state_dir, oracle));
-            return false;
+        let Some(signal) = read_bounded_private_json::<Self>(&path)? else {
+            crate::scope::remove_private_file(&Self::notified_path(state_dir, oracle))?;
+            return Ok(false);
+        };
+        if Self::validated_oracle_key(&signal.oracle)? != key {
+            bail!("oracle done signal identity differs from requested clear");
         }
-        if Self::notified_path(state_dir, oracle).exists() {
+        if crate::config::read_private_optional(&Self::notified_path(state_dir, oracle))?.is_some()
+        {
             // Already delivered → safe to drop both.
-            let _ = std::fs::remove_file(&path);
-            let _ = std::fs::remove_file(Self::notified_path(state_dir, oracle));
+            crate::scope::remove_private_file(&path)?;
+            crate::scope::remove_private_file(&Self::notified_path(state_dir, oracle))?;
         } else {
             // Not yet delivered → retire so the notifier still sends it.
             let retired = state_dir.join(format!(
                 "oracle-{}-prev{}.done.json",
                 key,
-                Utc::now().timestamp()
+                Utc::now().timestamp_micros()
             ));
-            if std::fs::rename(&path, &retired).is_err() {
-                // Rename failed (cross-device/perms) — fall back to delete:
-                // losing one report beats reviving the stale-reap kill chain.
-                let _ = std::fs::remove_file(&path);
+            if crate::config::read_private_optional(&retired)?.is_some() {
+                bail!("refusing to overwrite existing retired oracle signal");
             }
+            std::fs::rename(&path, &retired).with_context(|| {
+                format!(
+                    "retiring oracle signal {} to {}",
+                    path.display(),
+                    retired.display()
+                )
+            })?;
+            std::fs::File::open(state_dir)?.sync_all()?;
         }
-        true
+        Ok(true)
+    }
+
+    /// Compatibility wrapper. Authority paths should use `clear_strict` so an
+    /// unsafe or corrupt signal cannot be mistaken for "nothing to clear".
+    pub fn clear(state_dir: &Path, oracle: &str) -> bool {
+        Self::clear_strict(state_dir, oracle).unwrap_or(false)
     }
 
     /// Invalidate the notified marker after an upgrade rewrites the signal
@@ -1171,8 +1867,14 @@ impl OracleDoneSignal {
     /// reported the transient Pending state and written the per-path marker;
     /// without this, the corrected done_clean would NEVER be sent and the
     /// operator's record would permanently say the mission was incomplete.
+    pub fn invalidate_notified_strict(state_dir: &Path, oracle: &str) -> Result<()> {
+        Self::validated_oracle_key(oracle)?;
+        let _lock = crate::scope::lock_private_state_file(state_dir, COMPLETION_SIGNAL_LOCK)?;
+        crate::scope::remove_private_file(&Self::notified_path(state_dir, oracle))
+    }
+
     pub fn invalidate_notified(state_dir: &Path, oracle: &str) {
-        let _ = std::fs::remove_file(Self::notified_path(state_dir, oracle));
+        let _ = Self::invalidate_notified_strict(state_dir, oracle);
     }
 
     pub fn is_closeable(&self) -> bool {
@@ -1206,10 +1908,8 @@ impl OracleDoneSignal {
             if retired {
                 continue;
             }
-            if let Ok(content) = std::fs::read_to_string(&path) {
-                if let Ok(sig) = serde_json::from_str::<Self>(&content) {
-                    out.push(sig);
-                }
+            if let Ok(Some(sig)) = Self::read(state_dir, key) {
+                out.push(sig);
             }
         }
         out

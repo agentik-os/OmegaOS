@@ -1,0 +1,28 @@
+version: 1.0.0
+workflow_id: builder.evidence_synthesis
+inputs:
+  - SOURCE_LEDGER.jsonl
+  - CLAIM_LEDGER.jsonl
+  - knowledge/books/*/analysis.json
+steps:
+  - normalize_concepts
+  - normalize_claims
+  - cluster_by_mechanism
+  - map_schools
+  - classify_agreement
+  - resolve_contextual_contradictions
+  - preserve_unresolved_conflicts
+  - derive_principles
+  - compile_decision_rules
+  - create_traceability_edges
+  - red_team_synthesis
+outputs:
+  - SYNTHESIS_MAP.yaml
+  - PRINCIPLES.yaml
+  - DECISION_RULES.yaml
+  - CONTRADICTION_REGISTER.yaml
+quality_conditions:
+  - no_material_rule_without_evidence_or_design_label
+  - no_unresolved_conflict_hidden_as_consensus
+  - every_principle_has_conditions_and_limits
+  - every_rule_has_trigger_action_exception_and_traceability

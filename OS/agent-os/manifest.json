@@ -1,0 +1,122 @@
+{
+  "schema_version": "2.0.0",
+  "id": "agent-os",
+  "num": 67,
+  "name": "Agent {OS}",
+  "version": "0.1.0",
+  "status": "scaffold",
+  "group": {
+    "key": "systems",
+    "label": "08 · AI & SYSTEMS",
+    "purpose": "Intelligence infrastructure for everything"
+  },
+  "tagline": "Design, brief and supervise agents that do real work.",
+  "inherits_from": null,
+  "commands": [
+    {
+      "name": "/agent design <job>",
+      "mode": "design",
+      "summary": "Turn a job into an agent design: one sentence job, boundary, escalation path, owner."
+    },
+    {
+      "name": "/agent brief <agent>",
+      "mode": "brief",
+      "summary": "Write the four block executable brief, refusing any block that cannot be filled."
+    },
+    {
+      "name": "/agent tools <agent>",
+      "mode": "grant",
+      "summary": "Compute the minimum tool grant and tie each capability to a step."
+    },
+    {
+      "name": "/agent dispatch <agent>",
+      "mode": "run",
+      "summary": "Start the agent against its brief, its grant and its budget."
+    },
+    {
+      "name": "/agent supervise <agent>",
+      "mode": "supervise",
+      "summary": "Classify a running agent as working, stalled, blocked or asking, and act."
+    },
+    {
+      "name": "/agent verify <run>",
+      "mode": "supervise",
+      "summary": "Run the brief's done test rather than believing the agent's claim."
+    },
+    {
+      "name": "/agent debrief <run>",
+      "mode": "debrief",
+      "summary": "Turn a run into a brief amendment, or an explicit decision to change nothing."
+    },
+    {
+      "name": "/agent roster",
+      "mode": "roster",
+      "summary": "List every agent with its owner, last run and score trend."
+    },
+    {
+      "name": "/agent retire <agent>",
+      "mode": "retire",
+      "summary": "Retire an agent, close its dispatch paths and remove its residue."
+    }
+  ],
+  "dependencies": {
+    "requires": [
+      "context-memory-os",
+      "evaluation-os"
+    ],
+    "consumes": [
+      "memory.context.compiled",
+      "ailogic.arbitration.decided",
+      "evaluation.rubric.published",
+      "evaluation.score.recorded",
+      "integration.contract.published"
+    ],
+    "emits": [
+      "agent.brief.approved",
+      "agent.tool.requested",
+      "agent.run.started",
+      "agent.run.completed",
+      "agent.escalation.raised",
+      "agent.retired",
+      "memory.record.staged"
+    ]
+  },
+  "targets": {
+    "claude": {
+      "supported": true
+    },
+    "chatgpt": {
+      "supported": true
+    },
+    "gemini": {
+      "supported": true
+    },
+    "codex": {
+      "supported": true
+    }
+  },
+  "entrypoints": {
+    "spec": "OS.md",
+    "system": "SYSTEM.md",
+    "skill": "SKILL.md",
+    "setup": "SETUP.md",
+    "workflows": "WORKFLOWS/",
+    "commands": "COMMANDS/",
+    "prompts": "PROMPTS/",
+    "references": "REFERENCES/",
+    "memory": "MEMORY/",
+    "tools": "TOOLS/",
+    "evals": "EVALS/",
+    "examples": "EXAMPLES/",
+    "interfaces": "INTERFACES/",
+    "adapters": "ADAPTERS/"
+  },
+  "requires_human_approval_for": [
+    "granting an agent a tool that can write, send, pay, publish or delete",
+    "widening a tool grant beyond what the brief's steps justify",
+    "dispatching an agent whose done test cannot be checked mechanically",
+    "running an agent unattended when its brief contains an irreversible action",
+    "retiring an agent a live mission still dispatches to",
+    "accepting an agent's self reported success in place of the named verification"
+  ]
+}

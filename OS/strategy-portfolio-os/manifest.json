@@ -1,0 +1,165 @@
+{
+  "schema_version": "2.0.0",
+  "id": "strategy-portfolio-os",
+  "num": 16,
+  "name": "Strategy & Portfolio {OS}",
+  "version": "0.1.0",
+  "status": "authored",
+  "group": {
+    "key": "discover",
+    "label": "02 · DISCOVER & DECIDE",
+    "purpose": "Find what is worth building"
+  },
+  "tagline": "Choose the bets: goals, projects and resource allocation.",
+  "inherits_from": "strategy-portfolio-os",
+  "commands": [
+    {
+      "command": "/strategy",
+      "mode": "design",
+      "purpose": "Open strategic design and set the strategy kernel"
+    },
+    {
+      "command": "/diagnosis",
+      "mode": "diagnose",
+      "purpose": "Define the critical challenge"
+    },
+    {
+      "command": "/portfolio",
+      "mode": "portfolio",
+      "purpose": "Review all projects and bets"
+    },
+    {
+      "command": "/prioritize",
+      "mode": "portfolio",
+      "purpose": "Rank competing initiatives"
+    },
+    {
+      "command": "/scenario",
+      "mode": "scenario",
+      "purpose": "Build future scenarios and signposts"
+    },
+    {
+      "command": "/strategic-decision",
+      "mode": "decision",
+      "purpose": "Structure a consequential choice"
+    },
+    {
+      "command": "/quarter-plan",
+      "mode": "quarter",
+      "purpose": "Create the quarterly strategy"
+    },
+    {
+      "command": "/kill-review",
+      "mode": "review",
+      "purpose": "Decide continue, narrow, pivot, pause or kill"
+    },
+    {
+      "command": "/one-page-strategy",
+      "mode": "design",
+      "purpose": "Produce a concise strategy memo"
+    },
+    {
+      "command": "/not-doing",
+      "mode": "portfolio",
+      "purpose": "Define the exclusions"
+    }
+  ],
+  "dependencies": {
+    "requires": [
+      "agentik-runtime",
+      "context-memory-os"
+    ],
+    "consumes": [
+      "market.validation.completed",
+      "market.sizing.modeled",
+      "validation.verdict.issued",
+      "validation.claim.killed",
+      "business_model.viability.assessed",
+      "business_model.unit_economics.modeled",
+      "opportunity.named",
+      "trend.movement.confirmed",
+      "opportunity.window.closed",
+      "research.evidence.compiled",
+      "health.capacity.assessed",
+      "portfolio.reallocation.proposed",
+      "change.approved",
+      "execution.outcome.proven",
+      "memory.context.snapshot.created",
+      "mindset.identity_compilation.updated"
+    ],
+    "emits": [
+      "strategy.diagnosis.created",
+      "strategy.kernel.approved",
+      "portfolio.item.funded",
+      "portfolio.item.paused",
+      "portfolio.item.killed",
+      "allocation.changed",
+      "scenario.signpost.triggered",
+      "strategy.review.completed",
+      "strategy.product_bet.approved",
+      "strategy.execution_packet.created",
+      "strategy.change.requested",
+      "strategy.refresh.requested"
+    ],
+    "consumes_from": [
+      "market-research-os",
+      "validation-os",
+      "business-model-os",
+      "trend-opportunity-os",
+      "research-os",
+      "health-energy-os",
+      "wealth-os",
+      "review-governance-os",
+      "execution-os",
+      "context-memory-os",
+      "mindset-os",
+      "portfolio-management-os"
+    ],
+    "emits_to": [
+      "context-memory-os",
+      "review-governance-os",
+      "execution-os",
+      "wealth-os",
+      "blueprint-os"
+    ]
+  },
+  "targets": {
+    "claude": {
+      "supported": true
+    },
+    "chatgpt": {
+      "supported": true
+    },
+    "gemini": {
+      "supported": true
+    },
+    "codex": {
+      "supported": true
+    }
+  },
+  "entrypoints": {
+    "spec": "OS.md",
+    "system": "SYSTEM.md",
+    "skill": "SKILL.md",
+    "setup": "SETUP.md",
+    "workflows": "WORKFLOWS/",
+    "commands": "COMMANDS/",
+    "prompts": "PROMPTS/",
+    "references": "REFERENCES/",
+    "memory": "MEMORY/",
+    "tools": "TOOLS/",
+    "evals": "EVALS/",
+    "examples": "EXAMPLES/",
+    "interfaces": "INTERFACES/",
+    "adapters": "ADAPTERS/"
+  },
+  "requires_human_approval_for": [
+    "committing capital",
+    "killing or pausing a major project",
+    "changing an approved strategic objective",
+    "sharing confidential strategy outside the machine or with a third party",
+    "any people or resource decision affecting a real person",
+    "overriding a kill criterion that has been met",
+    "emitting a consequential portfolio.item.* or allocation.changed event without the matching change.approved from review-governance-os"
+  ]
+}

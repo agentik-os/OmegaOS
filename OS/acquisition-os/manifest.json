@@ -1,0 +1,97 @@
+{
+  "schema_version": "2.0.0",
+  "id": "acquisition-os",
+  "num": 61,
+  "name": "Acquisition {OS}",
+  "version": "0.1.0",
+  "status": "scaffold",
+  "group": {
+    "key": "capital",
+    "label": "07 · CAPITAL",
+    "purpose": "Turn assets into capital allocation"
+  },
+  "tagline": "Buy a business: search, approach, negotiate, close.",
+  "inherits_from": null,
+  "commands": [
+    "/acquire",
+    "/acquire mandate",
+    "/acquire search",
+    "/acquire approach <target>",
+    "/acquire qualify <target>",
+    "/acquire value <target>",
+    "/acquire offer <target>",
+    "/acquire exclusivity <target>",
+    "/acquire close <target>",
+    "/acquire escalate",
+    "/acquire abandon <target>",
+    "/acquire handover <target>"
+  ],
+  "dependencies": {
+    "requires": [
+      "agentik-runtime",
+      "context-memory-os",
+      "due-diligence-os",
+      "deal-structuring-os",
+      "capital-os"
+    ],
+    "consumes": [
+      "dealflow.opportunity.qualified",
+      "thesis.drafted",
+      "thesis.kill_criteria.set",
+      "diligence.finding.registered",
+      "diligence.redflag.raised",
+      "diligence.completed",
+      "capital.allocation.approved",
+      "capital.allocation.declined",
+      "structure.terms.agreed"
+    ],
+    "emits": [
+      "acquisition.target.identified",
+      "acquisition.approach.sent",
+      "acquisition.loi.prepared",
+      "acquisition.exclusivity.entered",
+      "acquisition.closed",
+      "acquisition.abandoned"
+    ]
+  },
+  "targets": {
+    "claude": {
+      "supported": true
+    },
+    "chatgpt": {
+      "supported": true
+    },
+    "gemini": {
+      "supported": true
+    },
+    "codex": {
+      "supported": true
+    }
+  },
+  "entrypoints": {
+    "spec": "OS.md",
+    "system": "SYSTEM.md",
+    "skill": "SKILL.md",
+    "setup": "SETUP.md",
+    "workflows": "WORKFLOWS/",
+    "commands": "COMMANDS/",
+    "prompts": "PROMPTS/",
+    "references": "REFERENCES/",
+    "memory": "MEMORY/",
+    "tools": "TOOLS/",
+    "evals": "EVALS/",
+    "examples": "EXAMPLES/",
+    "interfaces": "INTERFACES/",
+    "adapters": "ADAPTERS/"
+  },
+  "requires_human_approval_for": [
+    "sending first contact to a business owner",
+    "signing or returning a non-disclosure agreement",
+    "issuing an indication of interest or letter of intent",
+    "entering an exclusivity period",
+    "submitting a financing application to a lender",
+    "agreeing any price, term or condition change",
+    "completing the transaction",
+    "abandoning a live deal with a counterparty relationship at stake"
+  ]
+}
