@@ -453,6 +453,14 @@ impl ProvidersConfig {
                 "google/gemini-3.1-pro-preview",
                 "z-ai/glm-5.1",
                 "deepseek/deepseek-chat",
+                // Cloaked/stealth listing (added 2026-08-23): a reasoning model
+                // aimed at coding and sustained agentic work — 1M context, 131k
+                // max output, tools + vision, reasoning always on, and priced at
+                // 0 for as long as the stealth window lasts. It sits LAST and is
+                // deliberately NOT the default: a cloaked endpoint means an
+                // undisclosed vendor sees the prompts, so it is an opt-in lane
+                // (R-MODEL), and the slug disappears when it is un-cloaked.
+                "stealth/ox-alpha",
             ],
             "kimi" => vec![
                 "kimi-for-coding",
@@ -804,6 +812,25 @@ mod provider_capability_tests {
             assert!(ProvidersConfig::is_known(provider), "{provider}");
             assert!(
                 ProvidersConfig::capabilities_for(provider).is_some(),
+                "{provider}"
+            );
+        }
+    }
+
+    #[test]
+    fn openrouter_catalog_offers_ox_alpha_without_moving_the_default() {
+        // One curated list backs three pickers (openrouter/pi/hermes), so the
+        // stealth lane has to be reachable from all three...
+        for provider in ["openrouter", "pi", "hermes"] {
+            assert!(
+                ProvidersConfig::models_for(provider).contains(&"stealth/ox-alpha"),
+                "{provider} is missing stealth/ox-alpha"
+            );
+            // ...and the catalog is an OFFER, never a default: an unpinned
+            // session must keep landing on the tier R-MODEL chose for it.
+            assert_eq!(
+                ProvidersConfig::default_model(provider),
+                "anthropic/claude-opus-5",
                 "{provider}"
             );
         }
