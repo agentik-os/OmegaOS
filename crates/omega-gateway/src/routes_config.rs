@@ -27,9 +27,14 @@
 //! `routes_agents.rs`/`routes_audit.rs` already carry for their own
 //! CLI-mirroring logic).
 //!
-//! NOTE: `openrouter.*` is readable via `GET` but has NO writable field in
-//! [`apply_config_value`] — faithful to `set_config_value` itself (which
-//! genuinely has no `("openrouter", _)` arm), not an oversight here.
+//! NOTE (2026-08-23): `openrouter.*` used to be readable via `GET` with no
+//! writable field here, and that WAS faithful — `set_config_value` had no
+//! `("openrouter", _)` arm either. It since grew one (model / api_key /
+//! base_url), which left the twin genuinely one-sided: the CLI could
+//! configure the provider and this API could not. The three arms below
+//! close that gap. `kimi.*` is the remaining asymmetry — the CLI writes
+//! four kimi fields, `ConfigResponse` has no kimi entry at all, so that one
+//! needs a protocol change rather than a match arm.
 //!
 //! REVIEW-FIX ROUND (an independent adversarial reviewer found these before
 //! the branch shipped — see `.superpowers/sdd/progress.md`'s Task C+D+E
@@ -196,6 +201,9 @@ fn apply_config_value(cfg: &mut ProvidersConfig, key: &str, value: &str) -> Resu
         ("codex", "base_url") => cfg.codex.base_url = value.to_string(),
         ("gemini", "model") => cfg.gemini.model = value.to_string(),
         ("gemini", "api_key") => cfg.gemini.api_key = value.to_string(),
+        ("openrouter", "model") => cfg.openrouter.model = value.to_string(),
+        ("openrouter", "api_key") => cfg.openrouter.api_key = value.to_string(),
+        ("openrouter", "base_url") => cfg.openrouter.base_url = value.to_string(),
         ("pi", "provider") => cfg.pi.provider = value.to_string(),
         ("pi", "model") => cfg.pi.model = value.to_string(),
         ("pi", "api_key") => cfg.pi.api_key = value.to_string(),
@@ -269,6 +277,20 @@ mod tests {
         let mut cfg = ProvidersConfig::default();
         apply_config_value(&mut cfg, "claude.model", "opus").unwrap();
         assert_eq!(cfg.claude.model, "opus");
+    }
+
+    #[test]
+    fn apply_config_value_writes_the_openrouter_fields_the_cli_writes() {
+        let mut cfg = ProvidersConfig::default();
+        apply_config_value(&mut cfg, "openrouter.model", "stealth/ox-alpha").unwrap();
+        apply_config_value(&mut cfg, "openrouter.base_url", "https://openrouter.ai/api/v1")
+            .unwrap();
+        apply_config_value(&mut cfg, "openrouter.api_key", "sk-or-v1-test").unwrap();
+        assert_eq!(cfg.openrouter.model, "stealth/ox-alpha");
+        assert_eq!(cfg.openrouter.base_url, "https://openrouter.ai/api/v1");
+        // Write-only over this API, like every other provider: the key goes
+        // in, and the response can only ever report that one is SET.
+        assert!(to_response(&cfg).openrouter.api_key_set);
     }
 
     #[test]
