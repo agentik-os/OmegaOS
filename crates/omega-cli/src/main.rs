@@ -4816,6 +4816,11 @@ enum ConfigAction {
     Set { key: String, value: String },
     /// Show all provider configs
     Show,
+    /// Make a provider (and optional model) the global default for new sessions
+    Activate {
+        provider: String,
+        model: Option<String>,
+    },
     /// List the canonical providers (no arg) or a provider's known models (one per
     /// line). SSOT for any UI building a model picker (TUI, Telegram) so the curated
     /// lists live ONLY in providers.rs::models_for / all_providers.
@@ -4894,6 +4899,33 @@ fn cmd_config(action: ConfigAction) -> Result<()> {
             };
             println!("[+] Set {} = {}", key, displayed);
             println!("Applies to all newly spawned sessions.");
+        }
+        ConfigAction::Activate { provider, model } => {
+            let agent = omega_core::agents::Agent::from_name(&provider)
+                .ok_or_else(|| anyhow::anyhow!("provider {provider:?} has no launch adapter"))?;
+            let provider = agent.name();
+
+            if provider != "shell" {
+                let mut cfg = ProvidersConfig::try_load()
+                    .context("cannot load provider config for activation")?;
+                set_config_value(
+                    &mut cfg,
+                    &format!("{provider}.model"),
+                    model.as_deref().unwrap_or(""),
+                )?;
+                cfg.save()?;
+            }
+
+            let mut runtime = omega_core::config::OmegaConfig::load()
+                .context("cannot load OmegaOS runtime config for activation")?;
+            runtime.agent_command = provider.to_string();
+            runtime.save()?;
+            let active = omega_core::providers::ActiveModel::set(provider, model.as_deref())?;
+            println!(
+                "[+] Active provider = {} / {}",
+                active.active_provider, active.active_model
+            );
+            println!("Applies globally to newly spawned sessions.");
         }
         ConfigAction::Models { provider } => match provider {
             // No provider → the canonical provider list. With one → its known models.

@@ -710,6 +710,7 @@ pub fn fields_for_section(
             SettingsSection::Codex => Some(Agent::Codex),
             SettingsSection::Gemini => Some(Agent::Gemini),
             SettingsSection::Antigravity => Some(Agent::Antigravity),
+            SettingsSection::OpenRouter => Some(Agent::OpenRouter),
             SettingsSection::Pi => Some(Agent::Pi),
             SettingsSection::Hermes => Some(Agent::Hermes),
             SettingsSection::Glm => Some(Agent::Glm),
@@ -918,6 +919,27 @@ pub fn fields_for_section(
             });
             out.extend(install_actions_for(Agent::Glm));
         }
+        SettingsSection::OpenRouter => {
+            let c = &providers.openrouter;
+            out.push(model_field(
+                "openrouter",
+                "openrouter.model",
+                &c.model,
+            ));
+            out.push(SettingsField::EditText {
+                label: "OpenRouter API key".to_string(),
+                config_key: "openrouter.api_key".to_string(),
+                current_value: c.api_key.clone(),
+                masked: true,
+            });
+            out.push(SettingsField::EditText {
+                label: "Base URL".to_string(),
+                config_key: "openrouter.base_url".to_string(),
+                current_value: c.base_url.clone(),
+                masked: false,
+            });
+            out.extend(install_actions_for(Agent::OpenRouter));
+        }
         SettingsSection::Pi => {
             let c = &providers.pi;
             out.push(SettingsField::EditText {
@@ -1090,6 +1112,7 @@ pub enum SettingsSection {
     Codex,
     Gemini,
     Antigravity,
+    OpenRouter,
     Pi,
     Hermes,
     Glm,
@@ -1108,6 +1131,7 @@ impl SettingsSection {
             SettingsSection::Codex,
             SettingsSection::Gemini,
             SettingsSection::Antigravity,
+            SettingsSection::OpenRouter,
             SettingsSection::Pi,
             SettingsSection::Hermes,
             SettingsSection::Glm,
@@ -1125,6 +1149,7 @@ impl SettingsSection {
             SettingsSection::Codex => "Codex (OpenAI)",
             SettingsSection::Gemini => "Gemini (Google)",
             SettingsSection::Antigravity => "Antigravity (Google)",
+            SettingsSection::OpenRouter => "OpenRouter (via Pi)",
             SettingsSection::Pi => "Pi (earendil-works)",
             SettingsSection::Hermes => "Hermes (Nous Research)",
             SettingsSection::Glm => "GLM (Z.AI)",

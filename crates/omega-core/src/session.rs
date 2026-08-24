@@ -368,7 +368,7 @@ fn record_session_provider(name: &str, agent: Agent) -> Result<()> {
         .with_context(|| format!("recording provider for session {name}"))
 }
 
-fn read_session_provider(name: &str) -> Option<String> {
+pub(crate) fn read_session_provider(name: &str) -> Option<String> {
     let payload: serde_json::Value =
         serde_json::from_slice(&std::fs::read(session_provider_path(name)).ok()?).ok()?;
     let recorded_session = payload.get("session")?.as_str()?;

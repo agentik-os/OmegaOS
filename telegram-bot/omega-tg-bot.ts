@@ -3150,7 +3150,8 @@ async function modelProviderView(provider: string, banner = ""): Promise<{ text:
     ? ` Current: <code>${esc(cur || "default")}</code>\n Tap a model to activate it.\n\n${keyLine}`
     : ` No catalogued models. Configure: <code>omega config set ${esc(provider)}.model …</code>\n\n${keyLine}`);
   const keyRow: Btn[][] = hasKey ? [[{ text: "🗑 Delete API key (x)", callback_data: `model:delkey:${provider}`.slice(0, 64) }]] : [];
-  return { text: card(`MODEL — ${provider.toUpperCase()}`, body), markup: kb([...rows, ...keyRow, [{ text: "« Providers", callback_data: "nav:model" }]]) };
+  const activateRow: Btn[][] = [[{ text: "✓ Use provider native default", callback_data: `model:activate:${provider}`.slice(0, 64) }]];
+  return { text: card(`MODEL — ${provider.toUpperCase()}`, body), markup: kb([...rows, ...activateRow, ...keyRow, [{ text: "« Providers", callback_data: "nav:model" }]]) };
 }
 
 // ── Zernio views (built from the omega-zernio --json CLI) ─────────────────────
@@ -3371,7 +3372,7 @@ async function view(name: string): Promise<{ text: string; markup: any }> {
       const rows: Btn[][] = [];
       for (let i = 0; i < provs.length; i += 2)
         rows.push(provs.slice(i, i + 2).map(p => ({ text: `${PROVIDER_ICON[p] || "•"} ${p}`.slice(0, 28), callback_data: `model:prov:${p}`.slice(0, 64) })));
-      const body = ` Models are configured per provider for future sessions.\n Mission provider selection remains explicit (project default, <code>--agent</code>, or “avec codex/claude”).\n\n Pick a provider to view and change its model.`;
+      const body = ` Pick a provider, then a model. The selection becomes the global default for new sessions; <code>--agent</code> or “avec codex/claude” still overrides one mission.`;
       return { text: card("MODEL / PROVIDERS", body), markup: kb([...rows, [{ text: "🔄 Refresh", callback_data: "nav:model" }, back()]]) };
     }
     case "zernio": return await zernioHome();
@@ -3455,18 +3456,27 @@ async function onCallback(data: string, chat: number, msgId: number, from: numbe
     const v = await modelProviderView(arg, ` ${ok ? "🗑 ✅" : "⚠️"} <b>${esc(arg)}</b> API key ${ok ? "deleted — sessions now use OAuth/subscription (autonomous, no prompt)." : "delete failed: " + esc(res.slice(0, 80))}`);
     return edit(chat, msgId, v.text, v.markup);
   }
+  if (ns === "model" && action === "activate") {
+    const res = await omega(["config", "activate", arg]);
+    const ok = /^\[\+\] Active provider/m.test(res);
+    const v = await modelProviderView(
+      arg,
+      ` ${ok ? "✅" : "⚠️"} <b>${esc(arg)}</b> native default ${ok ? "activated globally." : "activation failed: " + esc(res.slice(0, 100))}`,
+    );
+    return edit(chat, msgId, v.text, v.markup);
+  }
   if (ns === "model" && action === "set") {
     // arg = "provider:model" — model may contain "/" (openrouter ids), never ":".
     const i = arg.indexOf(":"); const provider = arg.slice(0, i); const model = arg.slice(i + 1);
-    const res = await omega(["config", "set", `${provider}.model`, model]);
-    const okOmega = /^\[\+\] Set/m.test(res);
+    const res = await omega(["config", "activate", provider, model]);
+    const okOmega = /^\[\+\] Active provider/m.test(res);
     let dash = "";
     if (provider === "claude") {
       const full = CLAUDE_FULL_ID[model] || model;
       const wrote = mcSetDefaultModel(full);
       dash = `\n 🖥 Dashboard defaults: ${wrote ? `<code>${esc(full)}</code> ✅ <i>(hot-reload ~3s)</i>` : "unchanged"}`;
     }
-    const banner = ` ${okOmega ? "✅" : "⚠️"} <b>${esc(provider)}</b> → <code>${esc(model)}</code>\n ⚙️ omega sessions: ${okOmega ? "✅" : "⚠️ " + esc(res.slice(0, 80))}${dash}`;
+    const banner = ` ${okOmega ? "✅" : "⚠️"} <b>${esc(provider)}</b> → <code>${esc(model)}</code>\n ⚙️ global default for new sessions: ${okOmega ? "✅" : "⚠️ " + esc(res.slice(0, 80))}${dash}`;
     const v = await modelProviderView(provider, banner);
     return edit(chat, msgId, v.text, v.markup);
   }

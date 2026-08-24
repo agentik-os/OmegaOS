@@ -761,8 +761,9 @@ fn provider_rank(provider: &str) -> usize {
         .unwrap_or(usize::MAX)
 }
 
-/// Track the per-Telegram-chat active model selection.
-/// Persisted to `~/.omega/state/telegram-active-model.json`.
+/// Mirror the global provider/model selected for newly spawned sessions.
+/// Persisted for diagnostics and non-Rust clients; `OmegaConfig::agent_command`
+/// remains the launch authority.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct ActiveModel {
@@ -797,6 +798,12 @@ impl ActiveModel {
     fn path() -> PathBuf {
         crate::config::omega_dir()
             .join("state")
+            .join("active-model.json")
+    }
+
+    fn legacy_path() -> PathBuf {
+        crate::config::omega_dir()
+            .join("state")
             .join("telegram-active-model.json")
     }
 
@@ -815,6 +822,16 @@ impl ActiveModel {
 
     pub fn try_load() -> Result<Self> {
         let path = Self::path();
+        if path.exists() {
+            return Self::load_from(&path);
+        }
+        let legacy = Self::legacy_path();
+        if legacy.exists() {
+            let mut model = Self::load_from(&legacy)?;
+            // The revision belongs to the legacy authority, not the new path.
+            model.source_revision = None;
+            return Ok(model);
+        }
         Self::load_from(&path)
     }
 

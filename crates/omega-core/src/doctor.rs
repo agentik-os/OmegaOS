@@ -344,7 +344,7 @@ fn effective_containment(
                 )
             }
         }
-        Agent::Pi | Agent::Hermes => Check::warn(
+        Agent::Pi | Agent::OpenRouter | Agent::Hermes => Check::warn(
             "agent containment",
             format!(
                 "{}: provider-native tool policy applies; OmegaOS adds no separate filesystem sandbox",
@@ -370,7 +370,7 @@ fn minimum_agent_version(agent: crate::agents::Agent) -> Option<semver::Version>
         // Stable structured/headless and prompt-interactive contract.
         Agent::Antigravity => "1.1.8",
         // `--` end-of-options support used by the launch adapter.
-        Agent::Pi => "0.84.3",
+        Agent::Pi | Agent::OpenRouter => "0.84.3",
         Agent::Hermes => "0.20.0",
         Agent::Kimi => "0.38.0",
         Agent::Shell => return None,

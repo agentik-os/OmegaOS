@@ -137,6 +137,7 @@ pub enum Agent {
     Gemini,
     Antigravity,
     Pi,
+    OpenRouter,
     Hermes,
     Glm,
     Kimi,
@@ -151,6 +152,7 @@ impl Agent {
             Agent::Gemini,
             Agent::Antigravity,
             Agent::Pi,
+            Agent::OpenRouter,
             Agent::Hermes,
             Agent::Glm,
             Agent::Kimi,
@@ -165,6 +167,7 @@ impl Agent {
             Agent::Gemini => "gemini",
             Agent::Antigravity => "antigravity",
             Agent::Pi => "pi",
+            Agent::OpenRouter => "openrouter",
             Agent::Hermes => "hermes",
             Agent::Glm => "glm",
             Agent::Kimi => "kimi",
@@ -179,6 +182,7 @@ impl Agent {
             Agent::Gemini => "Gemini (Google)",
             Agent::Antigravity => "Antigravity (Google)",
             Agent::Pi => "Pi (earendil-works)",
+            Agent::OpenRouter => "OpenRouter (via Pi)",
             Agent::Hermes => "Hermes (Nous Research)",
             Agent::Glm => "GLM (Z.AI / Zhipu)",
             Agent::Kimi => "Kimi (Moonshot AI)",
@@ -194,7 +198,7 @@ impl Agent {
             Agent::Codex => "codex",
             Agent::Gemini => "gemini",
             Agent::Antigravity => "agy",
-            Agent::Pi => "pi",
+            Agent::Pi | Agent::OpenRouter => "pi",
             Agent::Hermes => "hermes",
             Agent::Kimi => "kimi",
             Agent::Shell => "bash",
@@ -208,6 +212,7 @@ impl Agent {
             "gemini" => Some(Agent::Gemini),
             "antigravity" | "agy" => Some(Agent::Antigravity),
             "pi" => Some(Agent::Pi),
+            "openrouter" => Some(Agent::OpenRouter),
             "hermes" => Some(Agent::Hermes),
             "glm" => Some(Agent::Glm),
             "kimi" => Some(Agent::Kimi),
@@ -253,6 +258,9 @@ impl Agent {
             Agent::Pi => Some(
                 "if command -v npm >/dev/null 2>&1; then mkdir -p \"$HOME/.npm-global\" && npm install -g --prefix \"$HOME/.npm-global\" @earendil-works/pi-coding-agent; elif [ -x \"$HOME/.bun/bin/bun\" ]; then \"$HOME/.bun/bin/bun\" add -g @earendil-works/pi-coding-agent; else echo 'Need Node.js or bun first (run: curl -fsSL https://bun.sh/install | bash)'; exit 1; fi",
             ),
+            Agent::OpenRouter => Some(
+                "if command -v npm >/dev/null 2>&1; then mkdir -p \"$HOME/.npm-global\" && npm install -g --prefix \"$HOME/.npm-global\" @earendil-works/pi-coding-agent; elif [ -x \"$HOME/.bun/bin/bun\" ]; then \"$HOME/.bun/bin/bun\" add -g @earendil-works/pi-coding-agent; else echo 'Need Node.js or bun first (run: curl -fsSL https://bun.sh/install | bash)'; exit 1; fi",
+            ),
             Agent::Hermes => Some(
                 "T=$(mktemp) || exit $?; curl -fsSL https://hermes-agent.nousresearch.com/install.sh -o \"$T\" && bash \"$T\"; R=$?; rm -f \"$T\"; exit $R",
             ),
@@ -284,6 +292,8 @@ impl Agent {
             // Keep ~/.gemini/antigravity-cli and keyring credentials intact.
             Agent::Antigravity => Some("rm -f \"$(command -v agy)\""),
             Agent::Pi => Some("rm -f $(which pi) && rm -rf ~/.pi"),
+            // Shares the Pi binary; removing it here would break Pi sessions.
+            Agent::OpenRouter => None,
             Agent::Hermes => Some("rm -f $(which hermes) && rm -rf ~/.hermes"),
             // GLM shares the Claude Code binary — there is nothing GLM-specific to
             // uninstall. Removing it would wrongly delete the user's Claude Code.
@@ -301,6 +311,7 @@ impl Agent {
             Agent::Gemini => Some("https://github.com/google-gemini/gemini-cli"),
             Agent::Antigravity => Some("https://antigravity.google/docs/cli/overview/"),
             Agent::Pi => Some("https://pi.dev/"),
+            Agent::OpenRouter => Some("https://openrouter.ai/"),
             Agent::Hermes => Some("https://hermes-agent.nousresearch.com/"),
             Agent::Glm => Some("https://www.z.ai/"),
             Agent::Kimi => Some("https://www.kimi.com/code/docs/en/kimi-code-cli/"),
@@ -386,6 +397,7 @@ impl Agent {
                 }
                 s
             }
+            Agent::OpenRouter => pick(&["OPENROUTER_API_KEY", "OPENROUTER_BASE_URL"]),
             Agent::Hermes => {
                 let mut s = pick(&["OPENROUTER_API_KEY", "OPENROUTER_BASE_URL"]);
                 if !cfg.hermes.api_key.is_empty() {
@@ -640,6 +652,9 @@ impl Agent {
                 for writable in &providers.codex.additional_writable_dirs {
                     args.push_str(&format!(" --add-dir {}", shell_quote(writable)));
                 }
+                if opts.resume_conversation {
+                    args.push_str(" resume --last");
+                }
                 match initial_prompt {
                     Some(p) => format!(
                         "bash -c {}",
@@ -652,19 +667,28 @@ impl Agent {
                 let model_arg = nonempty(&providers.gemini.model)
                     .map(|model| format!(" --model {}", shell_quote(model)))
                     .unwrap_or_default();
+                let resume_arg = if opts.resume_conversation {
+                    " --resume latest"
+                } else {
+                    ""
+                };
                 match initial_prompt {
                     Some(p) => format!(
                         "bash -c {}",
                         shell_quote(&format!(
-                            "{}gemini{} --prompt-interactive {}; exec bash",
+                            "{}gemini{}{} --prompt-interactive {}; exec bash",
                             env_prefix,
                             model_arg,
+                            resume_arg,
                             shell_quote(p)
                         ))
                     ),
                     None => format!(
                         "bash -c {}",
-                        shell_quote(&format!("{}gemini{}; exec bash", env_prefix, model_arg))
+                        shell_quote(&format!(
+                            "{}gemini{}{}; exec bash",
+                            env_prefix, model_arg, resume_arg
+                        ))
                     ),
                 }
             }
@@ -715,19 +739,60 @@ impl Agent {
                     shell_quote(provider),
                     shell_quote(&model)
                 );
+                let resume_arg = if opts.resume_conversation {
+                    " --continue"
+                } else {
+                    ""
+                };
                 match initial_prompt {
                     Some(p) => format!(
                         "bash -c {}",
                         shell_quote(&format!(
-                            "{}pi {} -- {}; exec bash",
+                            "{}pi {}{} -- {}; exec bash",
                             env_prefix,
                             pi_args,
+                            resume_arg,
                             shell_quote(p)
                         ))
                     ),
                     None => format!(
                         "bash -c {}",
-                        shell_quote(&format!("{}pi {}; exec bash", env_prefix, pi_args))
+                        shell_quote(&format!(
+                            "{}pi {}{}; exec bash",
+                            env_prefix, pi_args, resume_arg
+                        ))
+                    ),
+                }
+            }
+            Agent::OpenRouter => {
+                let model = if providers.openrouter.model.is_empty() {
+                    ProvidersConfig::default_model("openrouter")
+                } else {
+                    providers.openrouter.model.as_str()
+                };
+                let resume_arg = if opts.resume_conversation {
+                    " --continue"
+                } else {
+                    ""
+                };
+                let args = format!(
+                    "--provider openrouter --model {}{}",
+                    shell_quote(model),
+                    resume_arg
+                );
+                match initial_prompt {
+                    Some(prompt) => format!(
+                        "bash -c {}",
+                        shell_quote(&format!(
+                            "{}pi {} -- {}; exec bash",
+                            env_prefix,
+                            args,
+                            shell_quote(prompt)
+                        ))
+                    ),
+                    None => format!(
+                        "bash -c {}",
+                        shell_quote(&format!("{}pi {}; exec bash", env_prefix, args))
                     ),
                 }
             }
@@ -754,22 +819,28 @@ impl Agent {
                 } else {
                     format!(" --model {}", shell_quote(&providers.hermes.model))
                 };
+                let resume_arg = if opts.resume_conversation {
+                    " --continue"
+                } else {
+                    ""
+                };
                 match initial_prompt {
                     Some(p) => format!(
                         "bash -c {}",
                         shell_quote(&format!(
-                            "{}hermes chat{}{} -q {}; exec bash",
+                            "{}hermes chat{}{}{} -q {}; exec bash",
                             env_prefix,
                             provider_arg,
                             hermes_args,
+                            resume_arg,
                             shell_quote(p)
                         ))
                     ),
                     None => format!(
                         "bash -c {}",
                         shell_quote(&format!(
-                            "{}hermes chat{}{}; exec bash",
-                            env_prefix, provider_arg, hermes_args
+                            "{}hermes chat{}{}{}; exec bash",
+                            env_prefix, provider_arg, hermes_args, resume_arg
                         ))
                     ),
                 }
@@ -794,23 +865,29 @@ impl Agent {
                     opts.permission_mode.as_deref(),
                     providers.glm.dangerously_skip_permissions,
                 )?;
+                let resume_arg = if opts.resume_conversation {
+                    " --continue"
+                } else {
+                    ""
+                };
                 match initial_prompt {
                     Some(p) => format!(
                         "bash -c {}",
                         shell_quote(&format!(
-                            "{} {}CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1 claude{}{} {}; exec bash",
+                            "{} {}CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1 claude{}{}{} {}; exec bash",
                             env_prefix,
                             trust_prefix,
                             perms,
                             model_arg,
+                            resume_arg,
                             shell_quote(p)
                         ))
                     ),
                     None => format!(
                         "bash -c {}",
                         shell_quote(&format!(
-                            "{} {}CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1 claude{}{}; exec bash",
-                            env_prefix, trust_prefix, perms, model_arg
+                            "{} {}CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1 claude{}{}{}; exec bash",
+                            env_prefix, trust_prefix, perms, model_arg, resume_arg
                         ))
                     ),
                 }
@@ -893,6 +970,11 @@ impl Agent {
                     .exists()
             }
             Agent::Pi => {
+                has_cmd("pi")
+                    || std::path::Path::new(&format!("{}/.local/bin/pi", home)).exists()
+                    || std::path::Path::new(&format!("{}/.npm-global/bin/pi", home)).exists()
+            }
+            Agent::OpenRouter => {
                 has_cmd("pi")
                     || std::path::Path::new(&format!("{}/.local/bin/pi", home)).exists()
                     || std::path::Path::new(&format!("{}/.npm-global/bin/pi", home)).exists()
@@ -1192,6 +1274,32 @@ mod tests {
         assert!(cmd.contains("agy --dangerously-skip-permissions"), "{cmd}");
         assert!(cmd.contains("--prompt-interactive"), "{cmd}");
         assert!(!cmd.contains(" -p "), "{cmd}");
+    }
+
+    #[test]
+    fn patrol_resume_is_mapped_for_every_conversational_adapter() {
+        let opts = LaunchOptions {
+            resume_conversation: true,
+            ..Default::default()
+        };
+        for (agent, expected) in [
+            (Agent::Claude, "--continue"),
+            (Agent::Codex, "resume --last"),
+            (Agent::Gemini, "--resume latest"),
+            (Agent::Antigravity, "--continue"),
+            (Agent::Pi, "--continue"),
+            (Agent::OpenRouter, "--continue"),
+            (Agent::Hermes, "--continue"),
+            (Agent::Glm, "--continue"),
+            (Agent::Kimi, "--continue"),
+        ] {
+            let command = launch(agent, None, opts.clone());
+            assert!(
+                command.contains(expected),
+                "{} resume mapping missing {expected}: {command}",
+                agent.name()
+            );
+        }
     }
 
     #[test]
