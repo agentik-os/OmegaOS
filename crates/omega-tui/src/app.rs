@@ -877,16 +877,9 @@ pub fn fields_for_section(
         }
         SettingsSection::Antigravity => {
             let c = &providers.antigravity;
-            out.push(model_field(
-                "antigravity",
-                "antigravity.model",
-                &c.model,
-            ));
-            let mut effort_options = vec![
-                "low".to_string(),
-                "medium".to_string(),
-                "high".to_string(),
-            ];
+            out.push(model_field("antigravity", "antigravity.model", &c.model));
+            let mut effort_options =
+                vec!["low".to_string(), "medium".to_string(), "high".to_string()];
             let effort_index = match effort_options.iter().position(|e| e == &c.effort) {
                 Some(index) => index,
                 None if c.effort.is_empty() => 1,
@@ -921,11 +914,7 @@ pub fn fields_for_section(
         }
         SettingsSection::OpenRouter => {
             let c = &providers.openrouter;
-            out.push(model_field(
-                "openrouter",
-                "openrouter.model",
-                &c.model,
-            ));
+            out.push(model_field("openrouter", "openrouter.model", &c.model));
             out.push(SettingsField::EditText {
                 label: "OpenRouter API key".to_string(),
                 config_key: "openrouter.api_key".to_string(),

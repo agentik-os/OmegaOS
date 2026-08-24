@@ -56,7 +56,11 @@ printf '%s\n' '{"type":"result","is_error":false,"stop_reason":"end_turn","resul
     let session_id = driver.await.unwrap();
 
     assert_eq!(session_id.as_deref(), Some("fake-session-1"));
-    assert_eq!(frames.len(), 2, "expected an AssistantMessage then a TurnDone");
+    assert_eq!(
+        frames.len(),
+        2,
+        "expected an AssistantMessage then a TurnDone"
+    );
     assert!(matches!(
         &frames[0],
         ChatStreamServerMsg::AssistantMessage { text } if text == "PONG"
@@ -130,7 +134,10 @@ async fn run_turn_kills_child_and_reports_timeout() {
                     break pid;
                 }
             }
-            assert!(std::time::Instant::now() < deadline, "fake agent never wrote its pidfile");
+            assert!(
+                std::time::Instant::now() < deadline,
+                "fake agent never wrote its pidfile"
+            );
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
     };
@@ -195,8 +202,9 @@ printf '%s\n' '{"type":"turn.completed","usage":{}}'
     let mut meta = test_meta(dir.path());
     meta.agent = ChatAgent::Codex;
     let (tx, mut rx) = tokio::sync::mpsc::channel(16);
-    let driver =
-        tokio::spawn(async move { chat_driver::run_turn(&meta, "hi", None, None, Duration::from_secs(5), tx).await });
+    let driver = tokio::spawn(async move {
+        chat_driver::run_turn(&meta, "hi", None, None, Duration::from_secs(5), tx).await
+    });
 
     let mut frames = Vec::new();
     while let Some(frame) = rx.recv().await {

@@ -83,7 +83,10 @@ async fn timeout_kills_the_nested_grandchild_not_just_the_direct_child() {
                 nested_pid = Some(p);
             }
         }
-        assert!(std::time::Instant::now() < deadline, "nested grandchild never started");
+        assert!(
+            std::time::Instant::now() < deadline,
+            "nested grandchild never started"
+        );
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
     let nested_pid = nested_pid.expect("nested grandchild never started");
@@ -96,7 +99,10 @@ async fn timeout_kills_the_nested_grandchild_not_just_the_direct_child() {
     let before = std::fs::read_to_string(&marker_file).unwrap_or_default();
     tokio::time::sleep(Duration::from_millis(150)).await;
     let grew = std::fs::read_to_string(&marker_file).unwrap_or_default();
-    assert!(grew.len() > before.len(), "nested grandchild marker was not growing before the timeout");
+    assert!(
+        grew.len() > before.len(),
+        "nested grandchild marker was not growing before the timeout"
+    );
 
     // Let run_turn finish (its own 300ms timeout fires well before the
     // outer script's 120s sleep).

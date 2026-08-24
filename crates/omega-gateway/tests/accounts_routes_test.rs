@@ -85,7 +85,10 @@ async fn create_list_and_default_flow() {
     std::env::set_var("OMEGA_CLAUDE_BIN", &bin);
 
     let (_, token) = DeviceStore::open(dir.path()).issue("t");
-    let app = build_router(AppState::new(dir.path().to_path_buf(), GatewayConfig::default()));
+    let app = build_router(AppState::new(
+        dir.path().to_path_buf(),
+        GatewayConfig::default(),
+    ));
     let base = spawn(app).await;
     let client = reqwest::Client::new();
 
@@ -100,7 +103,10 @@ async fn create_list_and_default_flow() {
     assert_eq!(create_res.status(), 201);
     let account: serde_json::Value = create_res.json().await.unwrap();
     assert_eq!(account["slug"], "work-1");
-    assert_eq!(account["is_default"], true, "first account of a kind is its default");
+    assert_eq!(
+        account["is_default"], true,
+        "first account of a kind is its default"
+    );
 
     // A second account of the same kind, so set_default has something to do.
     let create_res2 = client
@@ -113,8 +119,15 @@ async fn create_list_and_default_flow() {
     assert_eq!(create_res2.status(), 201);
 
     // GET /v1/accounts lists both with a merged live status (fake claude -> logged_out).
-    let list_res: serde_json::Value =
-        client.get(format!("{base}/v1/accounts")).bearer_auth(&token).send().await.unwrap().json().await.unwrap();
+    let list_res: serde_json::Value = client
+        .get(format!("{base}/v1/accounts"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
     let accounts = list_res["accounts"].as_array().unwrap();
     assert_eq!(accounts.len(), 2);
     let work1 = accounts.iter().find(|a| a["slug"] == "work-1").unwrap();
@@ -130,8 +143,15 @@ async fn create_list_and_default_flow() {
         .unwrap();
     assert_eq!(default_res.status(), 200);
 
-    let list_res2: serde_json::Value =
-        client.get(format!("{base}/v1/accounts")).bearer_auth(&token).send().await.unwrap().json().await.unwrap();
+    let list_res2: serde_json::Value = client
+        .get(format!("{base}/v1/accounts"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
     let accounts2 = list_res2["accounts"].as_array().unwrap();
     let work1_after = accounts2.iter().find(|a| a["slug"] == "work-1").unwrap();
     let work2_after = accounts2.iter().find(|a| a["slug"] == "work-2").unwrap();
@@ -139,13 +159,29 @@ async fn create_list_and_default_flow() {
     assert_eq!(work2_after["is_default"], true);
 
     // DELETE /v1/accounts/work-1 -> 204, and it's gone from the list.
-    let delete_res =
-        client.delete(format!("{base}/v1/accounts/work-1")).bearer_auth(&token).send().await.unwrap();
+    let delete_res = client
+        .delete(format!("{base}/v1/accounts/work-1"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
     assert_eq!(delete_res.status(), 204);
 
-    let list_res3: serde_json::Value =
-        client.get(format!("{base}/v1/accounts")).bearer_auth(&token).send().await.unwrap().json().await.unwrap();
-    let slugs: Vec<&str> = list_res3["accounts"].as_array().unwrap().iter().map(|a| a["slug"].as_str().unwrap()).collect();
+    let list_res3: serde_json::Value = client
+        .get(format!("{base}/v1/accounts"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let slugs: Vec<&str> = list_res3["accounts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|a| a["slug"].as_str().unwrap())
+        .collect();
     assert!(!slugs.contains(&"work-1"));
     assert!(slugs.contains(&"work-2"));
 
@@ -156,7 +192,10 @@ async fn create_list_and_default_flow() {
 async fn create_rejects_traversal_slug() {
     let dir = tempfile::tempdir().unwrap();
     let (_, token) = DeviceStore::open(dir.path()).issue("t");
-    let app = build_router(AppState::new(dir.path().to_path_buf(), GatewayConfig::default()));
+    let app = build_router(AppState::new(
+        dir.path().to_path_buf(),
+        GatewayConfig::default(),
+    ));
     let base = spawn(app).await;
 
     let res = reqwest::Client::new()
@@ -169,8 +208,15 @@ async fn create_rejects_traversal_slug() {
     assert_eq!(res.status(), 400);
 
     // Nothing was created on disk for the traversal attempt.
-    let list_res: serde_json::Value =
-        reqwest::Client::new().get(format!("{base}/v1/accounts")).bearer_auth(&token).send().await.unwrap().json().await.unwrap();
+    let list_res: serde_json::Value = reqwest::Client::new()
+        .get(format!("{base}/v1/accounts"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
     assert!(list_res["accounts"].as_array().unwrap().is_empty());
 }
 
@@ -178,16 +224,28 @@ async fn create_rejects_traversal_slug() {
 async fn slug_path_param_routes_reject_invalid_slug_before_fs() {
     let dir = tempfile::tempdir().unwrap();
     let (_, token) = DeviceStore::open(dir.path()).issue("t");
-    let app = build_router(AppState::new(dir.path().to_path_buf(), GatewayConfig::default()));
+    let app = build_router(AppState::new(
+        dir.path().to_path_buf(),
+        GatewayConfig::default(),
+    ));
     let base = spawn(app).await;
     let client = reqwest::Client::new();
 
     // "UP" fails valid_slug (uppercase) without touching the store/fs.
-    let delete_res = client.delete(format!("{base}/v1/accounts/UP")).bearer_auth(&token).send().await.unwrap();
+    let delete_res = client
+        .delete(format!("{base}/v1/accounts/UP"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
     assert_eq!(delete_res.status(), 400);
 
-    let default_res =
-        client.post(format!("{base}/v1/accounts/UP/default")).bearer_auth(&token).send().await.unwrap();
+    let default_res = client
+        .post(format!("{base}/v1/accounts/UP/default"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
     assert_eq!(default_res.status(), 400);
 
     let apikey_res = client
@@ -253,9 +311,11 @@ printf '%s\n' '{{"type":"result","is_error":false,"stop_reason":"end_turn","resu
     // Run a turn and check the fake chat bin saw CLAUDE_CONFIG_DIR = account A's slot dir.
     let url = ws_url(&base, &format!("/v1/chats/{chat_id}/stream"), &token);
     let (mut ws, _) = connect_async(url).await.unwrap();
-    ws.send(Message::Text(serde_json::json!({ "type": "user_message", "text": "hi" }).to_string()))
-        .await
-        .unwrap();
+    ws.send(Message::Text(
+        serde_json::json!({ "type": "user_message", "text": "hi" }).to_string(),
+    ))
+    .await
+    .unwrap();
     loop {
         let frame = recv_json(&mut ws).await;
         if frame["type"] == "turn_done" {
@@ -304,7 +364,10 @@ printf '%s\n' '{{"type":"result","is_error":false,"stop_reason":"end_turn","resu
         .await
         .unwrap();
     assert_eq!(create_res.status(), 201);
-    assert_eq!(create_res.json::<serde_json::Value>().await.unwrap()["is_default"], true);
+    assert_eq!(
+        create_res.json::<serde_json::Value>().await.unwrap()["is_default"],
+        true
+    );
     let expected_slot_dir = state.accounts.slot_dir("the-default");
 
     // Create a chat with NO account_slug.
@@ -322,9 +385,11 @@ printf '%s\n' '{{"type":"result","is_error":false,"stop_reason":"end_turn","resu
 
     let url = ws_url(&base, &format!("/v1/chats/{chat_id}/stream"), &token);
     let (mut ws, _) = connect_async(url).await.unwrap();
-    ws.send(Message::Text(serde_json::json!({ "type": "user_message", "text": "hi" }).to_string()))
-        .await
-        .unwrap();
+    ws.send(Message::Text(
+        serde_json::json!({ "type": "user_message", "text": "hi" }).to_string(),
+    ))
+    .await
+    .unwrap();
     loop {
         let frame = recv_json(&mut ws).await;
         if frame["type"] == "turn_done" {
@@ -345,7 +410,10 @@ async fn chat_create_rejects_traversal_account_slug() {
     let _home = HomeRestore::set(dir.path());
     let cwd = project_cwd(dir.path());
     let (_, token) = DeviceStore::open(dir.path()).issue("t");
-    let app = build_router(AppState::new(dir.path().to_path_buf(), GatewayConfig::default()));
+    let app = build_router(AppState::new(
+        dir.path().to_path_buf(),
+        GatewayConfig::default(),
+    ));
     let base = spawn(app).await;
 
     let res = reqwest::Client::new()
@@ -373,7 +441,9 @@ async fn chat_create_rejects_nonexistent_account_slug() {
     let res = reqwest::Client::new()
         .post(format!("{base}/v1/chats"))
         .bearer_auth(&token)
-        .json(&serde_json::json!({ "agent": "claude", "cwd": cwd, "account_slug": "does-not-exist" }))
+        .json(
+            &serde_json::json!({ "agent": "claude", "cwd": cwd, "account_slug": "does-not-exist" }),
+        )
         .send()
         .await
         .unwrap();
@@ -381,7 +451,10 @@ async fn chat_create_rejects_nonexistent_account_slug() {
     let body: serde_json::Value = res.json().await.unwrap();
     assert_eq!(body["error"], "account not found");
 
-    assert!(state.chats.list().is_empty(), "no chat should be persisted when the account pin is invalid");
+    assert!(
+        state.chats.list().is_empty(),
+        "no chat should be persisted when the account pin is invalid"
+    );
 }
 
 #[tokio::test]
@@ -420,7 +493,10 @@ async fn chat_create_rejects_account_kind_mismatch() {
     let body: serde_json::Value = res.json().await.unwrap();
     assert_eq!(body["error"], "account kind does not match agent");
 
-    assert!(state.chats.list().is_empty(), "no chat should be persisted on a kind mismatch");
+    assert!(
+        state.chats.list().is_empty(),
+        "no chat should be persisted on a kind mismatch"
+    );
 }
 
 #[tokio::test]
@@ -466,7 +542,10 @@ async fn apikey_route_pipes_key_to_fake_codex_without_leaking_it_in_response() {
     std::env::set_var("CAPTURE_FILE", &capture);
 
     let (_, token) = DeviceStore::open(dir.path()).issue("t");
-    let app = build_router(AppState::new(dir.path().to_path_buf(), GatewayConfig::default()));
+    let app = build_router(AppState::new(
+        dir.path().to_path_buf(),
+        GatewayConfig::default(),
+    ));
     let base = spawn(app).await;
     let client = reqwest::Client::new();
 
@@ -488,7 +567,10 @@ async fn apikey_route_pipes_key_to_fake_codex_without_leaking_it_in_response() {
         .unwrap();
     assert_eq!(apikey_res.status(), 200);
     let body = apikey_res.text().await.unwrap();
-    assert!(!body.contains("sk-super-secret-123"), "the api key must never appear in the response body");
+    assert!(
+        !body.contains("sk-super-secret-123"),
+        "the api key must never appear in the response body"
+    );
 
     let captured = std::fs::read_to_string(&capture).unwrap();
     assert_eq!(captured.trim(), "sk-super-secret-123");
@@ -502,7 +584,10 @@ async fn apikey_route_rejects_a_claude_account() {
     let _g = LOCK.lock().await;
     let dir = tempfile::tempdir().unwrap();
     let (_, token) = DeviceStore::open(dir.path()).issue("t");
-    let app = build_router(AppState::new(dir.path().to_path_buf(), GatewayConfig::default()));
+    let app = build_router(AppState::new(
+        dir.path().to_path_buf(),
+        GatewayConfig::default(),
+    ));
     let base = spawn(app).await;
     let client = reqwest::Client::new();
 
@@ -534,7 +619,10 @@ async fn login_ws_needs_box_when_no_url_emitted() {
     std::env::set_var("OMEGA_CLAUDE_BIN", &bin);
 
     let (_, token) = DeviceStore::open(dir.path()).issue("t");
-    let app = build_router(AppState::new(dir.path().to_path_buf(), GatewayConfig::default()));
+    let app = build_router(AppState::new(
+        dir.path().to_path_buf(),
+        GatewayConfig::default(),
+    ));
     let base = spawn(app).await;
     let client = reqwest::Client::new();
 
@@ -582,7 +670,10 @@ fi
     std::env::set_var("OMEGA_CLAUDE_BIN", &bin);
 
     let (_, token) = DeviceStore::open(dir.path()).issue("t");
-    let app = build_router(AppState::new(dir.path().to_path_buf(), GatewayConfig::default()));
+    let app = build_router(AppState::new(
+        dir.path().to_path_buf(),
+        GatewayConfig::default(),
+    ));
     let base = spawn(app).await;
     let client = reqwest::Client::new();
 
@@ -601,7 +692,11 @@ fi
 
     // The pidfile is written by the script BEFORE it emits the URL line we
     // just received, so it is guaranteed present by now.
-    let pid: i32 = std::fs::read_to_string(&pidfile).unwrap().trim().parse().unwrap();
+    let pid: i32 = std::fs::read_to_string(&pidfile)
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
     assert!(
         std::path::Path::new(&format!("/proc/{pid}")).exists(),
         "the fake login process should be alive right after login_url"
@@ -620,7 +715,10 @@ fi
         }
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     }
-    assert!(reaped, "the OAuth child (pid {pid}) must be reaped after the client disconnects");
+    assert!(
+        reaped,
+        "the OAuth child (pid {pid}) must be reaped after the client disconnects"
+    );
 
     std::env::remove_var("OMEGA_CLAUDE_BIN");
 }

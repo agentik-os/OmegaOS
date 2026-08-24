@@ -1707,11 +1707,11 @@ impl Dispatcher {
             .as_deref()
             .unwrap_or(self.config.agent_command.as_str());
         let agent = crate::agents::Agent::from_name(provider).ok_or_else(|| {
-                anyhow::anyhow!(
-                    "configured agent `{}` is unknown; refusing to resurrect on an implicit provider",
-                    provider
-                )
-            })?;
+            anyhow::anyhow!(
+                "configured agent `{}` is unknown; refusing to resurrect on an implicit provider",
+                provider
+            )
+        })?;
         let mut prompt = build_resume_prompt(&state, &self.config.state_dir);
         // THE FUNNEL — a resurrected oracle gets its Oracle-scoped doctrine too.
         // Narrowed to THIS mission (rules::agent_context_block_for_mission):
@@ -1797,12 +1797,7 @@ impl Dispatcher {
                 .await?;
         } else {
             self.session_mgr
-                .create_agent_session(
-                    oracle_name,
-                    &work_dir,
-                    agent.name(),
-                    Some(&prompt),
-                )
+                .create_agent_session(oracle_name, &work_dir, agent.name(), Some(&prompt))
                 .await?;
         }
         Ok(ResurrectOutcome::Resurrected)

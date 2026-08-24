@@ -216,6 +216,8 @@ mod tests {
             FailoverReason::BudgetExhausted.next_action(),
             NextAction::Stop
         );
-        assert!(FailoverReason::Auth.user_message().contains("re-authenticate"));
+        assert!(FailoverReason::Auth
+            .user_message()
+            .contains("re-authenticate"));
     }
 }

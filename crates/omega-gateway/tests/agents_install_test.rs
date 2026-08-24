@@ -49,7 +49,11 @@ fn install_fake_omega(dir: &std::path::Path, script_body: &str) {
 fn install_fake_omega_that_must_not_run(dir: &std::path::Path) {
     use std::os::unix::fs::PermissionsExt;
     let path = dir.join("omega");
-    std::fs::write(&path, "#!/usr/bin/env bash\necho 'SHOULD NEVER RUN' >&2\nexit 1\n").unwrap();
+    std::fs::write(
+        &path,
+        "#!/usr/bin/env bash\necho 'SHOULD NEVER RUN' >&2\nexit 1\n",
+    )
+    .unwrap();
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
     std::env::set_var("OMEGA_BIN", &path);
 }
@@ -62,7 +66,10 @@ async fn install_check_rejects_unknown_agent_name() {
     let dir = tempfile::tempdir().unwrap();
     install_fake_omega_that_must_not_run(dir.path());
     let (_, token) = DeviceStore::open(dir.path()).issue("t");
-    let app = build_router(AppState::new(dir.path().to_path_buf(), GatewayConfig::default()));
+    let app = build_router(AppState::new(
+        dir.path().to_path_buf(),
+        GatewayConfig::default(),
+    ));
     let base = spawn(app).await;
 
     let res = reqwest::Client::new()
@@ -82,7 +89,10 @@ async fn install_check_rejects_shell() {
     let dir = tempfile::tempdir().unwrap();
     install_fake_omega_that_must_not_run(dir.path());
     let (_, token) = DeviceStore::open(dir.path()).issue("t");
-    let app = build_router(AppState::new(dir.path().to_path_buf(), GatewayConfig::default()));
+    let app = build_router(AppState::new(
+        dir.path().to_path_buf(),
+        GatewayConfig::default(),
+    ));
     let base = spawn(app).await;
 
     let res = reqwest::Client::new()
@@ -94,7 +104,10 @@ async fn install_check_rejects_shell() {
     assert_eq!(res.status(), 400);
     let body: serde_json::Value = res.json().await.unwrap();
     let msg = body["error"].as_str().unwrap();
-    assert!(msg.to_lowercase().contains("shell"), "message should name shell: {msg}");
+    assert!(
+        msg.to_lowercase().contains("shell"),
+        "message should name shell: {msg}"
+    );
 
     std::env::remove_var("OMEGA_BIN");
 }
@@ -107,7 +120,10 @@ async fn install_check_accepts_a_real_installable_agent() {
     // pointed at the must-not-run script too, to prove it.
     install_fake_omega_that_must_not_run(dir.path());
     let (_, token) = DeviceStore::open(dir.path()).issue("t");
-    let app = build_router(AppState::new(dir.path().to_path_buf(), GatewayConfig::default()));
+    let app = build_router(AppState::new(
+        dir.path().to_path_buf(),
+        GatewayConfig::default(),
+    ));
     let base = spawn(app).await;
 
     let res = reqwest::Client::new()
@@ -133,7 +149,10 @@ async fn install_check_is_case_insensitive() {
     let dir = tempfile::tempdir().unwrap();
     install_fake_omega_that_must_not_run(dir.path());
     let (_, token) = DeviceStore::open(dir.path()).issue("t");
-    let app = build_router(AppState::new(dir.path().to_path_buf(), GatewayConfig::default()));
+    let app = build_router(AppState::new(
+        dir.path().to_path_buf(),
+        GatewayConfig::default(),
+    ));
     let base = spawn(app).await;
 
     let res = reqwest::Client::new()
@@ -152,7 +171,10 @@ async fn install_check_is_case_insensitive() {
 #[tokio::test]
 async fn install_check_requires_auth() {
     let dir = tempfile::tempdir().unwrap();
-    let app = build_router(AppState::new(dir.path().to_path_buf(), GatewayConfig::default()));
+    let app = build_router(AppState::new(
+        dir.path().to_path_buf(),
+        GatewayConfig::default(),
+    ));
     let base = spawn(app).await;
 
     let res = reqwest::Client::new()
@@ -171,7 +193,10 @@ async fn install_stream_rejects_unknown_agent_before_any_spawn() {
     let dir = tempfile::tempdir().unwrap();
     install_fake_omega_that_must_not_run(dir.path());
     let (_, token) = DeviceStore::open(dir.path()).issue("t");
-    let app = build_router(AppState::new(dir.path().to_path_buf(), GatewayConfig::default()));
+    let app = build_router(AppState::new(
+        dir.path().to_path_buf(),
+        GatewayConfig::default(),
+    ));
     let base = spawn(app).await;
 
     // A REAL WS handshake attempt (valid auth token, real Upgrade headers
@@ -195,7 +220,10 @@ async fn install_stream_rejects_a_non_installable_agent_before_any_spawn() {
     let dir = tempfile::tempdir().unwrap();
     install_fake_omega_that_must_not_run(dir.path());
     let (_, token) = DeviceStore::open(dir.path()).issue("t");
-    let app = build_router(AppState::new(dir.path().to_path_buf(), GatewayConfig::default()));
+    let app = build_router(AppState::new(
+        dir.path().to_path_buf(),
+        GatewayConfig::default(),
+    ));
     let base = spawn(app).await;
 
     let url = ws_url(&base, "/v1/agents/shell/install/stream", &token);
@@ -223,7 +251,10 @@ exit 1
 "#,
     );
     let (_, token) = DeviceStore::open(dir.path()).issue("t");
-    let app = build_router(AppState::new(dir.path().to_path_buf(), GatewayConfig::default()));
+    let app = build_router(AppState::new(
+        dir.path().to_path_buf(),
+        GatewayConfig::default(),
+    ));
     let base = spawn(app).await;
 
     let url = ws_url(&base, "/v1/agents/codex/install/stream", &token);
@@ -239,7 +270,11 @@ exit 1
         lines.push(v);
     };
 
-    assert_eq!(lines.len(), 4, "3 stdout + 1 stderr line expected, got {lines:?}");
+    assert_eq!(
+        lines.len(),
+        4,
+        "3 stdout + 1 stderr line expected, got {lines:?}"
+    );
     let texts: Vec<&str> = lines.iter().map(|l| l["text"].as_str().unwrap()).collect();
     assert!(texts.contains(&"line one"));
     assert!(texts.contains(&"line two"));
@@ -270,7 +305,10 @@ exit 7
 "#,
     );
     let (_, token) = DeviceStore::open(dir.path()).issue("t");
-    let app = build_router(AppState::new(dir.path().to_path_buf(), GatewayConfig::default()));
+    let app = build_router(AppState::new(
+        dir.path().to_path_buf(),
+        GatewayConfig::default(),
+    ));
     let base = spawn(app).await;
 
     let url = ws_url(&base, "/v1/agents/codex/install/stream", &token);
@@ -300,7 +338,10 @@ async fn install_stream_passes_agent_name_as_argv() {
         &format!("printf '%s\\n' \"$@\" > '{}'\nexit 0", capture.display()),
     );
     let (_, token) = DeviceStore::open(dir.path()).issue("t");
-    let app = build_router(AppState::new(dir.path().to_path_buf(), GatewayConfig::default()));
+    let app = build_router(AppState::new(
+        dir.path().to_path_buf(),
+        GatewayConfig::default(),
+    ));
     let base = spawn(app).await;
 
     let url = ws_url(&base, "/v1/agents/codex/install/stream", &token);

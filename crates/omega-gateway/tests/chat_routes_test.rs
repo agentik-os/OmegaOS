@@ -57,7 +57,10 @@ fn install_fake_agent(bin_dir: &std::path::Path, argv_file: &std::path::Path, sc
     let path = bin_dir.join("fake-agent");
     std::fs::write(
         &path,
-        format!("#!/usr/bin/env bash\necho \"$@\" >> {}\n{script_body}\n", argv_file.display()),
+        format!(
+            "#!/usr/bin/env bash\necho \"$@\" >> {}\n{script_body}\n",
+            argv_file.display()
+        ),
     )
     .unwrap();
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -97,7 +100,10 @@ printf '%s\n' '{"type":"result","is_error":false,"stop_reason":"end_turn","resul
     );
 
     let (_, token) = DeviceStore::open(dir.path()).issue("t");
-    let app = build_router(AppState::new(dir.path().to_path_buf(), GatewayConfig::default()));
+    let app = build_router(AppState::new(
+        dir.path().to_path_buf(),
+        GatewayConfig::default(),
+    ));
     let base = spawn(app).await;
     let client = reqwest::Client::new();
 
@@ -115,10 +121,21 @@ printf '%s\n' '{"type":"result","is_error":false,"stop_reason":"end_turn","resul
     assert_eq!(meta["agent"], "claude");
 
     // GET /v1/chats lists it
-    let list_res: serde_json::Value =
-        client.get(format!("{base}/v1/chats")).bearer_auth(&token).send().await.unwrap().json().await.unwrap();
-    let ids: Vec<&str> =
-        list_res["chats"].as_array().unwrap().iter().map(|c| c["id"].as_str().unwrap()).collect();
+    let list_res: serde_json::Value = client
+        .get(format!("{base}/v1/chats"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let ids: Vec<&str> = list_res["chats"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["id"].as_str().unwrap())
+        .collect();
     assert!(ids.contains(&chat_id.as_str()));
 
     // Open the chat WS and run the first turn.
@@ -142,12 +159,22 @@ printf '%s\n' '{"type":"result","is_error":false,"stop_reason":"end_turn","resul
             other => panic!("unexpected frame type: {other}"),
         }
     }
-    assert!(saw_assistant_text, "expected an assistant_message frame before turn_done");
+    assert!(
+        saw_assistant_text,
+        "expected an assistant_message frame before turn_done"
+    );
     assert_eq!(turn_done_count, 1, "exactly one turn_done per turn");
 
     // GET /v1/chats/{id} shows the persisted user + assistant messages.
-    let get_res: serde_json::Value =
-        client.get(format!("{base}/v1/chats/{chat_id}")).bearer_auth(&token).send().await.unwrap().json().await.unwrap();
+    let get_res: serde_json::Value = client
+        .get(format!("{base}/v1/chats/{chat_id}"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
     let messages = get_res["messages"].as_array().unwrap();
     assert_eq!(messages.len(), 2);
     assert_eq!(messages[0]["role"], "user");
@@ -170,9 +197,19 @@ printf '%s\n' '{"type":"result","is_error":false,"stop_reason":"end_turn","resul
 
     let argv_log = std::fs::read_to_string(&argv_file).unwrap();
     let lines: Vec<&str> = argv_log.lines().collect();
-    assert_eq!(lines.len(), 2, "fake agent should have been invoked exactly twice");
-    assert!(!lines[0].contains("--resume"), "the first turn must not pass --resume");
-    assert!(lines[1].contains("--resume sess-A"), "the second turn must resume the first turn's session");
+    assert_eq!(
+        lines.len(),
+        2,
+        "fake agent should have been invoked exactly twice"
+    );
+    assert!(
+        !lines[0].contains("--resume"),
+        "the first turn must not pass --resume"
+    );
+    assert!(
+        lines[1].contains("--resume sess-A"),
+        "the second turn must resume the first turn's session"
+    );
 
     std::env::remove_var("OMEGA_CHAT_BIN");
 }
@@ -203,7 +240,10 @@ printf '%s\n' '{"type":"result","is_error":false,"stop_reason":"end_turn","resul
     );
 
     let (_, token) = DeviceStore::open(dir.path()).issue("t");
-    let app = build_router(AppState::new(dir.path().to_path_buf(), GatewayConfig::default()));
+    let app = build_router(AppState::new(
+        dir.path().to_path_buf(),
+        GatewayConfig::default(),
+    ));
     let base = spawn(app).await;
     let client = reqwest::Client::new();
 
@@ -226,7 +266,9 @@ printf '%s\n' '{"type":"result","is_error":false,"stop_reason":"end_turn","resul
     loop {
         let frame = recv_json(&mut ws).await;
         match frame["type"].as_str().unwrap() {
-            "assistant_message" => assistant_texts.push(frame["text"].as_str().unwrap().to_string()),
+            "assistant_message" => {
+                assistant_texts.push(frame["text"].as_str().unwrap().to_string())
+            }
             "turn_done" => {
                 turn_done_count += 1;
                 break;
@@ -235,12 +277,27 @@ printf '%s\n' '{"type":"result","is_error":false,"stop_reason":"end_turn","resul
         }
     }
     assert_eq!(turn_done_count, 1, "client must see exactly one turn_done");
-    assert_eq!(assistant_texts, vec!["FIRST"], "text after the first turn_done must never be forwarded");
+    assert_eq!(
+        assistant_texts,
+        vec!["FIRST"],
+        "text after the first turn_done must never be forwarded"
+    );
 
-    let get_res: serde_json::Value =
-        client.get(format!("{base}/v1/chats/{chat_id}")).bearer_auth(&token).send().await.unwrap().json().await.unwrap();
+    let get_res: serde_json::Value = client
+        .get(format!("{base}/v1/chats/{chat_id}"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
     let messages = get_res["messages"].as_array().unwrap();
-    assert_eq!(messages.len(), 2, "exactly one user + one assistant message, no duplicate persist");
+    assert_eq!(
+        messages.len(),
+        2,
+        "exactly one user + one assistant message, no duplicate persist"
+    );
     assert_eq!(messages[1]["text"], "FIRST");
 
     std::env::remove_var("OMEGA_CHAT_BIN");
@@ -250,7 +307,10 @@ printf '%s\n' '{"type":"result","is_error":false,"stop_reason":"end_turn","resul
 async fn create_with_invalid_agent_is_rejected() {
     let dir = tempfile::tempdir().unwrap();
     let (_, token) = DeviceStore::open(dir.path()).issue("t");
-    let app = build_router(AppState::new(dir.path().to_path_buf(), GatewayConfig::default()));
+    let app = build_router(AppState::new(
+        dir.path().to_path_buf(),
+        GatewayConfig::default(),
+    ));
     let base = spawn(app).await;
 
     let res = reqwest::Client::new()
@@ -270,7 +330,10 @@ async fn create_with_invalid_agent_is_rejected() {
 async fn get_unknown_chat_is_404() {
     let dir = tempfile::tempdir().unwrap();
     let (_, token) = DeviceStore::open(dir.path()).issue("t");
-    let app = build_router(AppState::new(dir.path().to_path_buf(), GatewayConfig::default()));
+    let app = build_router(AppState::new(
+        dir.path().to_path_buf(),
+        GatewayConfig::default(),
+    ));
     let base = spawn(app).await;
 
     let res = reqwest::Client::new()
@@ -287,7 +350,9 @@ async fn busy_semaphore_reports_error_and_turn_done_without_persisting_assistant
     let dir = tempfile::tempdir().unwrap();
     let (_, token) = DeviceStore::open(dir.path()).issue("t");
     let state = AppState::new(dir.path().to_path_buf(), GatewayConfig::default());
-    let meta = state.chats.create(ChatAgent::Claude, "/tmp".to_string(), None, None);
+    let meta = state
+        .chats
+        .create(ChatAgent::Claude, "/tmp".to_string(), None, None);
     let chat_id = meta.id.clone();
 
     // Exhaust every permit and hold it for the whole test: no OMEGA_CHAT_BIN
@@ -297,7 +362,10 @@ async fn busy_semaphore_reports_error_and_turn_done_without_persisting_assistant
     while let Ok(p) = state.chat_permits.clone().try_acquire_owned() {
         held.push(p);
     }
-    assert!(!held.is_empty(), "the semaphore must have had at least one permit to exhaust");
+    assert!(
+        !held.is_empty(),
+        "the semaphore must have had at least one permit to exhaust"
+    );
 
     let app = build_router(state.clone());
     let base = spawn(app).await;
@@ -321,7 +389,11 @@ async fn busy_semaphore_reports_error_and_turn_done_without_persisting_assistant
     assert!(saw_busy_error);
 
     let transcript = state.chats.transcript(&chat_id);
-    assert_eq!(transcript.len(), 1, "only the user message should be persisted, no assistant turn ran");
+    assert_eq!(
+        transcript.len(),
+        1,
+        "only the user message should be persisted, no assistant turn ran"
+    );
     assert_eq!(transcript[0].role, "user");
 
     drop(held);

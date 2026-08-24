@@ -85,7 +85,10 @@ exit 1
 "#,
     );
     let (_, token) = DeviceStore::open(dir.path()).issue("t");
-    let app = build_router(AppState::new(dir.path().to_path_buf(), GatewayConfig::default()));
+    let app = build_router(AppState::new(
+        dir.path().to_path_buf(),
+        GatewayConfig::default(),
+    ));
     let base = spawn(app).await;
 
     let url = ws_url(&base, "/v1/agents/codex/install/stream", &token);
@@ -118,7 +121,10 @@ exit 1
     })
     .await;
 
-    assert!(drain.is_ok(), "dual-stream drain did not complete within 30s — deadlock");
+    assert!(
+        drain.is_ok(),
+        "dual-stream drain did not complete within 30s — deadlock"
+    );
     let exit_frame = exit_frame.expect("exit frame must have been received");
     assert_eq!(exit_frame["success"], true);
     assert_eq!(exit_frame["code"], 0);
@@ -128,8 +134,14 @@ exit 1
     stdout_lines.sort_unstable();
     stderr_lines.sort_unstable();
     let expected: Vec<i64> = (1..=3000).collect();
-    assert_eq!(stdout_lines, expected, "stdout sequence has a gap or a duplicate");
-    assert_eq!(stderr_lines, expected, "stderr sequence has a gap or a duplicate");
+    assert_eq!(
+        stdout_lines, expected,
+        "stdout sequence has a gap or a duplicate"
+    );
+    assert_eq!(
+        stderr_lines, expected,
+        "stderr sequence has a gap or a duplicate"
+    );
 
     std::env::remove_var("OMEGA_BIN");
 }
@@ -188,7 +200,10 @@ fi
         ),
     );
     let (_, token) = DeviceStore::open(dir.path()).issue("t");
-    let app = build_router(AppState::new(dir.path().to_path_buf(), GatewayConfig::default()));
+    let app = build_router(AppState::new(
+        dir.path().to_path_buf(),
+        GatewayConfig::default(),
+    ));
     let base = spawn(app).await;
 
     let url = ws_url(&base, "/v1/agents/codex/install/stream", &token);
@@ -203,7 +218,10 @@ fi
     ws.close(None).await.unwrap();
     drop(ws);
 
-    assert!(!marker.exists(), "marker must not exist yet — installer hasn't reached it");
+    assert!(
+        !marker.exists(),
+        "marker must not exist yet — installer hasn't reached it"
+    );
 
     // Give the server up to 8s — comfortably past the nested installer's 5s
     // silent sleep — to (a) notice the clean close via the socket-read
@@ -262,7 +280,10 @@ fi
     );
     std::env::set_var("OMEGA_STREAM_TIMEOUT_SECS", "1");
     let (_, token) = DeviceStore::open(dir.path()).issue("t");
-    let app = build_router(AppState::new(dir.path().to_path_buf(), GatewayConfig::default()));
+    let app = build_router(AppState::new(
+        dir.path().to_path_buf(),
+        GatewayConfig::default(),
+    ));
     let base = spawn(app).await;
 
     let url = ws_url(&base, "/v1/agents/codex/install/stream", &token);
@@ -367,7 +388,10 @@ fi
         ),
     );
     let (_, token) = DeviceStore::open(dir.path()).issue("t");
-    let app = build_router(AppState::new(dir.path().to_path_buf(), GatewayConfig::default()));
+    let app = build_router(AppState::new(
+        dir.path().to_path_buf(),
+        GatewayConfig::default(),
+    ));
     let base = spawn(app).await;
 
     let url = ws_url(&base, "/v1/agents/codex/install/stream", &token);
@@ -381,7 +405,10 @@ fi
     assert_eq!(v["text"], "starting");
     drop(ws); // client-side disconnect
 
-    assert!(!marker.exists(), "marker must not exist yet — installer hasn't reached it");
+    assert!(
+        !marker.exists(),
+        "marker must not exist yet — installer hasn't reached it"
+    );
 
     // Give the server up to 8s to (a) notice the disconnect on its next
     // send attempt (triggered by "installer progress 1" at ~1s) and (b)

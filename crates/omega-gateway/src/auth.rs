@@ -1,9 +1,9 @@
+use crate::fsperm::{harden_dir, harden_file};
+use crate::util::random_hex;
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
-use crate::fsperm::{harden_dir, harden_file};
-use crate::util::random_hex;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Device {
@@ -36,7 +36,10 @@ impl DeviceStore {
         let path = dir.join("devices.json");
         let devices = match std::fs::read_to_string(&path) {
             Ok(text) => serde_json::from_str(&text).unwrap_or_else(|e| {
-                tracing::warn!("corrupted {}: {e}; starting with empty device list", path.display());
+                tracing::warn!(
+                    "corrupted {}: {e}; starting with empty device list",
+                    path.display()
+                );
                 Vec::new()
             }),
             Err(_) => Vec::new(),
@@ -64,15 +67,23 @@ impl DeviceStore {
 
     pub fn verify(&self, token: &str) -> Option<Device> {
         let hash = sha256_hex(token);
-        self.devices.iter().find(|d| !d.revoked && d.token_sha256 == hash).cloned()
+        self.devices
+            .iter()
+            .find(|d| !d.revoked && d.token_sha256 == hash)
+            .cloned()
     }
 
     pub fn revoke(&mut self, device_id: &str) -> bool {
         let mut hit = false;
         for d in self.devices.iter_mut() {
-            if d.id == device_id { d.revoked = true; hit = true; }
+            if d.id == device_id {
+                d.revoked = true;
+                hit = true;
+            }
         }
-        if hit { self.save(); }
+        if hit {
+            self.save();
+        }
         hit
     }
 
@@ -115,8 +126,12 @@ impl PairingCode {
     /// same valid code, remove_file succeeds for exactly one of them.
     pub fn consume(dir: &Path, code: &str) -> bool {
         let path = dir.join("pairing.json");
-        let Ok(text) = std::fs::read_to_string(&path) else { return false };
-        let Ok(pc) = serde_json::from_str::<PairingCode>(&text) else { return false };
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            return false;
+        };
+        let Ok(pc) = serde_json::from_str::<PairingCode>(&text) else {
+            return false;
+        };
         let live = pc.code == code
             && chrono::DateTime::parse_from_rfc3339(&pc.expires_at)
                 .map(|t| t > chrono::Utc::now())

@@ -1705,12 +1705,9 @@ mod tests {
     fn every_provider_receives_byte_identical_doctrine() {
         for scope in [RuleScope::Master, RuleScope::Oracle, RuleScope::Worker] {
             for mission in [None, Some("ship the feature and verify production")] {
-                let reference = compile_rule_context_for_provider(
-                    scope,
-                    mission,
-                    ProviderFamily::Neutral,
-                )
-                .expect("neutral context must compile");
+                let reference =
+                    compile_rule_context_for_provider(scope, mission, ProviderFamily::Neutral)
+                        .expect("neutral context must compile");
 
                 for provider in [
                     ProviderFamily::Claude,
@@ -1724,7 +1721,10 @@ mod tests {
                         compiled.markdown, reference.markdown,
                         "{provider:?} received different doctrine than neutral at {scope:?}"
                     );
-                    assert_eq!(compiled.digest, reference.digest, "{provider:?} digest differs");
+                    assert_eq!(
+                        compiled.digest, reference.digest,
+                        "{provider:?} digest differs"
+                    );
                 }
             }
         }

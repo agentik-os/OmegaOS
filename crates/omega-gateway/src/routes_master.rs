@@ -69,8 +69,11 @@ const MAX_MASTER_CHAT_MESSAGE_LEN: usize = 8000;
 /// `crate::config::home_dir()` — see this module's doc comment for why the
 /// two resolutions must stay distinct.
 fn aisb_home_dir() -> PathBuf {
-    dirs::home_dir()
-        .unwrap_or_else(|| std::env::var("HOME").map(PathBuf::from).unwrap_or_else(|_| PathBuf::from(".")))
+    dirs::home_dir().unwrap_or_else(|| {
+        std::env::var("HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| PathBuf::from("."))
+    })
 }
 
 fn aisb_conversation_log_path() -> PathBuf {
@@ -87,13 +90,19 @@ fn aisb_inbox_path() -> PathBuf {
 /// instead of burning 90 real seconds; production (no env var set) matches
 /// the CLI exactly.
 fn poll_attempts() -> u32 {
-    std::env::var("OMEGA_AISB_POLL_ATTEMPTS").ok().and_then(|v| v.parse().ok()).unwrap_or(180)
+    std::env::var("OMEGA_AISB_POLL_ATTEMPTS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(180)
 }
 
 /// Poll interval — CLI default 500ms. Overridable via
 /// `OMEGA_AISB_POLL_INTERVAL_MS` for the same reason as [`poll_attempts`].
 fn poll_interval_ms() -> u64 {
-    std::env::var("OMEGA_AISB_POLL_INTERVAL_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(500)
+    std::env::var("OMEGA_AISB_POLL_INTERVAL_MS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(500)
 }
 
 /// Acquires ONE permit for the WHOLE connection lifetime BEFORE ever
@@ -126,7 +135,9 @@ async fn send_frame(socket: &mut WebSocket, frame: &MasterChatMsg) -> Result<(),
 /// documents for its own liveness probe.
 async fn master_is_live() -> bool {
     match tokio::task::spawn_blocking(crate::rmux::list_sessions).await {
-        Ok(Ok(names)) => names.iter().any(|n| n == omega_core::aisb::MASTER_SESSION_NAME),
+        Ok(Ok(names)) => names
+            .iter()
+            .any(|n| n == omega_core::aisb::MASTER_SESSION_NAME),
         _ => false,
     }
 }
@@ -143,7 +154,10 @@ fn append_to_inbox(inbox: &std::path::Path, text: &str) -> std::io::Result<()> {
         "text": text,
         "ts": chrono::Utc::now().to_rfc3339(),
     });
-    let mut f = std::fs::OpenOptions::new().create(true).append(true).open(inbox)?;
+    let mut f = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(inbox)?;
     writeln!(f, "{entry}")
 }
 
@@ -195,7 +209,9 @@ async fn run_round_trip(text: String) -> Option<String> {
     let log = aisb_conversation_log_path();
 
     let log_for_len = log.clone();
-    let before_len = tokio::task::spawn_blocking(move || log_len(&log_for_len)).await.unwrap_or(0);
+    let before_len = tokio::task::spawn_blocking(move || log_len(&log_for_len))
+        .await
+        .unwrap_or(0);
 
     let inbox_for_write = inbox.clone();
     let text_for_write = text.clone();
@@ -211,8 +227,10 @@ async fn run_round_trip(text: String) -> Option<String> {
     for _ in 0..attempts {
         tokio::time::sleep(interval).await;
         let log_for_read = log.clone();
-        let growth =
-            tokio::task::spawn_blocking(move || read_growth(&log_for_read, before_len)).await.ok().flatten();
+        let growth = tokio::task::spawn_blocking(move || read_growth(&log_for_read, before_len))
+            .await
+            .ok()
+            .flatten();
         if let Some(delta) = growth {
             return Some(delta);
         }
@@ -237,8 +255,8 @@ async fn master_chat_loop(mut socket: WebSocket, _permit: OwnedSemaphorePermit) 
         let text = match socket.recv().await {
             Some(Ok(Message::Text(text))) => text.to_string(),
             Some(Ok(Message::Close(_))) | None => return, // client closed or gone
-            Some(Ok(_)) => continue,                       // ping/pong/binary: not a line
-            Some(Err(_)) => return,                        // socket error: dead
+            Some(Ok(_)) => continue,                      // ping/pong/binary: not a line
+            Some(Err(_)) => return,                       // socket error: dead
         };
         if text.is_empty() {
             continue;
@@ -258,7 +276,10 @@ async fn master_chat_loop(mut socket: WebSocket, _permit: OwnedSemaphorePermit) 
         }
 
         if !master_is_live().await {
-            if send_frame(&mut socket, &MasterChatMsg::NotRunning).await.is_err() {
+            if send_frame(&mut socket, &MasterChatMsg::NotRunning)
+                .await
+                .is_err()
+            {
                 return;
             }
             continue; // don't touch the inbox; wait for more client messages

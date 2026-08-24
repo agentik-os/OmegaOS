@@ -32,7 +32,12 @@ pub struct DepositConfig {
 impl Default for DepositConfig {
     fn default() -> Self {
         Self {
-            boxes: vec!["Home".into(), "AltReality".into(), "Omega".into(), "Box".into()],
+            boxes: vec![
+                "Home".into(),
+                "AltReality".into(),
+                "Omega".into(),
+                "Box".into(),
+            ],
             fanout_secrets: false,
         }
     }
@@ -160,11 +165,18 @@ pub fn deposit(
     });
     {
         use std::io::Write;
-        let mut f = std::fs::OpenOptions::new().create(true).append(true).open(&index_path)?;
+        let mut f = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&index_path)?;
         writeln!(f, "{line}")?;
     }
 
-    Ok(DepositOutcome { file: filename, boxes: reached, held })
+    Ok(DepositOutcome {
+        file: filename,
+        boxes: reached,
+        held,
+    })
 }
 
 /// The exact secret-detection regex the real Telegram DEPOSIT bot uses
@@ -194,7 +206,13 @@ fn looks_secret(filename: &str) -> bool {
 fn sanitize_filename(name: &str) -> String {
     let sanitized: String = name
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-' { c } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect();
     if sanitized.is_empty() {
         "file".to_string()
@@ -259,7 +277,11 @@ fn write_unique_inbox_file(
         let uniq = random_hex(3);
         let filename = format!("{ts}_{uniq}_{truncated}");
         let path = inbox_dir.join(&filename);
-        match std::fs::OpenOptions::new().write(true).create_new(true).open(&path) {
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+        {
             Ok(mut f) => {
                 use std::io::Write;
                 f.write_all(bytes)?;
@@ -319,9 +341,19 @@ mod tests {
         let outcome = deposit(dir.path(), "notes.txt", b"hello", Some("omega"), false).unwrap();
 
         assert_eq!(outcome.boxes, vec!["Omega".to_string()]);
-        assert!(dir.path().join("deposit").join("Omega").join(&outcome.file).exists());
+        assert!(dir
+            .path()
+            .join("deposit")
+            .join("Omega")
+            .join(&outcome.file)
+            .exists());
         for b in ["Home", "AltReality", "Box"] {
-            assert!(!dir.path().join("deposit").join(b).join(&outcome.file).exists());
+            assert!(!dir
+                .path()
+                .join("deposit")
+                .join(b)
+                .join(&outcome.file)
+                .exists());
         }
     }
 
@@ -330,8 +362,14 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let err = deposit(dir.path(), "notes.txt", b"hello", Some("Nowhere"), false).unwrap_err();
         assert!(err.to_string().contains("Nowhere"));
-        assert!(!dir.path().join("inbox").exists(), "inbox must stay untouched on validation failure");
-        assert!(!dir.path().join("deposit").exists(), "no box dir may be created on validation failure");
+        assert!(
+            !dir.path().join("inbox").exists(),
+            "inbox must stay untouched on validation failure"
+        );
+        assert!(
+            !dir.path().join("deposit").exists(),
+            "no box dir may be created on validation failure"
+        );
     }
 
     #[test]
@@ -344,7 +382,8 @@ mod tests {
         assert!(dir.path().join("inbox").join(&outcome.file).exists());
         for b in ["Home", "AltReality", "Omega", "Box"] {
             let box_dir = dir.path().join("deposit").join(b);
-            let has_files = box_dir.exists() && std::fs::read_dir(&box_dir).unwrap().next().is_some();
+            let has_files =
+                box_dir.exists() && std::fs::read_dir(&box_dir).unwrap().next().is_some();
             assert!(!has_files, "{b} must not receive a held file");
         }
     }
@@ -357,7 +396,12 @@ mod tests {
         assert!(!outcome.held);
         assert_eq!(outcome.boxes.len(), 4);
         for b in ["Home", "AltReality", "Omega", "Box"] {
-            assert!(dir.path().join("deposit").join(b).join(&outcome.file).exists());
+            assert!(dir
+                .path()
+                .join("deposit")
+                .join(b)
+                .join(&outcome.file)
+                .exists());
         }
     }
 
@@ -417,13 +461,27 @@ mod tests {
         // see only "aaa...a" (100 a's) and `looks_secret`'s `\.pem$` anchor
         // would never match.
         let original_name = format!("{}.pem", "a".repeat(110));
-        let outcome = deposit(dir.path(), &original_name, b"-----BEGIN KEY-----", None, false).unwrap();
+        let outcome = deposit(
+            dir.path(),
+            &original_name,
+            b"-----BEGIN KEY-----",
+            None,
+            false,
+        )
+        .unwrap();
 
-        assert!(outcome.held, "a long filename ending in .pem must still be detected as secret");
-        assert!(outcome.boxes.is_empty(), "a held file must reach zero boxes");
+        assert!(
+            outcome.held,
+            "a long filename ending in .pem must still be detected as secret"
+        );
+        assert!(
+            outcome.boxes.is_empty(),
+            "a held file must reach zero boxes"
+        );
         for b in ["Home", "AltReality", "Omega", "Box"] {
             let box_dir = dir.path().join("deposit").join(b);
-            let has_files = box_dir.exists() && std::fs::read_dir(&box_dir).unwrap().next().is_some();
+            let has_files =
+                box_dir.exists() && std::fs::read_dir(&box_dir).unwrap().next().is_some();
             assert!(!has_files, "{b} must not have received the held file");
         }
     }
@@ -450,8 +508,14 @@ mod tests {
         let inbox_dir = dir.path().join("inbox");
         let bytes_a = std::fs::read(inbox_dir.join(&outcome_a.file)).unwrap();
         let bytes_b = std::fs::read(inbox_dir.join(&outcome_b.file)).unwrap();
-        assert_eq!(bytes_a, payload_a, "first deposit's inbox content must be exactly its own payload");
-        assert_eq!(bytes_b, payload_b, "second deposit's inbox content must be exactly its own payload");
+        assert_eq!(
+            bytes_a, payload_a,
+            "first deposit's inbox content must be exactly its own payload"
+        );
+        assert_eq!(
+            bytes_b, payload_b,
+            "second deposit's inbox content must be exactly its own payload"
+        );
 
         #[cfg(unix)]
         {
@@ -461,8 +525,18 @@ mod tests {
                 for b in ["Home", "AltReality", "Omega", "Box"] {
                     let box_path = dir.path().join("deposit").join(b).join(&outcome.file);
                     assert!(box_path.exists(), "{b} must have received {}", outcome.file);
-                    assert_eq!(ino(&box_path), inbox_ino, "{b} copy of {} is not a hard link", outcome.file);
-                    assert_eq!(std::fs::read(&box_path).unwrap(), *payload, "{b} copy of {} has wrong content", outcome.file);
+                    assert_eq!(
+                        ino(&box_path),
+                        inbox_ino,
+                        "{b} copy of {} is not a hard link",
+                        outcome.file
+                    );
+                    assert_eq!(
+                        std::fs::read(&box_path).unwrap(),
+                        *payload,
+                        "{b} copy of {} has wrong content",
+                        outcome.file
+                    );
                 }
             }
         }
@@ -470,7 +544,17 @@ mod tests {
 
     #[test]
     fn looks_secret_matches_the_telegram_bot_regex() {
-        for name in ["id_rsa", "id_ed25519", "service.pem", ".env", "my.key", "app.p12", "a_secret_note.txt", "TOKEN.txt", "private-key.bin"] {
+        for name in [
+            "id_rsa",
+            "id_ed25519",
+            "service.pem",
+            ".env",
+            "my.key",
+            "app.p12",
+            "a_secret_note.txt",
+            "TOKEN.txt",
+            "private-key.bin",
+        ] {
             assert!(looks_secret(name), "{name} should look secret");
         }
         for name in ["notes.txt", "photo.jpg", "report.pdf"] {

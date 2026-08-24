@@ -11,10 +11,17 @@ async fn spawn(app: axum::Router) -> String {
 #[tokio::test]
 async fn health_returns_ok_and_version() {
     let dir = tempfile::tempdir().unwrap();
-    let app = build_router(AppState::new(dir.path().to_path_buf(), GatewayConfig::default()));
+    let app = build_router(AppState::new(
+        dir.path().to_path_buf(),
+        GatewayConfig::default(),
+    ));
     let base = spawn(app).await;
     let body: serde_json::Value = reqwest::get(format!("{base}/v1/health"))
-        .await.unwrap().json().await.unwrap();
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
     assert_eq!(body["ok"], true);
     assert_eq!(body["version"], env!("CARGO_PKG_VERSION"));
 }

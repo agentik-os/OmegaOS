@@ -102,7 +102,10 @@ async fn second_ws_turn_on_same_chat_is_rejected_while_first_is_active() {
     // second connection against it.
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     while !started_file.exists() {
-        assert!(std::time::Instant::now() < deadline, "first turn's agent never started");
+        assert!(
+            std::time::Instant::now() < deadline,
+            "first turn's agent never started"
+        );
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
 
@@ -116,7 +119,10 @@ async fn second_ws_turn_on_same_chat_is_rejected_while_first_is_active() {
         match frame["type"].as_str().unwrap() {
             "error" => {
                 assert!(
-                    frame["message"].as_str().unwrap().contains("already active"),
+                    frame["message"]
+                        .as_str()
+                        .unwrap()
+                        .contains("already active"),
                     "unexpected error message on ws2: {frame}"
                 );
                 saw_busy_error = true;
@@ -125,7 +131,10 @@ async fn second_ws_turn_on_same_chat_is_rejected_while_first_is_active() {
             other => panic!("unexpected frame type on ws2: {other}"),
         }
     }
-    assert!(saw_busy_error, "a second concurrent turn on the same chat must be rejected");
+    assert!(
+        saw_busy_error,
+        "a second concurrent turn on the same chat must be rejected"
+    );
 
     // The rejected attempt must never have spawned a real turn: no
     // "assistant" role message can exist yet (the only agent process that
@@ -160,7 +169,10 @@ async fn second_ws_turn_on_same_chat_is_rejected_while_first_is_active() {
             _ => {}
         }
     }
-    assert!(!saw_error_on_third, "the per-chat guard must release once the prior turn has ended");
+    assert!(
+        !saw_error_on_third,
+        "the per-chat guard must release once the prior turn has ended"
+    );
 
     std::env::remove_var("OMEGA_CHAT_BIN");
 }

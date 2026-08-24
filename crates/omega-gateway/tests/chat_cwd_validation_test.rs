@@ -50,7 +50,10 @@ async fn create_with_cwd_outside_home_is_rejected_with_400() {
     let _home = HomeRestore::set(fake_home.path());
 
     let (_, token) = DeviceStore::open(gateway_dir.path()).issue("t");
-    let app = build_router(AppState::new(gateway_dir.path().to_path_buf(), GatewayConfig::default()));
+    let app = build_router(AppState::new(
+        gateway_dir.path().to_path_buf(),
+        GatewayConfig::default(),
+    ));
     let base = spawn(app).await;
 
     // /etc is a real, existing absolute path outside the fake home — the
@@ -62,7 +65,11 @@ async fn create_with_cwd_outside_home_is_rejected_with_400() {
         .send()
         .await
         .unwrap();
-    assert_eq!(res.status(), 400, "cwd outside home must be rejected before the chat is ever created");
+    assert_eq!(
+        res.status(),
+        400,
+        "cwd outside home must be rejected before the chat is ever created"
+    );
     let body: serde_json::Value = res.json().await.unwrap();
     assert!(
         body["error"].as_str().unwrap().contains("home"),
@@ -71,7 +78,10 @@ async fn create_with_cwd_outside_home_is_rejected_with_400() {
 
     // Confirm no chat was actually persisted for the rejected request.
     let state = AppState::new(gateway_dir.path().to_path_buf(), GatewayConfig::default());
-    assert!(state.chats.list().is_empty(), "a rejected create must not persist any chat");
+    assert!(
+        state.chats.list().is_empty(),
+        "a rejected create must not persist any chat"
+    );
 }
 
 #[tokio::test]
@@ -82,7 +92,10 @@ async fn create_with_cwd_containing_dotdot_is_rejected_with_400() {
     let _home = HomeRestore::set(fake_home.path());
 
     let (_, token) = DeviceStore::open(gateway_dir.path()).issue("t");
-    let app = build_router(AppState::new(gateway_dir.path().to_path_buf(), GatewayConfig::default()));
+    let app = build_router(AppState::new(
+        gateway_dir.path().to_path_buf(),
+        GatewayConfig::default(),
+    ));
     let base = spawn(app).await;
 
     let escaping = format!("{}/../../../etc", fake_home.path().display());
@@ -106,7 +119,10 @@ async fn create_with_cwd_under_home_succeeds_and_stores_the_validated_path() {
     let _home = HomeRestore::set(fake_home.path());
 
     let (_, token) = DeviceStore::open(gateway_dir.path()).issue("t");
-    let app = build_router(AppState::new(gateway_dir.path().to_path_buf(), GatewayConfig::default()));
+    let app = build_router(AppState::new(
+        gateway_dir.path().to_path_buf(),
+        GatewayConfig::default(),
+    ));
     let base = spawn(app).await;
 
     let cwd_str = proj.display().to_string();
@@ -117,7 +133,14 @@ async fn create_with_cwd_under_home_succeeds_and_stores_the_validated_path() {
         .send()
         .await
         .unwrap();
-    assert_eq!(res.status(), 201, "a real subdirectory of $HOME must be accepted");
+    assert_eq!(
+        res.status(),
+        201,
+        "a real subdirectory of $HOME must be accepted"
+    );
     let meta: serde_json::Value = res.json().await.unwrap();
-    assert_eq!(meta["cwd"], cwd_str, "the stored cwd must be dir_under_home's validated (original) path");
+    assert_eq!(
+        meta["cwd"], cwd_str,
+        "the stored cwd must be dir_under_home's validated (original) path"
+    );
 }

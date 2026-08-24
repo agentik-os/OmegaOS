@@ -157,14 +157,20 @@ pub enum AccountLoginServerMsg {
 #[derive(Serialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ChatStreamServerMsg {
-    Delta { text: String },
-    AssistantMessage { text: String },
+    Delta {
+        text: String,
+    },
+    AssistantMessage {
+        text: String,
+    },
     ToolEvent {
         name: String,
         detail: Option<String>,
     },
     TurnDone,
-    Error { message: String },
+    Error {
+        message: String,
+    },
 }
 
 #[derive(Deserialize, JsonSchema)]

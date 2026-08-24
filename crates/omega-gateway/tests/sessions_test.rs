@@ -29,17 +29,33 @@ fn install_fake_rmux(dir: &std::path::Path, script_body: &str) {
 async fn lists_sessions_from_rmux() {
     let _g = LOCK.lock().await;
     let dir = tempfile::tempdir().unwrap();
-    install_fake_rmux(dir.path(), r#"
+    install_fake_rmux(
+        dir.path(),
+        r#"
 if [ "$1" = "ls" ]; then printf 'oracle-Verba-1\nworker-a\n'; exit 0; fi
-exit 1"#);
+exit 1"#,
+    );
     let (_, token) = DeviceStore::open(dir.path()).issue("t");
-    let app = build_router(AppState::new(dir.path().to_path_buf(), GatewayConfig::default()));
+    let app = build_router(AppState::new(
+        dir.path().to_path_buf(),
+        GatewayConfig::default(),
+    ));
     let base = spawn(app).await;
     let body: serde_json::Value = reqwest::Client::new()
-        .get(format!("{base}/v1/sessions")).bearer_auth(&token)
-        .send().await.unwrap().json().await.unwrap();
-    let names: Vec<&str> = body["sessions"].as_array().unwrap()
-        .iter().map(|s| s["name"].as_str().unwrap()).collect();
+        .get(format!("{base}/v1/sessions"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let names: Vec<&str> = body["sessions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["name"].as_str().unwrap())
+        .collect();
     assert_eq!(names, vec!["oracle-Verba-1", "worker-a"]);
 }
 
@@ -49,12 +65,22 @@ async fn rmux_failure_yields_empty_list_with_error_not_500() {
     let dir = tempfile::tempdir().unwrap();
     install_fake_rmux(dir.path(), "echo 'no server running' >&2; exit 1");
     let (_, token) = DeviceStore::open(dir.path()).issue("t");
-    let app = build_router(AppState::new(dir.path().to_path_buf(), GatewayConfig::default()));
+    let app = build_router(AppState::new(
+        dir.path().to_path_buf(),
+        GatewayConfig::default(),
+    ));
     let base = spawn(app).await;
     let res = reqwest::Client::new()
-        .get(format!("{base}/v1/sessions")).bearer_auth(&token).send().await.unwrap();
+        .get(format!("{base}/v1/sessions"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
     assert_eq!(res.status(), 200);
     let body: serde_json::Value = res.json().await.unwrap();
     assert_eq!(body["sessions"].as_array().unwrap().len(), 0);
-    assert!(body["error"].as_str().unwrap().contains("no server running"));
+    assert!(body["error"]
+        .as_str()
+        .unwrap()
+        .contains("no server running"));
 }

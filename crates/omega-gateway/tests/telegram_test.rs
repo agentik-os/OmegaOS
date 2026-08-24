@@ -25,7 +25,10 @@ async fn spawn(app: axum::Router) -> String {
 
 async fn app_and_token(gateway_dir: &std::path::Path) -> (axum::Router, String) {
     let (_, token) = DeviceStore::open(gateway_dir).issue("t");
-    let app = build_router(AppState::new(gateway_dir.to_path_buf(), GatewayConfig::default()));
+    let app = build_router(AppState::new(
+        gateway_dir.to_path_buf(),
+        GatewayConfig::default(),
+    ));
     (app, token)
 }
 
@@ -51,9 +54,17 @@ async fn status_reports_unconfigured_when_no_toml_exists() {
     let (app, token) = app_and_token(gateway_dir.path()).await;
     let base = spawn(app).await;
 
-    let res =
-        reqwest::Client::new().get(format!("{base}/v1/telegram/status")).bearer_auth(&token).send().await.unwrap();
-    assert_eq!(res.status(), 200, "unconfigured is a normal response, never an error");
+    let res = reqwest::Client::new()
+        .get(format!("{base}/v1/telegram/status"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        res.status(),
+        200,
+        "unconfigured is a normal response, never an error"
+    );
     let body: serde_json::Value = res.json().await.unwrap();
     assert_eq!(body["configured"], false);
     assert!(body["enabled"].is_null());
@@ -71,11 +82,18 @@ async fn status_redacts_the_bot_token() {
     let (app, token) = app_and_token(gateway_dir.path()).await;
     let base = spawn(app).await;
 
-    let res =
-        reqwest::Client::new().get(format!("{base}/v1/telegram/status")).bearer_auth(&token).send().await.unwrap();
+    let res = reqwest::Client::new()
+        .get(format!("{base}/v1/telegram/status"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
     assert_eq!(res.status(), 200);
     let body_text = res.text().await.unwrap();
-    assert!(!body_text.contains("FAKE-super-secret-token"), "the bot token must never round-trip");
+    assert!(
+        !body_text.contains("FAKE-super-secret-token"),
+        "the bot token must never round-trip"
+    );
     let body: serde_json::Value = serde_json::from_str(&body_text).unwrap();
     assert_eq!(body["configured"], true);
     assert_eq!(body["enabled"], true);
@@ -158,7 +176,10 @@ async fn enable_on_an_unconfigured_bridge_is_404_not_a_fabricated_config() {
         .await
         .unwrap();
     assert_eq!(res.status(), 404);
-    assert!(!home.path().join(".omega/telegram.toml").exists(), "never fabricates a config on enable");
+    assert!(
+        !home.path().join(".omega/telegram.toml").exists(),
+        "never fabricates a config on enable"
+    );
 
     clear_env();
 }
@@ -189,10 +210,17 @@ async fn status_requires_auth() {
     let gateway_dir = tempfile::tempdir().unwrap();
     let home = tempfile::tempdir().unwrap();
     std::env::set_var("HOME", home.path());
-    let app = build_router(AppState::new(gateway_dir.path().to_path_buf(), GatewayConfig::default()));
+    let app = build_router(AppState::new(
+        gateway_dir.path().to_path_buf(),
+        GatewayConfig::default(),
+    ));
     let base = spawn(app).await;
 
-    let res = reqwest::Client::new().get(format!("{base}/v1/telegram/status")).send().await.unwrap();
+    let res = reqwest::Client::new()
+        .get(format!("{base}/v1/telegram/status"))
+        .send()
+        .await
+        .unwrap();
     assert_eq!(res.status(), 401);
 
     clear_env();
@@ -205,12 +233,23 @@ async fn enable_and_disable_require_auth() {
     let home = tempfile::tempdir().unwrap();
     std::env::set_var("HOME", home.path());
     write_fake_telegram_toml(home.path(), false);
-    let app = build_router(AppState::new(gateway_dir.path().to_path_buf(), GatewayConfig::default()));
+    let app = build_router(AppState::new(
+        gateway_dir.path().to_path_buf(),
+        GatewayConfig::default(),
+    ));
     let base = spawn(app).await;
 
-    let res_en = reqwest::Client::new().post(format!("{base}/v1/telegram/enable")).send().await.unwrap();
+    let res_en = reqwest::Client::new()
+        .post(format!("{base}/v1/telegram/enable"))
+        .send()
+        .await
+        .unwrap();
     assert_eq!(res_en.status(), 401);
-    let res_dis = reqwest::Client::new().post(format!("{base}/v1/telegram/disable")).send().await.unwrap();
+    let res_dis = reqwest::Client::new()
+        .post(format!("{base}/v1/telegram/disable"))
+        .send()
+        .await
+        .unwrap();
     assert_eq!(res_dis.status(), 401);
 
     // Neither unauthenticated call touched the config.

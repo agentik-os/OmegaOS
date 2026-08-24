@@ -963,11 +963,8 @@ impl Agent {
             Agent::Antigravity => {
                 has_cmd("agy")
                     || std::path::Path::new(&format!("{}/.local/bin/agy", home)).exists()
-                    || std::path::Path::new(&format!(
-                        "{}/.gemini/antigravity-cli/bin/agy",
-                        home
-                    ))
-                    .exists()
+                    || std::path::Path::new(&format!("{}/.gemini/antigravity-cli/bin/agy", home))
+                        .exists()
             }
             Agent::Pi => {
                 has_cmd("pi")
@@ -1260,7 +1257,11 @@ mod tests {
 
     #[test]
     fn gemini_prompt_stays_in_an_interactive_session() {
-        let cmd = launch(Agent::Gemini, Some("inspect the repository"), LaunchOptions::default());
+        let cmd = launch(
+            Agent::Gemini,
+            Some("inspect the repository"),
+            LaunchOptions::default(),
+        );
         assert!(cmd.contains("--prompt-interactive"), "{cmd}");
     }
 

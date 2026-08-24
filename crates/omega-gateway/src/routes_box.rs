@@ -11,8 +11,7 @@
 
 use crate::fsperm::{harden_dir, harden_file};
 use crate::protocol::{
-    BackupResponse, BoxIdResponse, BoxInfoResponse, DoctorCheckEntry, DoctorResponse,
-    UsageResponse,
+    BackupResponse, BoxIdResponse, BoxInfoResponse, DoctorCheckEntry, DoctorResponse, UsageResponse,
 };
 use crate::server::AppState;
 use axum::extract::State;
@@ -21,11 +20,17 @@ use axum::Json;
 use std::path::{Path, PathBuf};
 
 fn internal_err(msg: String) -> (StatusCode, Json<serde_json::Value>) {
-    (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "error": msg })))
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        Json(serde_json::json!({ "error": msg })),
+    )
 }
 
 fn bad_gateway(msg: String) -> (StatusCode, Json<serde_json::Value>) {
-    (StatusCode::BAD_GATEWAY, Json(serde_json::json!({ "error": msg })))
+    (
+        StatusCode::BAD_GATEWAY,
+        Json(serde_json::json!({ "error": msg })),
+    )
 }
 
 // ── GET /v1/doctor ───────────────────────────────────────────────────────
@@ -65,7 +70,9 @@ fn parse_doctor_output(stdout: &str) -> Option<DoctorResponse> {
         // this stays defensive) fails this test at the THIRD char (a space,
         // not '['), and the zero-indent trailing summary line fails it
         // immediately. Both are correctly skipped.
-        let Some(after_two_spaces) = line.strip_prefix("  ") else { continue };
+        let Some(after_two_spaces) = line.strip_prefix("  ") else {
+            continue;
+        };
         if after_two_spaces.len() < 3 || !after_two_spaces.starts_with('[') {
             continue;
         }
@@ -77,7 +84,9 @@ fn parse_doctor_output(stdout: &str) -> Option<DoctorResponse> {
         // index 3 is not a char boundary") -- `.get` returns `None` on a
         // non-boundary range instead, so the line is just skipped like any
         // other unrecognized glyph.
-        let Some(glyph) = after_two_spaces.get(0..3) else { continue };
+        let Some(glyph) = after_two_spaces.get(0..3) else {
+            continue;
+        };
         let health = match glyph {
             "[+]" => "ok",
             "[!]" => "warn",
@@ -85,7 +94,10 @@ fn parse_doctor_output(stdout: &str) -> Option<DoctorResponse> {
             _ => continue,
         };
         let text = after_two_spaces[3..].trim().to_string();
-        checks.push(DoctorCheckEntry { health: health.to_string(), text });
+        checks.push(DoctorCheckEntry {
+            health: health.to_string(),
+            text,
+        });
     }
 
     let overall = if checks.iter().any(|c| c.health == "fail") {
@@ -96,7 +108,10 @@ fn parse_doctor_output(stdout: &str) -> Option<DoctorResponse> {
         "ok"
     };
 
-    Some(DoctorResponse { overall: overall.to_string(), checks })
+    Some(DoctorResponse {
+        overall: overall.to_string(),
+        checks,
+    })
 }
 
 /// `GET /v1/doctor` — runs BARE `omega doctor` (never `--fix`, which
@@ -209,7 +224,9 @@ fn box_id_path(dir: &Path) -> PathBuf {
 /// regenerated -- an endpoint response must never echo back malformed
 /// content just because *something* was on disk.
 fn is_valid_box_id(s: &str) -> bool {
-    s.len() == 32 && s.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    s.len() == 32
+        && s.bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
 /// REVIEW-FIX: the first pass raced on TWO different axes -- concurrent
@@ -247,7 +264,9 @@ pub fn read_or_create_box_id(dir: &Path) -> std::io::Result<String> {
     harden_dir(dir);
     let path = box_id_path(dir);
 
-    let _guard = BOX_ID_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _guard = BOX_ID_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
 
     if let Ok(existing) = std::fs::read_to_string(&path) {
         let trimmed = existing.trim();
@@ -268,7 +287,9 @@ pub fn read_or_create_box_id(dir: &Path) -> std::io::Result<String> {
 /// and persisting it on first call if absent (anywhere-access plan §5.2).
 /// Device-token-guarded like every other route below (registered above
 /// `require_device`'s `route_layer` in `server.rs`).
-pub async fn box_id(State(state): State<AppState>) -> Result<Json<BoxIdResponse>, (StatusCode, Json<serde_json::Value>)> {
+pub async fn box_id(
+    State(state): State<AppState>,
+) -> Result<Json<BoxIdResponse>, (StatusCode, Json<serde_json::Value>)> {
     let dir = state.dir.clone();
     let id = tokio::task::spawn_blocking(move || read_or_create_box_id(&dir))
         .await
@@ -316,7 +337,10 @@ fn parse_backup_output(stdout: &str, fallback_path: &str) -> BackupResponse {
             size = Some(rest.trim().to_string());
         }
     }
-    BackupResponse { path: path.unwrap_or_else(|| fallback_path.to_string()), size }
+    BackupResponse {
+        path: path.unwrap_or_else(|| fallback_path.to_string()),
+        size,
+    }
 }
 
 /// `POST /v1/backup` — runs `omega backup --out <server-chosen-path>`. The
@@ -337,15 +361,17 @@ pub async fn backup() -> Result<Json<BackupResponse>, (StatusCode, Json<serde_js
     let path_str = path.to_string_lossy().to_string();
     let fallback = path_str.clone();
 
-    let output = tokio::task::spawn_blocking(move || {
-        crate::omega_cli::run(&["backup", "--out", &path_str])
-    })
-    .await
-    .map_err(|e| internal_err(format!("backup task panicked: {e}")))?
-    .map_err(|e| bad_gateway(format!("failed to run omega backup: {e}")))?;
+    let output =
+        tokio::task::spawn_blocking(move || crate::omega_cli::run(&["backup", "--out", &path_str]))
+            .await
+            .map_err(|e| internal_err(format!("backup task panicked: {e}")))?
+            .map_err(|e| bad_gateway(format!("failed to run omega backup: {e}")))?;
 
     if !output.success {
-        return Err(bad_gateway(format!("omega backup exited non-zero: {}", output.stderr)));
+        return Err(bad_gateway(format!(
+            "omega backup exited non-zero: {}",
+            output.stderr
+        )));
     }
 
     Ok(Json(parse_backup_output(&output.stdout, &fallback)))
@@ -395,8 +421,13 @@ mod tests {
     /// unrecognized glyph, never crash the request.
     #[test]
     fn parse_doctor_output_skips_multibyte_glyph_without_panicking() {
-        let resp = parse_doctor_output("OmegaOS doctor\n\n  [\u{20ac}] weird glyph\n\n[+] ok\n").unwrap();
-        assert_eq!(resp.checks.len(), 0, "the multibyte-glyph line is unrecognized and skipped");
+        let resp =
+            parse_doctor_output("OmegaOS doctor\n\n  [\u{20ac}] weird glyph\n\n[+] ok\n").unwrap();
+        assert_eq!(
+            resp.checks.len(),
+            0,
+            "the multibyte-glyph line is unrecognized and skipped"
+        );
         assert_eq!(resp.overall, "ok");
     }
 }

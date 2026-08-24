@@ -22,7 +22,10 @@ async fn spawn(app: axum::Router) -> String {
 
 async fn app_and_token(gateway_dir: &std::path::Path) -> (axum::Router, String) {
     let (_, token) = DeviceStore::open(gateway_dir).issue("t");
-    let app = build_router(AppState::new(gateway_dir.to_path_buf(), GatewayConfig::default()));
+    let app = build_router(AppState::new(
+        gateway_dir.to_path_buf(),
+        GatewayConfig::default(),
+    ));
     (app, token)
 }
 
@@ -71,7 +74,10 @@ async fn happy_path_close_of_a_plain_session() {
 
     // Real cmd_kill success-path shape: only the final "Killed session: ..."
     // line, no cascaded-worker lines, exit 0.
-    install_fake_omega(bin_dir.path(), "printf 'Killed session: worker-Foo-1\\n'; exit 0");
+    install_fake_omega(
+        bin_dir.path(),
+        "printf 'Killed session: worker-Foo-1\\n'; exit 0",
+    );
 
     let (app, token) = app_and_token(gateway_dir.path()).await;
     let base = spawn(app).await;
@@ -159,13 +165,23 @@ async fn refused_kill_returns_200_with_killed_false_and_a_sanitized_message() {
         .send()
         .await
         .unwrap();
-    assert_eq!(res.status(), 200, "a REFUSED kill is a normal outcome, never a gateway error");
+    assert_eq!(
+        res.status(),
+        200,
+        "a REFUSED kill is a normal outcome, never a gateway error"
+    );
     let body: serde_json::Value = res.json().await.unwrap();
     assert_eq!(body["killed"], false);
     assert_eq!(body["is_oracle"], true);
     let message = body["message"].as_str().unwrap();
-    assert!(!message.contains("REFUSED"), "the failure-path message must be sanitized, not raw CLI text: {message:?}");
-    assert!(!message.contains("worker(s)"), "the failure-path message must be sanitized, not raw CLI text: {message:?}");
+    assert!(
+        !message.contains("REFUSED"),
+        "the failure-path message must be sanitized, not raw CLI text: {message:?}"
+    );
+    assert!(
+        !message.contains("worker(s)"),
+        "the failure-path message must be sanitized, not raw CLI text: {message:?}"
+    );
 
     std::env::remove_var("OMEGA_BIN");
 }
@@ -205,9 +221,15 @@ async fn refused_kill_still_classifies_is_oracle_off_the_resolved_alias() {
     assert_eq!(res.status(), 200);
     let body: serde_json::Value = res.json().await.unwrap();
     assert_eq!(body["killed"], false);
-    assert_eq!(body["is_oracle"], true, "expected classification off the RESOLVED name even on the REFUSED path");
+    assert_eq!(
+        body["is_oracle"], true,
+        "expected classification off the RESOLVED name even on the REFUSED path"
+    );
     let message = body["message"].as_str().unwrap();
-    assert!(!message.contains("REFUSED"), "the failure-path message must be sanitized, not raw CLI text: {message:?}");
+    assert!(
+        !message.contains("REFUSED"),
+        "the failure-path message must be sanitized, not raw CLI text: {message:?}"
+    );
 
     std::env::remove_var("OMEGA_BIN");
 }
@@ -278,7 +300,10 @@ async fn is_oracle_true_when_the_raw_path_param_is_an_unresolved_alias() {
     assert_eq!(res.status(), 200);
     let body: serde_json::Value = res.json().await.unwrap();
     assert_eq!(body["killed"], true);
-    assert_eq!(body["is_oracle"], true, "expected classification off the RESOLVED name");
+    assert_eq!(
+        body["is_oracle"], true,
+        "expected classification off the RESOLVED name"
+    );
     assert_eq!(body["cascaded_count"], 1);
 
     std::env::remove_var("OMEGA_BIN");
@@ -330,7 +355,11 @@ async fn invalid_session_name_rejects_before_any_subprocess_spawn() {
             .send()
             .await
             .unwrap();
-        assert_eq!(res.status(), 400, "expected 400 for session name {bad_name}");
+        assert_eq!(
+            res.status(),
+            400,
+            "expected 400 for session name {bad_name}"
+        );
     }
 
     std::env::remove_var("OMEGA_BIN");
@@ -355,7 +384,11 @@ async fn close_uses_a_double_dash_separator_so_a_leading_dash_session_name_is_ne
     let capture_dir = tempfile::tempdir().unwrap();
     let capture_file = capture_dir.path().join("argv.txt");
 
-    install_fake_omega_capturing(bin_dir.path(), &capture_file, "printf 'Killed session: -x\\n'; exit 0");
+    install_fake_omega_capturing(
+        bin_dir.path(),
+        &capture_file,
+        "printf 'Killed session: -x\\n'; exit 0",
+    );
 
     let (app, token) = app_and_token(gateway_dir.path()).await;
     let base = spawn(app).await;
@@ -385,7 +418,10 @@ async fn close_uses_a_double_dash_separator_so_a_leading_dash_session_name_is_ne
 async fn post_close_requires_auth() {
     let _g = LOCK.lock().await;
     let gateway_dir = tempfile::tempdir().unwrap();
-    let app = build_router(AppState::new(gateway_dir.path().to_path_buf(), GatewayConfig::default()));
+    let app = build_router(AppState::new(
+        gateway_dir.path().to_path_buf(),
+        GatewayConfig::default(),
+    ));
     let base = spawn(app).await;
 
     let res = reqwest::Client::new()

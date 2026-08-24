@@ -19,7 +19,11 @@ async fn spawn(app: axum::Router) -> String {
 /// Writes an executable fake `omega` script that also appends its full argv
 /// (one per line) to `capture_file` — same idiom `dispatch_test.rs::
 /// install_fake_omega` uses.
-fn install_fake_omega(bin_dir: &std::path::Path, capture_file: &std::path::Path, script_body: &str) {
+fn install_fake_omega(
+    bin_dir: &std::path::Path,
+    capture_file: &std::path::Path,
+    script_body: &str,
+) {
     use std::os::unix::fs::PermissionsExt;
     let path = bin_dir.join("omega");
     let capture = capture_file.display();
@@ -34,7 +38,10 @@ fn install_fake_omega(bin_dir: &std::path::Path, capture_file: &std::path::Path,
 
 async fn app_and_token(gateway_dir: &std::path::Path) -> (axum::Router, String) {
     let (_, token) = DeviceStore::open(gateway_dir).issue("t");
-    let app = build_router(AppState::new(gateway_dir.to_path_buf(), GatewayConfig::default()));
+    let app = build_router(AppState::new(
+        gateway_dir.to_path_buf(),
+        GatewayConfig::default(),
+    ));
     (app, token)
 }
 
@@ -80,7 +87,15 @@ async fn happy_path_with_members_builds_exact_argv() {
     let argv: Vec<&str> = recorded.lines().collect();
     assert_eq!(
         argv,
-        vec!["team", "--count", "2", "--", "Acme", "alice:build the API", "bob:build the UI"]
+        vec![
+            "team",
+            "--count",
+            "2",
+            "--",
+            "Acme",
+            "alice:build the API",
+            "bob:build the UI"
+        ]
     );
 
     clear_env();
@@ -160,7 +175,11 @@ async fn project_failing_slug_check_rejects_with_400_no_spawn() {
     let capture_dir = tempfile::tempdir().unwrap();
     let capture_file = capture_dir.path().join("argv.txt");
 
-    install_fake_omega(bin_dir.path(), &capture_file, "echo 'SHOULD NEVER RUN' >&2; exit 1");
+    install_fake_omega(
+        bin_dir.path(),
+        &capture_file,
+        "echo 'SHOULD NEVER RUN' >&2; exit 1",
+    );
 
     let (app, token) = app_and_token(gateway_dir.path()).await;
     let base = spawn(app).await;
@@ -173,7 +192,10 @@ async fn project_failing_slug_check_rejects_with_400_no_spawn() {
         .await
         .unwrap();
     assert_eq!(res.status(), 400);
-    assert!(!capture_file.exists(), "omega subprocess was spawned for an invalid project name");
+    assert!(
+        !capture_file.exists(),
+        "omega subprocess was spawned for an invalid project name"
+    );
 
     clear_env();
 }
@@ -186,7 +208,11 @@ async fn count_zero_rejects_with_400_no_spawn() {
     let capture_dir = tempfile::tempdir().unwrap();
     let capture_file = capture_dir.path().join("argv.txt");
 
-    install_fake_omega(bin_dir.path(), &capture_file, "echo 'SHOULD NEVER RUN' >&2; exit 1");
+    install_fake_omega(
+        bin_dir.path(),
+        &capture_file,
+        "echo 'SHOULD NEVER RUN' >&2; exit 1",
+    );
 
     let (app, token) = app_and_token(gateway_dir.path()).await;
     let base = spawn(app).await;
@@ -199,7 +225,10 @@ async fn count_zero_rejects_with_400_no_spawn() {
         .await
         .unwrap();
     assert_eq!(res.status(), 400);
-    assert!(!capture_file.exists(), "omega subprocess was spawned for count=0");
+    assert!(
+        !capture_file.exists(),
+        "omega subprocess was spawned for count=0"
+    );
 
     clear_env();
 }
@@ -212,7 +241,11 @@ async fn count_nine_rejects_with_400_no_spawn() {
     let capture_dir = tempfile::tempdir().unwrap();
     let capture_file = capture_dir.path().join("argv.txt");
 
-    install_fake_omega(bin_dir.path(), &capture_file, "echo 'SHOULD NEVER RUN' >&2; exit 1");
+    install_fake_omega(
+        bin_dir.path(),
+        &capture_file,
+        "echo 'SHOULD NEVER RUN' >&2; exit 1",
+    );
 
     let (app, token) = app_and_token(gateway_dir.path()).await;
     let base = spawn(app).await;
@@ -225,7 +258,10 @@ async fn count_nine_rejects_with_400_no_spawn() {
         .await
         .unwrap();
     assert_eq!(res.status(), 400);
-    assert!(!capture_file.exists(), "omega subprocess was spawned for count=9");
+    assert!(
+        !capture_file.exists(),
+        "omega subprocess was spawned for count=9"
+    );
 
     clear_env();
 }
@@ -266,7 +302,11 @@ async fn oversized_member_rejects_with_400_no_spawn() {
     let capture_dir = tempfile::tempdir().unwrap();
     let capture_file = capture_dir.path().join("argv.txt");
 
-    install_fake_omega(bin_dir.path(), &capture_file, "echo 'SHOULD NEVER RUN' >&2; exit 1");
+    install_fake_omega(
+        bin_dir.path(),
+        &capture_file,
+        "echo 'SHOULD NEVER RUN' >&2; exit 1",
+    );
 
     let (app, token) = app_and_token(gateway_dir.path()).await;
     let base = spawn(app).await;
@@ -282,7 +322,10 @@ async fn oversized_member_rejects_with_400_no_spawn() {
     assert_eq!(res.status(), 400);
     let body: serde_json::Value = res.json().await.unwrap();
     assert!(body["error"].as_str().unwrap().contains("too long"));
-    assert!(!capture_file.exists(), "omega subprocess was spawned for an oversized member");
+    assert!(
+        !capture_file.exists(),
+        "omega subprocess was spawned for an oversized member"
+    );
 
     clear_env();
 }
@@ -303,7 +346,11 @@ async fn project_whose_team_prefixed_name_sanitize_would_truncate_rejects_with_4
     let capture_dir = tempfile::tempdir().unwrap();
     let capture_file = capture_dir.path().join("argv.txt");
 
-    install_fake_omega(bin_dir.path(), &capture_file, "echo 'SHOULD NEVER RUN' >&2; exit 1");
+    install_fake_omega(
+        bin_dir.path(),
+        &capture_file,
+        "echo 'SHOULD NEVER RUN' >&2; exit 1",
+    );
 
     let (app, token) = app_and_token(gateway_dir.path()).await;
     let base = spawn(app).await;
@@ -319,7 +366,10 @@ async fn project_whose_team_prefixed_name_sanitize_would_truncate_rejects_with_4
         .await
         .unwrap();
     assert_eq!(res.status(), 400);
-    assert!(!capture_file.exists(), "omega subprocess was spawned for a project sanitize would truncate");
+    assert!(
+        !capture_file.exists(),
+        "omega subprocess was spawned for a project sanitize would truncate"
+    );
 
     clear_env();
 }
@@ -338,7 +388,11 @@ async fn nine_members_rejects_with_400_no_spawn() {
     let capture_dir = tempfile::tempdir().unwrap();
     let capture_file = capture_dir.path().join("argv.txt");
 
-    install_fake_omega(bin_dir.path(), &capture_file, "echo 'SHOULD NEVER RUN' >&2; exit 1");
+    install_fake_omega(
+        bin_dir.path(),
+        &capture_file,
+        "echo 'SHOULD NEVER RUN' >&2; exit 1",
+    );
 
     let (app, token) = app_and_token(gateway_dir.path()).await;
     let base = spawn(app).await;
@@ -354,7 +408,10 @@ async fn nine_members_rejects_with_400_no_spawn() {
     assert_eq!(res.status(), 400);
     let body: serde_json::Value = res.json().await.unwrap();
     assert!(body["error"].as_str().unwrap().contains("too many members"));
-    assert!(!capture_file.exists(), "omega subprocess was spawned for 9 members");
+    assert!(
+        !capture_file.exists(),
+        "omega subprocess was spawned for 9 members"
+    );
 
     clear_env();
 }
@@ -397,7 +454,11 @@ async fn member_with_nul_byte_rejects_with_400_no_spawn() {
     let capture_dir = tempfile::tempdir().unwrap();
     let capture_file = capture_dir.path().join("argv.txt");
 
-    install_fake_omega(bin_dir.path(), &capture_file, "echo 'SHOULD NEVER RUN' >&2; exit 1");
+    install_fake_omega(
+        bin_dir.path(),
+        &capture_file,
+        "echo 'SHOULD NEVER RUN' >&2; exit 1",
+    );
 
     let (app, token) = app_and_token(gateway_dir.path()).await;
     let base = spawn(app).await;
@@ -410,7 +471,10 @@ async fn member_with_nul_byte_rejects_with_400_no_spawn() {
         .await
         .unwrap();
     assert_eq!(res.status(), 400);
-    assert!(!capture_file.exists(), "omega subprocess was spawned for a NUL-containing member");
+    assert!(
+        !capture_file.exists(),
+        "omega subprocess was spawned for a NUL-containing member"
+    );
 
     clear_env();
 }
@@ -445,13 +509,25 @@ async fn nonzero_exit_surfaces_stdout_and_stderr_as_502() {
     // stdout/stderr is no longer echoed into the response body -- only a
     // sanitized, generic error. The full raw text still goes to the
     // gateway's own tracing log, never the HTTP response.
-    assert!(body.get("stdout").is_none(), "must not echo raw stdout: {body}");
-    assert!(body.get("stderr").is_none(), "must not echo raw stderr: {body}");
     assert!(
-        !body["error"].as_str().unwrap().contains("rmux daemon unreachable"),
+        body.get("stdout").is_none(),
+        "must not echo raw stdout: {body}"
+    );
+    assert!(
+        body.get("stderr").is_none(),
+        "must not echo raw stderr: {body}"
+    );
+    assert!(
+        !body["error"]
+            .as_str()
+            .unwrap()
+            .contains("rmux daemon unreachable"),
         "error message must not contain the raw subprocess text: {body}"
     );
-    assert!(body.get("session").is_none(), "must never fabricate a session on failure");
+    assert!(
+        body.get("session").is_none(),
+        "must never fabricate a session on failure"
+    );
 
     clear_env();
 }
@@ -549,7 +625,10 @@ async fn concurrency_cap_returns_429_when_session_spawn_permits_exhausted() {
         .unwrap();
     assert_eq!(busy_res.status(), 429);
     let body: serde_json::Value = busy_res.json().await.unwrap();
-    assert!(body["error"].as_str().unwrap().contains("too many concurrent"));
+    assert!(body["error"]
+        .as_str()
+        .unwrap()
+        .contains("too many concurrent"));
 
     for task in in_flight {
         let status = task.await.unwrap();
@@ -562,7 +641,10 @@ async fn concurrency_cap_returns_429_when_session_spawn_permits_exhausted() {
 #[tokio::test]
 async fn post_team_requires_auth() {
     let gateway_dir = tempfile::tempdir().unwrap();
-    let app = build_router(AppState::new(gateway_dir.path().to_path_buf(), GatewayConfig::default()));
+    let app = build_router(AppState::new(
+        gateway_dir.path().to_path_buf(),
+        GatewayConfig::default(),
+    ));
     let base = spawn(app).await;
 
     let res = reqwest::Client::new()

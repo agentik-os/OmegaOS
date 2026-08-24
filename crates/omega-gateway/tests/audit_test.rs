@@ -59,7 +59,11 @@ fn install_fake_omega(dir: &std::path::Path, script_body: &str) {
 fn install_fake_omega_that_must_not_run(dir: &std::path::Path) {
     use std::os::unix::fs::PermissionsExt;
     let path = dir.join("omega");
-    std::fs::write(&path, "#!/usr/bin/env bash\necho 'SHOULD NEVER RUN' >&2\nexit 1\n").unwrap();
+    std::fs::write(
+        &path,
+        "#!/usr/bin/env bash\necho 'SHOULD NEVER RUN' >&2\nexit 1\n",
+    )
+    .unwrap();
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
     std::env::set_var("OMEGA_BIN", &path);
 }
@@ -76,17 +80,30 @@ async fn list_returns_the_full_catalog_including_codeaudit() {
     let _g = LOCK.lock().await;
     let dir = tempfile::tempdir().unwrap();
     let (_, token) = DeviceStore::open(dir.path()).issue("t");
-    let app = build_router(AppState::new(dir.path().to_path_buf(), GatewayConfig::default()));
+    let app = build_router(AppState::new(
+        dir.path().to_path_buf(),
+        GatewayConfig::default(),
+    ));
     let base = spawn(app).await;
 
-    let res =
-        reqwest::Client::new().get(format!("{base}/v1/audits")).bearer_auth(&token).send().await.unwrap();
+    let res = reqwest::Client::new()
+        .get(format!("{base}/v1/audits"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
     assert_eq!(res.status(), 200);
     let body: serde_json::Value = res.json().await.unwrap();
     let audits = body["audits"].as_array().unwrap();
-    assert_eq!(audits.len(), 23, "expected the full 23-audit Quality Arsenal catalog");
+    assert_eq!(
+        audits.len(),
+        23,
+        "expected the full 23-audit Quality Arsenal catalog"
+    );
     assert!(
-        audits.iter().any(|a| a["id"] == "codeaudit" && a["domain"] == "Code"),
+        audits
+            .iter()
+            .any(|a| a["id"] == "codeaudit" && a["domain"] == "Code"),
         "codeaudit entry missing or malformed: {audits:?}"
     );
 }
@@ -94,10 +111,17 @@ async fn list_returns_the_full_catalog_including_codeaudit() {
 #[tokio::test]
 async fn list_requires_auth() {
     let dir = tempfile::tempdir().unwrap();
-    let app = build_router(AppState::new(dir.path().to_path_buf(), GatewayConfig::default()));
+    let app = build_router(AppState::new(
+        dir.path().to_path_buf(),
+        GatewayConfig::default(),
+    ));
     let base = spawn(app).await;
 
-    let res = reqwest::Client::new().get(format!("{base}/v1/audits")).send().await.unwrap();
+    let res = reqwest::Client::new()
+        .get(format!("{base}/v1/audits"))
+        .send()
+        .await
+        .unwrap();
     assert_eq!(res.status(), 401);
 }
 
@@ -112,7 +136,10 @@ async fn check_rejects_unknown_kind_and_never_spawns() {
     install_fake_home(home_dir.path(), "TestProj");
     install_fake_omega_that_must_not_run(bin_dir.path());
     let (_, token) = DeviceStore::open(gateway_dir.path()).issue("t");
-    let app = build_router(AppState::new(gateway_dir.path().to_path_buf(), GatewayConfig::default()));
+    let app = build_router(AppState::new(
+        gateway_dir.path().to_path_buf(),
+        GatewayConfig::default(),
+    ));
     let base = spawn(app).await;
 
     let res = reqwest::Client::new()
@@ -140,7 +167,10 @@ async fn check_rejects_unknown_project_and_never_spawns() {
     install_fake_home(home_dir.path(), "TestProj");
     install_fake_omega_that_must_not_run(bin_dir.path());
     let (_, token) = DeviceStore::open(gateway_dir.path()).issue("t");
-    let app = build_router(AppState::new(gateway_dir.path().to_path_buf(), GatewayConfig::default()));
+    let app = build_router(AppState::new(
+        gateway_dir.path().to_path_buf(),
+        GatewayConfig::default(),
+    ));
     let base = spawn(app).await;
 
     let res = reqwest::Client::new()
@@ -152,7 +182,10 @@ async fn check_rejects_unknown_project_and_never_spawns() {
         .unwrap();
     assert_eq!(res.status(), 400);
     let body: serde_json::Value = res.json().await.unwrap();
-    assert!(body["error"].as_str().unwrap().contains("definitely-not-a-real-project"));
+    assert!(body["error"]
+        .as_str()
+        .unwrap()
+        .contains("definitely-not-a-real-project"));
 
     clear_env();
 }
@@ -168,7 +201,10 @@ async fn check_accepts_a_real_audit_and_project_and_spawns_nothing() {
     // at the must-not-run script too, to prove it.
     install_fake_omega_that_must_not_run(bin_dir.path());
     let (_, token) = DeviceStore::open(gateway_dir.path()).issue("t");
-    let app = build_router(AppState::new(gateway_dir.path().to_path_buf(), GatewayConfig::default()));
+    let app = build_router(AppState::new(
+        gateway_dir.path().to_path_buf(),
+        GatewayConfig::default(),
+    ));
     let base = spawn(app).await;
 
     let res = reqwest::Client::new()
@@ -199,7 +235,10 @@ async fn stream_rejects_unknown_kind_before_any_spawn() {
     install_fake_home(home_dir.path(), "TestProj");
     install_fake_omega_that_must_not_run(bin_dir.path());
     let (_, token) = DeviceStore::open(gateway_dir.path()).issue("t");
-    let app = build_router(AppState::new(gateway_dir.path().to_path_buf(), GatewayConfig::default()));
+    let app = build_router(AppState::new(
+        gateway_dir.path().to_path_buf(),
+        GatewayConfig::default(),
+    ));
     let base = spawn(app).await;
 
     // A REAL WS handshake attempt (valid auth token, real Upgrade headers via
@@ -222,7 +261,10 @@ async fn stream_rejects_unknown_project_before_any_spawn() {
     install_fake_home(home_dir.path(), "TestProj");
     install_fake_omega_that_must_not_run(bin_dir.path());
     let (_, token) = DeviceStore::open(gateway_dir.path()).issue("t");
-    let app = build_router(AppState::new(gateway_dir.path().to_path_buf(), GatewayConfig::default()));
+    let app = build_router(AppState::new(
+        gateway_dir.path().to_path_buf(),
+        GatewayConfig::default(),
+    ));
     let base = spawn(app).await;
 
     let url = ws_url(&base, "/v1/audit/stream", &token) + "&project=nope-not-real&kind=codeaudit";
@@ -257,7 +299,10 @@ exit 1
         ),
     );
     let (_, token) = DeviceStore::open(gateway_dir.path()).issue("t");
-    let app = build_router(AppState::new(gateway_dir.path().to_path_buf(), GatewayConfig::default()));
+    let app = build_router(AppState::new(
+        gateway_dir.path().to_path_buf(),
+        GatewayConfig::default(),
+    ));
     let base = spawn(app).await;
 
     let url = ws_url(&base, "/v1/audit/stream", &token) + "&project=TestProj&kind=codeaudit";
@@ -273,9 +318,15 @@ exit 1
         lines.push(v);
     };
 
-    assert_eq!(lines.len(), 3, "2 stdout + 1 stderr line expected, got {lines:?}");
+    assert_eq!(
+        lines.len(),
+        3,
+        "2 stdout + 1 stderr line expected, got {lines:?}"
+    );
     let texts: Vec<&str> = lines.iter().map(|l| l["text"].as_str().unwrap()).collect();
-    assert!(texts.iter().any(|t| t.contains("Audit: Code Architecture Audit")));
+    assert!(texts
+        .iter()
+        .any(|t| t.contains("Audit: Code Architecture Audit")));
     assert!(texts.iter().any(|t| t.contains("Phases: 23")));
     assert!(texts.iter().any(|t| t.contains("Skill:")));
     let stderr_count = lines.iter().filter(|l| l["stream"] == "stderr").count();
@@ -307,7 +358,10 @@ async fn stream_nonzero_exit_reports_failure() {
     install_fake_home(home_dir.path(), "TestProj");
     install_fake_omega(bin_dir.path(), "echo 'trying...'; echo 'boom' >&2; exit 7");
     let (_, token) = DeviceStore::open(gateway_dir.path()).issue("t");
-    let app = build_router(AppState::new(gateway_dir.path().to_path_buf(), GatewayConfig::default()));
+    let app = build_router(AppState::new(
+        gateway_dir.path().to_path_buf(),
+        GatewayConfig::default(),
+    ));
     let base = spawn(app).await;
 
     let url = ws_url(&base, "/v1/audit/stream", &token) + "&project=TestProj&kind=codeaudit";
@@ -362,7 +416,10 @@ fi
         ),
     );
     let (_, token) = DeviceStore::open(gateway_dir.path()).issue("t");
-    let app = build_router(AppState::new(gateway_dir.path().to_path_buf(), GatewayConfig::default()));
+    let app = build_router(AppState::new(
+        gateway_dir.path().to_path_buf(),
+        GatewayConfig::default(),
+    ));
     let base = spawn(app).await;
 
     let url = ws_url(&base, "/v1/audit/stream", &token) + "&project=TestProj&kind=codeaudit";
@@ -376,7 +433,10 @@ fi
     ws.close(None).await.unwrap();
     drop(ws);
 
-    assert!(!marker.exists(), "marker must not exist yet — the nested child hasn't reached it");
+    assert!(
+        !marker.exists(),
+        "marker must not exist yet — the nested child hasn't reached it"
+    );
 
     // Give the server up to 8s — comfortably past the nested child's 5s
     // silent sleep — to notice the clean close via the socket-read branch

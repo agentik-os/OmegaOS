@@ -25,7 +25,10 @@ async fn spawn(app: axum::Router) -> String {
 
 async fn app_and_token(gateway_dir: &std::path::Path) -> (axum::Router, String) {
     let (_, token) = DeviceStore::open(gateway_dir).issue("t");
-    let app = build_router(AppState::new(gateway_dir.to_path_buf(), GatewayConfig::default()));
+    let app = build_router(AppState::new(
+        gateway_dir.to_path_buf(),
+        GatewayConfig::default(),
+    ));
     (app, token)
 }
 
@@ -38,7 +41,11 @@ fn clear_env() {
 /// full argv (one per line) to a capture file, so a test can prove exactly
 /// what was passed to the subprocess — same idiom `dispatch_test.rs::
 /// install_fake_omega` uses.
-fn install_fake_omega(bin_dir: &std::path::Path, capture_file: &std::path::Path, script_body: &str) {
+fn install_fake_omega(
+    bin_dir: &std::path::Path,
+    capture_file: &std::path::Path,
+    script_body: &str,
+) {
     use std::os::unix::fs::PermissionsExt;
     let path = bin_dir.join("omega");
     let capture = capture_file.display();
@@ -62,7 +69,11 @@ async fn timeline_returns_the_merged_events_for_a_real_oracle_state() {
     let state_dir = omega_dir.path().join("state");
 
     let t0 = chrono::DateTime::<chrono::Utc>::from_timestamp(1_700_000_000, 0).unwrap();
-    let mission = omega_core::mission::Mission::new("Acme", "ship the feature", std::path::PathBuf::from("/tmp"));
+    let mission = omega_core::mission::Mission::new(
+        "Acme",
+        "ship the feature",
+        std::path::PathBuf::from("/tmp"),
+    );
     let mut state = omega_core::oracle_lifecycle::OracleState::new("oracle-Acme-1", &mission);
     state.started_at = t0;
     state.register_worker(omega_core::oracle_lifecycle::WorkerEntry {
@@ -91,10 +102,24 @@ async fn timeline_returns_the_merged_events_for_a_real_oracle_state() {
     assert_eq!(body["oracle_name"], "oracle-Acme-1");
     assert_eq!(body["project"], "Acme");
     let events = body["events"].as_array().unwrap();
-    assert_eq!(events.len(), 2, "oracle-dispatched + worker-dispatch events, got {events:?}");
-    assert!(events[0]["text"].as_str().unwrap().starts_with("oracle dispatched"));
-    assert!(events[1]["text"].as_str().unwrap().contains("dispatch worker 'auth'"));
-    assert!(events[0]["at"].as_str().unwrap().contains("2023"), "at must be RFC3339: {:?}", events[0]["at"]);
+    assert_eq!(
+        events.len(),
+        2,
+        "oracle-dispatched + worker-dispatch events, got {events:?}"
+    );
+    assert!(events[0]["text"]
+        .as_str()
+        .unwrap()
+        .starts_with("oracle dispatched"));
+    assert!(events[1]["text"]
+        .as_str()
+        .unwrap()
+        .contains("dispatch worker 'auth'"));
+    assert!(
+        events[0]["at"].as_str().unwrap().contains("2023"),
+        "at must be RFC3339: {:?}",
+        events[0]["at"]
+    );
 
     clear_env();
 }
@@ -125,7 +150,10 @@ async fn timeline_404s_cleanly_for_an_unknown_oracle() {
 #[tokio::test]
 async fn timeline_requires_auth() {
     let gateway_dir = tempfile::tempdir().unwrap();
-    let app = build_router(AppState::new(gateway_dir.path().to_path_buf(), GatewayConfig::default()));
+    let app = build_router(AppState::new(
+        gateway_dir.path().to_path_buf(),
+        GatewayConfig::default(),
+    ));
     let base = spawn(app).await;
     let res = reqwest::Client::new()
         .get(format!("{base}/v1/oracles/oracle-x/timeline"))
@@ -261,10 +289,16 @@ async fn gate_404s_cleanly_when_neither_result_nor_rubric_exists() {
 #[tokio::test]
 async fn gate_requires_auth() {
     let gateway_dir = tempfile::tempdir().unwrap();
-    let app = build_router(AppState::new(gateway_dir.path().to_path_buf(), GatewayConfig::default()));
+    let app = build_router(AppState::new(
+        gateway_dir.path().to_path_buf(),
+        GatewayConfig::default(),
+    ));
     let base = spawn(app).await;
-    let res =
-        reqwest::Client::new().get(format!("{base}/v1/oracles/oracle-x/gate")).send().await.unwrap();
+    let res = reqwest::Client::new()
+        .get(format!("{base}/v1/oracles/oracle-x/gate"))
+        .send()
+        .await
+        .unwrap();
     assert_eq!(res.status(), 401);
 }
 
@@ -322,7 +356,11 @@ async fn reap_rejects_a_dash_leading_session_before_any_spawn() {
     let bin_dir = tempfile::tempdir().unwrap();
     let capture_dir = tempfile::tempdir().unwrap();
     let capture_file = capture_dir.path().join("argv.txt");
-    install_fake_omega(bin_dir.path(), &capture_file, "echo 'SHOULD NEVER RUN' >&2; exit 1");
+    install_fake_omega(
+        bin_dir.path(),
+        &capture_file,
+        "echo 'SHOULD NEVER RUN' >&2; exit 1",
+    );
 
     let (app, token) = app_and_token(gateway_dir.path()).await;
     let base = spawn(app).await;
@@ -335,7 +373,10 @@ async fn reap_rejects_a_dash_leading_session_before_any_spawn() {
             .await
             .unwrap();
         assert_eq!(res.status(), 400, "session={evil}");
-        assert!(!capture_file.exists(), "omega subprocess was spawned for session={evil}");
+        assert!(
+            !capture_file.exists(),
+            "omega subprocess was spawned for session={evil}"
+        );
     }
 
     clear_env();
@@ -383,7 +424,11 @@ async fn reap_rejects_nul_byte_session_before_any_spawn() {
     let bin_dir = tempfile::tempdir().unwrap();
     let capture_dir = tempfile::tempdir().unwrap();
     let capture_file = capture_dir.path().join("argv.txt");
-    install_fake_omega(bin_dir.path(), &capture_file, "echo 'SHOULD NEVER RUN' >&2; exit 1");
+    install_fake_omega(
+        bin_dir.path(),
+        &capture_file,
+        "echo 'SHOULD NEVER RUN' >&2; exit 1",
+    );
 
     let (app, token) = app_and_token(gateway_dir.path()).await;
     let base = spawn(app).await;
@@ -399,7 +444,10 @@ async fn reap_rejects_nul_byte_session_before_any_spawn() {
     assert_eq!(res.status(), 400);
     let body: serde_json::Value = res.json().await.unwrap();
     assert!(body["error"].as_str().unwrap().contains("NUL"));
-    assert!(!capture_file.exists(), "omega subprocess was spawned for a NUL-containing session");
+    assert!(
+        !capture_file.exists(),
+        "omega subprocess was spawned for a NUL-containing session"
+    );
 
     clear_env();
 }
@@ -407,10 +455,16 @@ async fn reap_rejects_nul_byte_session_before_any_spawn() {
 #[tokio::test]
 async fn reap_requires_auth() {
     let gateway_dir = tempfile::tempdir().unwrap();
-    let app = build_router(AppState::new(gateway_dir.path().to_path_buf(), GatewayConfig::default()));
+    let app = build_router(AppState::new(
+        gateway_dir.path().to_path_buf(),
+        GatewayConfig::default(),
+    ));
     let base = spawn(app).await;
-    let res =
-        reqwest::Client::new().post(format!("{base}/v1/oracles/oracle-x/reap")).send().await.unwrap();
+    let res = reqwest::Client::new()
+        .post(format!("{base}/v1/oracles/oracle-x/reap"))
+        .send()
+        .await
+        .unwrap();
     assert_eq!(res.status(), 401);
 }
 
@@ -423,7 +477,11 @@ async fn resurrect_runs_omega_resurrect_with_exactly_the_oracle_argv() {
     let bin_dir = tempfile::tempdir().unwrap();
     let capture_dir = tempfile::tempdir().unwrap();
     let capture_file = capture_dir.path().join("argv.txt");
-    install_fake_omega(bin_dir.path(), &capture_file, "printf '\\xe2\\x97\\x86 resurrected oracle-Acme-1\\n'; exit 0");
+    install_fake_omega(
+        bin_dir.path(),
+        &capture_file,
+        "printf '\\xe2\\x97\\x86 resurrected oracle-Acme-1\\n'; exit 0",
+    );
 
     let (app, token) = app_and_token(gateway_dir.path()).await;
     let base = spawn(app).await;
@@ -437,7 +495,10 @@ async fn resurrect_runs_omega_resurrect_with_exactly_the_oracle_argv() {
     assert_eq!(res.status(), 200);
     let body: serde_json::Value = res.json().await.unwrap();
     assert_eq!(body["resurrected"], true);
-    assert!(body["output"].as_str().unwrap().contains("resurrected oracle-Acme-1"));
+    assert!(body["output"]
+        .as_str()
+        .unwrap()
+        .contains("resurrected oracle-Acme-1"));
 
     let recorded = std::fs::read_to_string(&capture_file).unwrap();
     let argv: Vec<&str> = recorded.lines().collect();
@@ -454,7 +515,11 @@ async fn resurrect_nonzero_exit_surfaces_as_502() {
     let bin_dir = tempfile::tempdir().unwrap();
     let capture_dir = tempfile::tempdir().unwrap();
     let capture_file = capture_dir.path().join("argv.txt");
-    install_fake_omega(bin_dir.path(), &capture_file, "echo 'session daemon unreachable' >&2; exit 1");
+    install_fake_omega(
+        bin_dir.path(),
+        &capture_file,
+        "echo 'session daemon unreachable' >&2; exit 1",
+    );
 
     let (app, token) = app_and_token(gateway_dir.path()).await;
     let base = spawn(app).await;
@@ -484,7 +549,11 @@ async fn resurrect_rejects_empty_session_before_any_spawn() {
     let bin_dir = tempfile::tempdir().unwrap();
     let capture_dir = tempfile::tempdir().unwrap();
     let capture_file = capture_dir.path().join("argv.txt");
-    install_fake_omega(bin_dir.path(), &capture_file, "echo 'SHOULD NEVER RUN' >&2; exit 1");
+    install_fake_omega(
+        bin_dir.path(),
+        &capture_file,
+        "echo 'SHOULD NEVER RUN' >&2; exit 1",
+    );
 
     let (app, token) = app_and_token(gateway_dir.path()).await;
     let base = spawn(app).await;
@@ -498,7 +567,10 @@ async fn resurrect_rejects_empty_session_before_any_spawn() {
         .await
         .unwrap();
     assert_eq!(res.status(), 400);
-    assert!(!capture_file.exists(), "omega subprocess was spawned for a blank session");
+    assert!(
+        !capture_file.exists(),
+        "omega subprocess was spawned for a blank session"
+    );
 
     clear_env();
 }
@@ -515,7 +587,11 @@ async fn resurrect_rejects_a_dash_leading_session_before_any_spawn() {
     let bin_dir = tempfile::tempdir().unwrap();
     let capture_dir = tempfile::tempdir().unwrap();
     let capture_file = capture_dir.path().join("argv.txt");
-    install_fake_omega(bin_dir.path(), &capture_file, "echo 'SHOULD NEVER RUN' >&2; exit 1");
+    install_fake_omega(
+        bin_dir.path(),
+        &capture_file,
+        "echo 'SHOULD NEVER RUN' >&2; exit 1",
+    );
 
     let (app, token) = app_and_token(gateway_dir.path()).await;
     let base = spawn(app).await;
@@ -528,7 +604,10 @@ async fn resurrect_rejects_a_dash_leading_session_before_any_spawn() {
             .await
             .unwrap();
         assert_eq!(res.status(), 400, "session={evil}");
-        assert!(!capture_file.exists(), "omega subprocess was spawned for session={evil}");
+        assert!(
+            !capture_file.exists(),
+            "omega subprocess was spawned for session={evil}"
+        );
     }
 
     clear_env();
@@ -537,7 +616,10 @@ async fn resurrect_rejects_a_dash_leading_session_before_any_spawn() {
 #[tokio::test]
 async fn resurrect_requires_auth() {
     let gateway_dir = tempfile::tempdir().unwrap();
-    let app = build_router(AppState::new(gateway_dir.path().to_path_buf(), GatewayConfig::default()));
+    let app = build_router(AppState::new(
+        gateway_dir.path().to_path_buf(),
+        GatewayConfig::default(),
+    ));
     let base = spawn(app).await;
     let res = reqwest::Client::new()
         .post(format!("{base}/v1/oracles/oracle-x/resurrect"))

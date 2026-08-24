@@ -25,8 +25,7 @@ pub fn agent_command(
 ) -> Command {
     let mut cmd = match meta.agent {
         ChatAgent::Claude => {
-            let program =
-                std::env::var("OMEGA_CHAT_BIN").unwrap_or_else(|_| "claude".to_string());
+            let program = std::env::var("OMEGA_CHAT_BIN").unwrap_or_else(|_| "claude".to_string());
             let mut command = Command::new(program);
             command
                 .arg("-p")
@@ -174,7 +173,9 @@ pub fn parse_line(line: &str) -> Vec<ParsedLine> {
                 }
             }
             if !text.is_empty() {
-                out.push(ParsedLine::Frame(ChatStreamServerMsg::AssistantMessage { text }));
+                out.push(ParsedLine::Frame(ChatStreamServerMsg::AssistantMessage {
+                    text,
+                }));
             }
             out
         }
@@ -218,11 +219,9 @@ pub fn parse_codex_line(line: &str) -> Vec<ParsedLine> {
                     .get("text")
                     .and_then(Value::as_str)
                     .map(|text| {
-                        vec![ParsedLine::Frame(
-                            ChatStreamServerMsg::AssistantMessage {
-                                text: text.to_string(),
-                            },
-                        )]
+                        vec![ParsedLine::Frame(ChatStreamServerMsg::AssistantMessage {
+                            text: text.to_string(),
+                        })]
                     })
                     .unwrap_or_default();
             }
@@ -288,7 +287,10 @@ fn compact_json(v: &Value) -> String {
 /// `run_turn`'s `process_group(0)` on its `Command`).
 async fn kill_process_group(pid: u32) {
     let _ = tokio::task::spawn_blocking(move || {
-        std::process::Command::new("kill").arg("--").arg(format!("-{pid}")).status()
+        std::process::Command::new("kill")
+            .arg("--")
+            .arg(format!("-{pid}"))
+            .status()
     })
     .await;
 }
@@ -342,9 +344,7 @@ pub async fn run_turn(
     let child_pid = child.id();
     if meta.agent == ChatAgent::Codex {
         let mut stdin = child.stdin.take().expect("Codex stdin was piped");
-        if stdin.write_all(user_text.as_bytes()).await.is_err()
-            || stdin.shutdown().await.is_err()
-        {
+        if stdin.write_all(user_text.as_bytes()).await.is_err() || stdin.shutdown().await.is_err() {
             let _ = child.kill().await;
             let _ = tx
                 .send(ChatStreamServerMsg::Error {
@@ -489,10 +489,19 @@ mod tests {
         std::env::remove_var("OMEGA_CHAT_BIN");
 
         let std_cmd = cmd.as_std();
-        assert_eq!(std_cmd.get_program().to_str().unwrap(), "/usr/bin/fake-claude");
+        assert_eq!(
+            std_cmd.get_program().to_str().unwrap(),
+            "/usr/bin/fake-claude"
+        );
         let args: Vec<&str> = std_cmd.get_args().map(|a| a.to_str().unwrap()).collect();
-        assert_eq!(args, vec!["-p", "hello", "--output-format", "stream-json", "--verbose"]);
-        assert_eq!(std_cmd.get_current_dir().unwrap().to_str().unwrap(), "/tmp/proj");
+        assert_eq!(
+            args,
+            vec!["-p", "hello", "--output-format", "stream-json", "--verbose"]
+        );
+        assert_eq!(
+            std_cmd.get_current_dir().unwrap().to_str().unwrap(),
+            "/tmp/proj"
+        );
     }
 
     #[tokio::test]
@@ -547,7 +556,10 @@ mod tests {
             std_cmd.get_program().to_str().unwrap(),
             "/usr/bin/fake-codex"
         );
-        let args: Vec<&str> = std_cmd.get_args().map(|arg| arg.to_str().unwrap()).collect();
+        let args: Vec<&str> = std_cmd
+            .get_args()
+            .map(|arg| arg.to_str().unwrap())
+            .collect();
         assert!(args.starts_with(&[
             "exec",
             "--skip-git-repo-check",
@@ -555,7 +567,9 @@ mod tests {
             "--dangerously-bypass-hook-trust",
             "--json",
         ]));
-        assert!(args.windows(2).any(|pair| pair == ["--model", "gpt-5.6-sol"]));
+        assert!(args
+            .windows(2)
+            .any(|pair| pair == ["--model", "gpt-5.6-sol"]));
         assert_eq!(args.last(), Some(&"-"));
         assert!(!args.contains(&"secret prompt"));
         let (_, value) = std_cmd
@@ -578,9 +592,9 @@ mod tests {
             .get_args()
             .map(|arg| arg.to_str().unwrap())
             .collect();
-        assert!(args.windows(2).any(|pair| {
-            pair == ["resume", "0199a213-81c0-7800-8aa1-bbab2a035a53"]
-        }));
+        assert!(args
+            .windows(2)
+            .any(|pair| { pair == ["resume", "0199a213-81c0-7800-8aa1-bbab2a035a53"] }));
     }
 
     #[tokio::test]
@@ -709,7 +723,10 @@ mod tests {
         let line = r#"{"type":"result","is_error":false,"stop_reason":"end_turn","result":"PONG","session_id":"s1"}"#;
         let out = parse_line(line);
         assert_eq!(out.len(), 1);
-        assert!(matches!(&out[0], ParsedLine::Frame(ChatStreamServerMsg::TurnDone)));
+        assert!(matches!(
+            &out[0],
+            ParsedLine::Frame(ChatStreamServerMsg::TurnDone)
+        ));
     }
 
     #[test]

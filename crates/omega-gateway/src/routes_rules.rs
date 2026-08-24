@@ -33,6 +33,9 @@ pub async fn list() -> Json<RulesResponse> {
         RulesResponse { laws, rules }
     })
     .await
-    .unwrap_or(RulesResponse { laws: vec![], rules: vec![] });
+    .unwrap_or(RulesResponse {
+        laws: vec![],
+        rules: vec![],
+    });
     Json(response)
 }

@@ -43,7 +43,10 @@ async fn get_missions_returns_parsed_ledgers_and_excludes_workers() {
     .unwrap();
 
     let (_, token) = DeviceStore::open(gateway_dir.path()).issue("t");
-    let app = build_router(AppState::new(gateway_dir.path().to_path_buf(), GatewayConfig::default()));
+    let app = build_router(AppState::new(
+        gateway_dir.path().to_path_buf(),
+        GatewayConfig::default(),
+    ));
     let base = spawn(app).await;
 
     let res = reqwest::Client::new()
@@ -55,14 +58,21 @@ async fn get_missions_returns_parsed_ledgers_and_excludes_workers() {
     assert_eq!(res.status(), 200);
     let body: serde_json::Value = res.json().await.unwrap();
     let missions = body["missions"].as_array().unwrap();
-    assert_eq!(missions.len(), 1, "worker ledger must be excluded from the mirror");
+    assert_eq!(
+        missions.len(),
+        1,
+        "worker ledger must be excluded from the mirror"
+    );
     assert_eq!(missions[0]["key"], "oracle-dentistrygpt");
     assert_eq!(missions[0]["project"], "dentistrygpt");
     assert_eq!(missions[0]["title"], "Audit code reset vs addition");
     assert_eq!(missions[0]["done"], 6);
     assert_eq!(missions[0]["total"], 6);
     assert_eq!(missions[0]["tasks"][0]["status"], "done");
-    assert_eq!(missions[0]["tasks"][0]["title"], "Audit code reset vs addition");
+    assert_eq!(
+        missions[0]["tasks"][0]["title"],
+        "Audit code reset vs addition"
+    );
 
     std::env::remove_var("OMEGA_STATE_DIR");
 }
@@ -70,9 +80,16 @@ async fn get_missions_returns_parsed_ledgers_and_excludes_workers() {
 #[tokio::test]
 async fn get_missions_requires_auth() {
     let gateway_dir = tempfile::tempdir().unwrap();
-    let app = build_router(AppState::new(gateway_dir.path().to_path_buf(), GatewayConfig::default()));
+    let app = build_router(AppState::new(
+        gateway_dir.path().to_path_buf(),
+        GatewayConfig::default(),
+    ));
     let base = spawn(app).await;
 
-    let res = reqwest::Client::new().get(format!("{base}/v1/missions")).send().await.unwrap();
+    let res = reqwest::Client::new()
+        .get(format!("{base}/v1/missions"))
+        .send()
+        .await
+        .unwrap();
     assert_eq!(res.status(), 401);
 }

@@ -66,13 +66,17 @@ async fn stream_rejects_unknown_project_before_any_spawn() {
     install_fake_home(home_dir.path(), "TestProj");
     install_fake_omega_that_must_not_run(bin_dir.path());
     let (_, token) = DeviceStore::open(gateway_dir.path()).issue("t");
-    let app = build_router(AppState::new(gateway_dir.path().to_path_buf(), GatewayConfig::default()));
+    let app = build_router(AppState::new(
+        gateway_dir.path().to_path_buf(),
+        GatewayConfig::default(),
+    ));
     let base = spawn(app).await;
 
     // A REAL WS handshake attempt proves this hits our handler's own
     // validation (a plain HTTP 400), never an upgrade followed by an
     // in-loop error.
-    let url = ws_url(&base, "/v1/orchestrate/stream", &token) + "&project=nope-not-real&mission=do+it";
+    let url =
+        ws_url(&base, "/v1/orchestrate/stream", &token) + "&project=nope-not-real&mission=do+it";
     let err = connect_async(url).await.unwrap_err();
     assert!(err.to_string().contains("400"), "unexpected error: {err}");
 
@@ -88,7 +92,10 @@ async fn stream_rejects_unknown_agent_before_any_spawn() {
     install_fake_home(home_dir.path(), "TestProj");
     install_fake_omega_that_must_not_run(bin_dir.path());
     let (_, token) = DeviceStore::open(gateway_dir.path()).issue("t");
-    let app = build_router(AppState::new(gateway_dir.path().to_path_buf(), GatewayConfig::default()));
+    let app = build_router(AppState::new(
+        gateway_dir.path().to_path_buf(),
+        GatewayConfig::default(),
+    ));
     let base = spawn(app).await;
 
     let url = ws_url(&base, "/v1/orchestrate/stream", &token)
@@ -108,7 +115,10 @@ async fn stream_rejects_empty_mission_before_any_spawn() {
     install_fake_home(home_dir.path(), "TestProj");
     install_fake_omega_that_must_not_run(bin_dir.path());
     let (_, token) = DeviceStore::open(gateway_dir.path()).issue("t");
-    let app = build_router(AppState::new(gateway_dir.path().to_path_buf(), GatewayConfig::default()));
+    let app = build_router(AppState::new(
+        gateway_dir.path().to_path_buf(),
+        GatewayConfig::default(),
+    ));
     let base = spawn(app).await;
 
     let url = ws_url(&base, "/v1/orchestrate/stream", &token) + "&project=TestProj&mission=";
@@ -143,7 +153,10 @@ exit 1
         ),
     );
     let (_, token) = DeviceStore::open(gateway_dir.path()).issue("t");
-    let app = build_router(AppState::new(gateway_dir.path().to_path_buf(), GatewayConfig::default()));
+    let app = build_router(AppState::new(
+        gateway_dir.path().to_path_buf(),
+        GatewayConfig::default(),
+    ));
     let base = spawn(app).await;
 
     // agent=known-agent-name is supplied but must never reach argv (see
@@ -165,10 +178,16 @@ exit 1
         lines.push(v);
     };
 
-    assert_eq!(lines.len(), 3, "2 stdout + 1 stderr line expected, got {lines:?}");
+    assert_eq!(
+        lines.len(),
+        3,
+        "2 stdout + 1 stderr line expected, got {lines:?}"
+    );
     let texts: Vec<&str> = lines.iter().map(|l| l["text"].as_str().unwrap()).collect();
     assert!(texts.iter().any(|t| t.contains("Mission dispatched")));
-    assert!(texts.iter().any(|t| t.contains("Mission completed successfully")));
+    assert!(texts
+        .iter()
+        .any(|t| t.contains("Mission completed successfully")));
     assert_eq!(exit["success"], true);
     assert_eq!(exit["code"], 0);
 
@@ -183,8 +202,14 @@ exit 1
     assert_eq!(argv[3], "--");
     assert_eq!(argv[4], "TestProj");
     assert_eq!(argv[5], "do the thing");
-    assert!(!argv.contains(&"--agent"), "agent must never be forwarded: {argv:?}");
-    assert!(!argv.contains(&"--timeout"), "timeout must never be forwarded: {argv:?}");
+    assert!(
+        !argv.contains(&"--agent"),
+        "agent must never be forwarded: {argv:?}"
+    );
+    assert!(
+        !argv.contains(&"--timeout"),
+        "timeout must never be forwarded: {argv:?}"
+    );
 
     clear_env();
 }
@@ -198,7 +223,10 @@ async fn stream_nonzero_exit_reports_failure() {
     install_fake_home(home_dir.path(), "TestProj");
     install_fake_omega(bin_dir.path(), "echo 'trying...'; echo 'boom' >&2; exit 1");
     let (_, token) = DeviceStore::open(gateway_dir.path()).issue("t");
-    let app = build_router(AppState::new(gateway_dir.path().to_path_buf(), GatewayConfig::default()));
+    let app = build_router(AppState::new(
+        gateway_dir.path().to_path_buf(),
+        GatewayConfig::default(),
+    ));
     let base = spawn(app).await;
 
     let url = ws_url(&base, "/v1/orchestrate/stream", &token) + "&project=TestProj&mission=do+it";
@@ -245,7 +273,10 @@ fi
         ),
     );
     let (_, token) = DeviceStore::open(gateway_dir.path()).issue("t");
-    let app = build_router(AppState::new(gateway_dir.path().to_path_buf(), GatewayConfig::default()));
+    let app = build_router(AppState::new(
+        gateway_dir.path().to_path_buf(),
+        GatewayConfig::default(),
+    ));
     let base = spawn(app).await;
 
     let url = ws_url(&base, "/v1/orchestrate/stream", &token) + "&project=TestProj&mission=do+it";
@@ -257,14 +288,23 @@ fi
     ws.close(None).await.unwrap();
     drop(ws);
 
-    assert!(!marker.exists(), "marker must not exist yet — the nested child hasn't reached it");
+    assert!(
+        !marker.exists(),
+        "marker must not exist yet — the nested child hasn't reached it"
+    );
 
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(8);
     while tokio::time::Instant::now() < deadline {
-        assert!(!marker.exists(), "the SILENT nested child kept running after a clean disconnect");
+        assert!(
+            !marker.exists(),
+            "the SILENT nested child kept running after a clean disconnect"
+        );
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
     }
-    assert!(!marker.exists(), "the silent nested child survived the disconnect");
+    assert!(
+        !marker.exists(),
+        "the silent nested child survived the disconnect"
+    );
 
     clear_env();
 }
@@ -280,7 +320,10 @@ async fn concurrency_cap_returns_429_when_orchestrate_permits_exhausted() {
     // attempt fires.
     install_fake_omega(bin_dir.path(), "echo starting; sleep 5; exit 0");
     let (_, token) = DeviceStore::open(gateway_dir.path()).issue("t");
-    let app = build_router(AppState::new(gateway_dir.path().to_path_buf(), GatewayConfig::default()));
+    let app = build_router(AppState::new(
+        gateway_dir.path().to_path_buf(),
+        GatewayConfig::default(),
+    ));
     let base = spawn(app).await;
 
     // Must match server.rs's MAX_CONCURRENT_ORCHESTRATIONS.
@@ -288,7 +331,8 @@ async fn concurrency_cap_returns_429_when_orchestrate_permits_exhausted() {
 
     let mut held = Vec::new();
     for _ in 0..MAX_CONCURRENT_ORCHESTRATIONS {
-        let url = ws_url(&base, "/v1/orchestrate/stream", &token) + "&project=TestProj&mission=do+it";
+        let url =
+            ws_url(&base, "/v1/orchestrate/stream", &token) + "&project=TestProj&mission=do+it";
         let (mut ws, _) = connect_async(url).await.unwrap();
         let first = ws.next().await.unwrap().unwrap();
         let v: serde_json::Value = serde_json::from_str(&first.into_text().unwrap()).unwrap();
@@ -296,7 +340,8 @@ async fn concurrency_cap_returns_429_when_orchestrate_permits_exhausted() {
         held.push(ws);
     }
 
-    let url = ws_url(&base, "/v1/orchestrate/stream", &token) + "&project=TestProj&mission=one+too+many";
+    let url =
+        ws_url(&base, "/v1/orchestrate/stream", &token) + "&project=TestProj&mission=one+too+many";
     let err = connect_async(url).await.unwrap_err();
     assert!(err.to_string().contains("429"), "unexpected error: {err}");
 
@@ -306,10 +351,19 @@ async fn concurrency_cap_returns_429_when_orchestrate_permits_exhausted() {
 #[tokio::test]
 async fn stream_requires_auth() {
     let gateway_dir = tempfile::tempdir().unwrap();
-    let app = build_router(AppState::new(gateway_dir.path().to_path_buf(), GatewayConfig::default()));
+    let app = build_router(AppState::new(
+        gateway_dir.path().to_path_buf(),
+        GatewayConfig::default(),
+    ));
     let base = spawn(app).await;
-    let url = format!("{}/v1/orchestrate/stream?project=x&mission=y", base.replacen("http", "ws", 1));
+    let url = format!(
+        "{}/v1/orchestrate/stream?project=x&mission=y",
+        base.replacen("http", "ws", 1)
+    );
     let err = connect_async(url).await.unwrap_err();
     let msg = err.to_string();
-    assert!(msg.contains("401") || msg.contains("Unauthorized"), "unexpected error: {msg}");
+    assert!(
+        msg.contains("401") || msg.contains("Unauthorized"),
+        "unexpected error: {msg}"
+    );
 }

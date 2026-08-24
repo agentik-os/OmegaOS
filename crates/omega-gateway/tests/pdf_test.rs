@@ -22,7 +22,10 @@ async fn spawn(app: axum::Router) -> String {
 
 async fn app_and_token(gateway_dir: &std::path::Path) -> (axum::Router, String) {
     let (_, token) = DeviceStore::open(gateway_dir).issue("t");
-    let app = build_router(AppState::new(gateway_dir.to_path_buf(), GatewayConfig::default()));
+    let app = build_router(AppState::new(
+        gateway_dir.to_path_buf(),
+        GatewayConfig::default(),
+    ));
     (app, token)
 }
 
@@ -37,7 +40,11 @@ fn clear_env() {
 /// handler stats the out path for real after a successful exit, so a fake
 /// bin that only prints text (like `box_test.rs`'s backup fake) would make
 /// every happy-path test 502.
-fn install_fake_omega_pdf(bin_dir: &std::path::Path, capture_file: &std::path::Path, exit_code: i32) {
+fn install_fake_omega_pdf(
+    bin_dir: &std::path::Path,
+    capture_file: &std::path::Path,
+    exit_code: i32,
+) {
     use std::os::unix::fs::PermissionsExt;
     let path = bin_dir.join("omega");
     let capture = capture_file.display();
@@ -61,7 +68,11 @@ exit {exit_code}
 }
 
 fn argv_lines(capture_file: &std::path::Path) -> Vec<String> {
-    std::fs::read_to_string(capture_file).unwrap_or_default().lines().map(str::to_string).collect()
+    std::fs::read_to_string(capture_file)
+        .unwrap_or_default()
+        .lines()
+        .map(str::to_string)
+        .collect()
 }
 
 #[tokio::test]
@@ -95,9 +106,17 @@ async fn create_happy_path_returns_path_and_size_and_writes_the_data_file() {
     assert!(argv.contains(&"--template".to_string()));
     assert!(argv.contains(&"whitepaper".to_string()));
     assert!(argv.iter().any(|l| l.contains("/data/")), "argv: {argv:?}");
-    assert!(argv.iter().any(|l| l.contains("/output/")), "argv: {argv:?}");
+    assert!(
+        argv.iter().any(|l| l.contains("/output/")),
+        "argv: {argv:?}"
+    );
     // --send / --caption are NEVER passed.
-    assert!(!argv.iter().any(|l| l.contains("send") || l.contains("caption")), "argv: {argv:?}");
+    assert!(
+        !argv
+            .iter()
+            .any(|l| l.contains("send") || l.contains("caption")),
+        "argv: {argv:?}"
+    );
 
     // The data file genuinely holds the client's JSON.
     let data_idx = argv.iter().position(|l| l == "--data").unwrap();
@@ -129,7 +148,10 @@ async fn create_rejects_unknown_template_before_any_spawn() {
         .await
         .unwrap();
     assert_eq!(res.status(), 400);
-    assert!(!capture_file.exists(), "no subprocess was ever spawned for an unknown template");
+    assert!(
+        !capture_file.exists(),
+        "no subprocess was ever spawned for an unknown template"
+    );
 
     clear_env();
 }
@@ -197,12 +219,18 @@ async fn create_timeout_kills_the_whole_process_group_not_just_the_direct_child(
         .unwrap();
     assert_eq!(res.status(), 502);
     let body: serde_json::Value = res.json().await.unwrap();
-    assert!(body["error"].as_str().unwrap().contains("timed out"), "body: {body}");
+    assert!(
+        body["error"].as_str().unwrap().contains("timed out"),
+        "body: {body}"
+    );
 
     // Generous buffer past the nested sleep's 4s -- if the group kill
     // missed the nested child, the marker appears around the 4s mark.
     tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-    assert!(!marker.exists(), "the nested child survived the timeout kill");
+    assert!(
+        !marker.exists(),
+        "the nested child survived the timeout kill"
+    );
 
     clear_env();
 }
@@ -213,7 +241,10 @@ async fn create_requires_auth() {
     let gateway_dir = tempfile::tempdir().unwrap();
     let pdf_scratch = tempfile::tempdir().unwrap();
     std::env::set_var("OMEGA_PDF_DIR", pdf_scratch.path());
-    let app = build_router(AppState::new(gateway_dir.path().to_path_buf(), GatewayConfig::default()));
+    let app = build_router(AppState::new(
+        gateway_dir.path().to_path_buf(),
+        GatewayConfig::default(),
+    ));
     let base = spawn(app).await;
 
     let res = reqwest::Client::new()
@@ -260,8 +291,14 @@ async fn download_round_trips_a_generated_pdf() {
         .await
         .unwrap();
     assert_eq!(dl_res.status(), 200);
-    assert_eq!(dl_res.headers().get("content-type").unwrap(), "application/pdf");
-    assert_eq!(dl_res.headers().get("content-disposition").unwrap(), "attachment");
+    assert_eq!(
+        dl_res.headers().get("content-type").unwrap(),
+        "application/pdf"
+    );
+    assert_eq!(
+        dl_res.headers().get("content-disposition").unwrap(),
+        "attachment"
+    );
     let bytes = dl_res.bytes().await.unwrap();
     assert_eq!(&bytes[..], b"%PDF-FAKE-CONTENT");
 
@@ -291,7 +328,10 @@ async fn download_rejects_traversal_even_when_the_client_echoes_an_absolute_outs
     // particular must NEVER be 200 with /etc/passwd's real content.
     assert_eq!(dl_res.status(), 404);
     let body_text = dl_res.text().await.unwrap();
-    assert!(!body_text.contains("root:"), "must never leak real /etc/passwd content");
+    assert!(
+        !body_text.contains("root:"),
+        "must never leak real /etc/passwd content"
+    );
 
     // A relative traversal attempt is likewise reduced to a bare file name.
     let dl_res2 = reqwest::Client::new()
@@ -372,7 +412,10 @@ async fn download_requires_auth() {
     let gateway_dir = tempfile::tempdir().unwrap();
     let pdf_scratch = tempfile::tempdir().unwrap();
     std::env::set_var("OMEGA_PDF_DIR", pdf_scratch.path());
-    let app = build_router(AppState::new(gateway_dir.path().to_path_buf(), GatewayConfig::default()));
+    let app = build_router(AppState::new(
+        gateway_dir.path().to_path_buf(),
+        GatewayConfig::default(),
+    ));
     let base = spawn(app).await;
 
     let res = reqwest::Client::new()
@@ -507,7 +550,10 @@ async fn concurrency_cap_returns_429_when_pdf_permits_exhausted() {
         .unwrap();
     assert_eq!(busy_res.status(), 429);
     let body: serde_json::Value = busy_res.json().await.unwrap();
-    assert!(body["error"].as_str().unwrap().contains("too many concurrent"));
+    assert!(body["error"]
+        .as_str()
+        .unwrap()
+        .contains("too many concurrent"));
 
     for task in in_flight {
         let status = task.await.unwrap();

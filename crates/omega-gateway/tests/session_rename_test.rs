@@ -19,7 +19,10 @@ async fn spawn(app: axum::Router) -> String {
 
 async fn app_and_token(gateway_dir: &std::path::Path) -> (axum::Router, String) {
     let (_, token) = DeviceStore::open(gateway_dir).issue("t");
-    let app = build_router(AppState::new(gateway_dir.to_path_buf(), GatewayConfig::default()));
+    let app = build_router(AppState::new(
+        gateway_dir.to_path_buf(),
+        GatewayConfig::default(),
+    ));
     (app, token)
 }
 
@@ -46,7 +49,11 @@ fn install_fake_rmux(dir: &std::path::Path, capture_file: &std::path::Path) {
 fn install_fake_rmux_that_must_not_run(dir: &std::path::Path) {
     use std::os::unix::fs::PermissionsExt;
     let path = dir.join("rmux");
-    std::fs::write(&path, "#!/usr/bin/env bash\necho 'SHOULD NEVER RUN' >&2\nexit 1\n").unwrap();
+    std::fs::write(
+        &path,
+        "#!/usr/bin/env bash\necho 'SHOULD NEVER RUN' >&2\nexit 1\n",
+    )
+    .unwrap();
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
     std::env::set_var("OMEGA_RMUX_BIN", &path);
 }
@@ -86,7 +93,10 @@ async fn happy_path_rename_records_exact_argv() {
 
     let calls = parse_calls(&capture_file);
     assert_eq!(calls.len(), 1);
-    assert_eq!(calls[0], vec!["rename-session", "-t", "oracle-Foo-1", "oracle-Foo-renamed"]);
+    assert_eq!(
+        calls[0],
+        vec!["rename-session", "-t", "oracle-Foo-1", "oracle-Foo-renamed"]
+    );
 
     std::env::remove_var("OMEGA_RMUX_BIN");
 }
@@ -109,7 +119,11 @@ async fn new_name_with_dot_rejects_before_any_subprocess_spawn() {
             .send()
             .await
             .unwrap();
-        assert_eq!(res.status(), 400, "expected 400 for new_name {bad_new_name}");
+        assert_eq!(
+            res.status(),
+            400,
+            "expected 400 for new_name {bad_new_name}"
+        );
     }
 
     std::env::remove_var("OMEGA_RMUX_BIN");
@@ -137,7 +151,11 @@ async fn leading_dash_new_name_rejects_before_any_subprocess_spawn() {
             .send()
             .await
             .unwrap();
-        assert_eq!(res.status(), 400, "expected 400 for new_name {bad_new_name}");
+        assert_eq!(
+            res.status(),
+            400,
+            "expected 400 for new_name {bad_new_name}"
+        );
     }
 
     std::env::remove_var("OMEGA_RMUX_BIN");
@@ -169,7 +187,10 @@ async fn invalid_path_session_name_rejects_before_any_subprocess_spawn() {
 async fn post_rename_requires_auth() {
     let _g = LOCK.lock().await;
     let gateway_dir = tempfile::tempdir().unwrap();
-    let app = build_router(AppState::new(gateway_dir.path().to_path_buf(), GatewayConfig::default()));
+    let app = build_router(AppState::new(
+        gateway_dir.path().to_path_buf(),
+        GatewayConfig::default(),
+    ));
     let base = spawn(app).await;
 
     let res = reqwest::Client::new()

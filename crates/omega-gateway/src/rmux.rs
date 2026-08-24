@@ -6,7 +6,9 @@ pub fn rmux_bin() -> PathBuf {
     if let Ok(bin) = std::env::var("OMEGA_RMUX_BIN") {
         return PathBuf::from(bin);
     }
-    dirs::home_dir().expect("no home dir").join(".local/bin/rmux")
+    dirs::home_dir()
+        .expect("no home dir")
+        .join(".local/bin/rmux")
 }
 
 fn run(args: &[&str]) -> Result<String> {
@@ -19,7 +21,11 @@ fn run(args: &[&str]) -> Result<String> {
 
 pub fn list_sessions() -> Result<Vec<String>> {
     let out = run(&["ls", "-F", "#S"])?;
-    Ok(out.lines().map(str::to_string).filter(|l| !l.is_empty()).collect())
+    Ok(out
+        .lines()
+        .map(str::to_string)
+        .filter(|l| !l.is_empty())
+        .collect())
 }
 
 pub fn capture_pane(session: &str, lines: u32) -> Result<String> {

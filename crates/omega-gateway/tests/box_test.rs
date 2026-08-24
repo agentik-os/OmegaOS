@@ -55,19 +55,32 @@ async fn doctor_parses_mixed_checks_without_fixed_width_assumption() {
     let _g = LOCK.lock().await;
     let gateway_dir = tempfile::tempdir().unwrap();
     let bin_dir = tempfile::tempdir().unwrap();
-    install_fake_omega(bin_dir.path(), &format!("cat <<'EOF'\n{DOCTOR_STDOUT_MIXED}EOF\nexit 1"));
+    install_fake_omega(
+        bin_dir.path(),
+        &format!("cat <<'EOF'\n{DOCTOR_STDOUT_MIXED}EOF\nexit 1"),
+    );
     let (_, token) = DeviceStore::open(gateway_dir.path()).issue("t");
-    let app = build_router(AppState::new(gateway_dir.path().to_path_buf(), GatewayConfig::default()));
+    let app = build_router(AppState::new(
+        gateway_dir.path().to_path_buf(),
+        GatewayConfig::default(),
+    ));
     let base = spawn(app).await;
 
-    let res =
-        reqwest::Client::new().get(format!("{base}/v1/doctor")).bearer_auth(&token).send().await.unwrap();
+    let res = reqwest::Client::new()
+        .get(format!("{base}/v1/doctor"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
     // omega doctor exits 1 on overall Fail -- that is NOT treated as a spawn
     // error, so the endpoint still answers 200 with the parsed body.
     assert_eq!(res.status(), 200);
     let body: serde_json::Value = res.json().await.unwrap();
 
-    assert_eq!(body["overall"], "fail", "aggregated from the parsed checks, not the trailing summary line");
+    assert_eq!(
+        body["overall"], "fail",
+        "aggregated from the parsed checks, not the trailing summary line"
+    );
     let checks = body["checks"].as_array().unwrap();
     assert_eq!(checks.len(), 4);
 
@@ -78,7 +91,10 @@ async fn doctor_parses_mixed_checks_without_fixed_width_assumption() {
     // space between them since the name already exceeds the {:16} minimum)
     // must survive intact -- a fixed-width split would have cut this wrong.
     assert_eq!(checks[1]["health"], "ok");
-    assert_eq!(checks[1]["text"], "binary provenance built from HEAD (abc1234)");
+    assert_eq!(
+        checks[1]["text"],
+        "binary provenance built from HEAD (abc1234)"
+    );
 
     assert_eq!(checks[2]["health"], "warn");
     assert_eq!(checks[2]["text"], "telegram          poller stale (12m)");
@@ -99,11 +115,18 @@ async fn doctor_all_ok_reports_overall_ok() {
         "cat <<'EOF'\nOmegaOS doctor\n\n  [+] daemon running\n\n[+] all systems healthy\nEOF\nexit 0",
     );
     let (_, token) = DeviceStore::open(gateway_dir.path()).issue("t");
-    let app = build_router(AppState::new(gateway_dir.path().to_path_buf(), GatewayConfig::default()));
+    let app = build_router(AppState::new(
+        gateway_dir.path().to_path_buf(),
+        GatewayConfig::default(),
+    ));
     let base = spawn(app).await;
 
-    let res =
-        reqwest::Client::new().get(format!("{base}/v1/doctor")).bearer_auth(&token).send().await.unwrap();
+    let res = reqwest::Client::new()
+        .get(format!("{base}/v1/doctor"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
     assert_eq!(res.status(), 200);
     let body: serde_json::Value = res.json().await.unwrap();
     assert_eq!(body["overall"], "ok");
@@ -122,11 +145,18 @@ async fn doctor_warn_only_reports_overall_warn() {
         "cat <<'EOF'\nOmegaOS doctor\n\n  [+] daemon running\n  [!] telegram stale\n\n[!] healthy, with warnings above\nEOF\nexit 0",
     );
     let (_, token) = DeviceStore::open(gateway_dir.path()).issue("t");
-    let app = build_router(AppState::new(gateway_dir.path().to_path_buf(), GatewayConfig::default()));
+    let app = build_router(AppState::new(
+        gateway_dir.path().to_path_buf(),
+        GatewayConfig::default(),
+    ));
     let base = spawn(app).await;
 
-    let res =
-        reqwest::Client::new().get(format!("{base}/v1/doctor")).bearer_auth(&token).send().await.unwrap();
+    let res = reqwest::Client::new()
+        .get(format!("{base}/v1/doctor"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
     assert_eq!(res.status(), 200);
     let body: serde_json::Value = res.json().await.unwrap();
     assert_eq!(body["overall"], "warn");
@@ -146,12 +176,23 @@ async fn doctor_exit_code_1_on_fail_is_not_treated_as_an_error() {
         "cat <<'EOF'\nOmegaOS doctor\n\n  [x] disk full\n\n[x] problems detected — see [x] lines above\nEOF\nexit 1",
     );
     let (_, token) = DeviceStore::open(gateway_dir.path()).issue("t");
-    let app = build_router(AppState::new(gateway_dir.path().to_path_buf(), GatewayConfig::default()));
+    let app = build_router(AppState::new(
+        gateway_dir.path().to_path_buf(),
+        GatewayConfig::default(),
+    ));
     let base = spawn(app).await;
 
-    let res =
-        reqwest::Client::new().get(format!("{base}/v1/doctor")).bearer_auth(&token).send().await.unwrap();
-    assert_eq!(res.status(), 200, "a non-zero exit code alone must never become a 502");
+    let res = reqwest::Client::new()
+        .get(format!("{base}/v1/doctor"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        res.status(),
+        200,
+        "a non-zero exit code alone must never become a 502"
+    );
     let body: serde_json::Value = res.json().await.unwrap();
     assert_eq!(body["overall"], "fail");
 
@@ -161,10 +202,17 @@ async fn doctor_exit_code_1_on_fail_is_not_treated_as_an_error() {
 #[tokio::test]
 async fn doctor_requires_auth() {
     let dir = tempfile::tempdir().unwrap();
-    let app = build_router(AppState::new(dir.path().to_path_buf(), GatewayConfig::default()));
+    let app = build_router(AppState::new(
+        dir.path().to_path_buf(),
+        GatewayConfig::default(),
+    ));
     let base = spawn(app).await;
 
-    let res = reqwest::Client::new().get(format!("{base}/v1/doctor")).send().await.unwrap();
+    let res = reqwest::Client::new()
+        .get(format!("{base}/v1/doctor"))
+        .send()
+        .await
+        .unwrap();
     assert_eq!(res.status(), 401);
 }
 
@@ -194,11 +242,18 @@ async fn usage_reports_available_with_a_real_snapshot() {
     std::env::set_var("HOME", fake_home.path());
 
     let (_, token) = DeviceStore::open(gateway_dir.path()).issue("t");
-    let app = build_router(AppState::new(gateway_dir.path().to_path_buf(), GatewayConfig::default()));
+    let app = build_router(AppState::new(
+        gateway_dir.path().to_path_buf(),
+        GatewayConfig::default(),
+    ));
     let base = spawn(app).await;
 
-    let res =
-        reqwest::Client::new().get(format!("{base}/v1/usage")).bearer_auth(&token).send().await.unwrap();
+    let res = reqwest::Client::new()
+        .get(format!("{base}/v1/usage"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
     assert_eq!(res.status(), 200);
     let body: serde_json::Value = res.json().await.unwrap();
     assert_eq!(body["available"], true);
@@ -217,12 +272,23 @@ async fn usage_reports_unavailable_when_cache_file_absent() {
     std::env::set_var("HOME", fake_home.path());
 
     let (_, token) = DeviceStore::open(gateway_dir.path()).issue("t");
-    let app = build_router(AppState::new(gateway_dir.path().to_path_buf(), GatewayConfig::default()));
+    let app = build_router(AppState::new(
+        gateway_dir.path().to_path_buf(),
+        GatewayConfig::default(),
+    ));
     let base = spawn(app).await;
 
-    let res =
-        reqwest::Client::new().get(format!("{base}/v1/usage")).bearer_auth(&token).send().await.unwrap();
-    assert_eq!(res.status(), 200, "no cache yet is a normal state, never an error");
+    let res = reqwest::Client::new()
+        .get(format!("{base}/v1/usage"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        res.status(),
+        200,
+        "no cache yet is a normal state, never an error"
+    );
     let body: serde_json::Value = res.json().await.unwrap();
     assert_eq!(body["available"], false);
     assert!(body.get("session_pct").is_none() || body["session_pct"].is_null());
@@ -233,10 +299,17 @@ async fn usage_reports_unavailable_when_cache_file_absent() {
 #[tokio::test]
 async fn usage_requires_auth() {
     let dir = tempfile::tempdir().unwrap();
-    let app = build_router(AppState::new(dir.path().to_path_buf(), GatewayConfig::default()));
+    let app = build_router(AppState::new(
+        dir.path().to_path_buf(),
+        GatewayConfig::default(),
+    ));
     let base = spawn(app).await;
 
-    let res = reqwest::Client::new().get(format!("{base}/v1/usage")).send().await.unwrap();
+    let res = reqwest::Client::new()
+        .get(format!("{base}/v1/usage"))
+        .send()
+        .await
+        .unwrap();
     assert_eq!(res.status(), 401);
 }
 
@@ -249,7 +322,10 @@ async fn box_info_reports_hostname_version_and_small_nonnegative_uptime() {
     let bin_dir = tempfile::tempdir().unwrap();
     install_fake_omega(bin_dir.path(), "echo 'omega 0.1.9'");
     let (_, token) = DeviceStore::open(gateway_dir.path()).issue("t");
-    let app = build_router(AppState::new(gateway_dir.path().to_path_buf(), GatewayConfig::default()));
+    let app = build_router(AppState::new(
+        gateway_dir.path().to_path_buf(),
+        GatewayConfig::default(),
+    ));
     let base = spawn(app).await;
 
     let res = reqwest::Client::new()
@@ -266,7 +342,10 @@ async fn box_info_reports_hostname_version_and_small_nonnegative_uptime() {
     // The request runs shortly after AppState::new() -- uptime must be a
     // small, non-negative number of seconds.
     let uptime = body["uptime_secs"].as_u64().unwrap();
-    assert!(uptime < 30, "uptime {uptime}s is implausibly large for a fresh test process");
+    assert!(
+        uptime < 30,
+        "uptime {uptime}s is implausibly large for a fresh test process"
+    );
 
     clear_env();
 }
@@ -274,10 +353,17 @@ async fn box_info_reports_hostname_version_and_small_nonnegative_uptime() {
 #[tokio::test]
 async fn box_info_requires_auth() {
     let dir = tempfile::tempdir().unwrap();
-    let app = build_router(AppState::new(dir.path().to_path_buf(), GatewayConfig::default()));
+    let app = build_router(AppState::new(
+        dir.path().to_path_buf(),
+        GatewayConfig::default(),
+    ));
     let base = spawn(app).await;
 
-    let res = reqwest::Client::new().get(format!("{base}/v1/box-info")).send().await.unwrap();
+    let res = reqwest::Client::new()
+        .get(format!("{base}/v1/box-info"))
+        .send()
+        .await
+        .unwrap();
     assert_eq!(res.status(), 401);
 }
 
@@ -309,7 +395,10 @@ exit 0
     std::env::set_var("OMEGA_BACKUP_DIR", backup_scratch.path());
 
     let (_, token) = DeviceStore::open(gateway_dir.path()).issue("t");
-    let app = build_router(AppState::new(gateway_dir.path().to_path_buf(), GatewayConfig::default()));
+    let app = build_router(AppState::new(
+        gateway_dir.path().to_path_buf(),
+        GatewayConfig::default(),
+    ));
     let base = spawn(app).await;
 
     let res = reqwest::Client::new()
@@ -346,7 +435,10 @@ async fn backup_nonzero_exit_is_a_502() {
     std::env::set_var("OMEGA_BACKUP_DIR", backup_scratch.path());
 
     let (_, token) = DeviceStore::open(gateway_dir.path()).issue("t");
-    let app = build_router(AppState::new(gateway_dir.path().to_path_buf(), GatewayConfig::default()));
+    let app = build_router(AppState::new(
+        gateway_dir.path().to_path_buf(),
+        GatewayConfig::default(),
+    ));
     let base = spawn(app).await;
 
     let res = reqwest::Client::new()
@@ -355,7 +447,11 @@ async fn backup_nonzero_exit_is_a_502() {
         .send()
         .await
         .unwrap();
-    assert_eq!(res.status(), 502, "a failed backup is a real error, unlike doctor's expected non-zero exit");
+    assert_eq!(
+        res.status(),
+        502,
+        "a failed backup is a real error, unlike doctor's expected non-zero exit"
+    );
 
     clear_env();
 }
@@ -363,10 +459,17 @@ async fn backup_nonzero_exit_is_a_502() {
 #[tokio::test]
 async fn backup_requires_auth() {
     let dir = tempfile::tempdir().unwrap();
-    let app = build_router(AppState::new(dir.path().to_path_buf(), GatewayConfig::default()));
+    let app = build_router(AppState::new(
+        dir.path().to_path_buf(),
+        GatewayConfig::default(),
+    ));
     let base = spawn(app).await;
 
-    let res = reqwest::Client::new().post(format!("{base}/v1/backup")).send().await.unwrap();
+    let res = reqwest::Client::new()
+        .post(format!("{base}/v1/backup"))
+        .send()
+        .await
+        .unwrap();
     assert_eq!(res.status(), 401);
 }
 
@@ -375,10 +478,17 @@ async fn backup_requires_auth() {
 #[tokio::test]
 async fn box_id_requires_auth() {
     let dir = tempfile::tempdir().unwrap();
-    let app = build_router(AppState::new(dir.path().to_path_buf(), GatewayConfig::default()));
+    let app = build_router(AppState::new(
+        dir.path().to_path_buf(),
+        GatewayConfig::default(),
+    ));
     let base = spawn(app).await;
 
-    let res = reqwest::Client::new().get(format!("{base}/v1/box-id")).send().await.unwrap();
+    let res = reqwest::Client::new()
+        .get(format!("{base}/v1/box-id"))
+        .send()
+        .await
+        .unwrap();
     assert_eq!(res.status(), 401);
 }
 
@@ -386,21 +496,36 @@ async fn box_id_requires_auth() {
 async fn box_id_is_32_hex_chars_and_stable_across_repeated_calls() {
     let gateway_dir = tempfile::tempdir().unwrap();
     let (_, token) = DeviceStore::open(gateway_dir.path()).issue("t");
-    let app = build_router(AppState::new(gateway_dir.path().to_path_buf(), GatewayConfig::default()));
+    let app = build_router(AppState::new(
+        gateway_dir.path().to_path_buf(),
+        GatewayConfig::default(),
+    ));
     let base = spawn(app).await;
 
-    let res1 =
-        reqwest::Client::new().get(format!("{base}/v1/box-id")).bearer_auth(&token).send().await.unwrap();
+    let res1 = reqwest::Client::new()
+        .get(format!("{base}/v1/box-id"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
     assert_eq!(res1.status(), 200);
     let body1: serde_json::Value = res1.json().await.unwrap();
     let id1 = body1["box_id"].as_str().unwrap().to_string();
     assert_eq!(id1.len(), 32, "box_id must be 32 hex chars");
     assert!(id1.chars().all(|c| c.is_ascii_hexdigit()));
 
-    let res2 =
-        reqwest::Client::new().get(format!("{base}/v1/box-id")).bearer_auth(&token).send().await.unwrap();
+    let res2 = reqwest::Client::new()
+        .get(format!("{base}/v1/box-id"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
     let body2: serde_json::Value = res2.json().await.unwrap();
-    assert_eq!(body2["box_id"].as_str().unwrap(), id1, "repeated calls must return the SAME id");
+    assert_eq!(
+        body2["box_id"].as_str().unwrap(),
+        id1,
+        "repeated calls must return the SAME id"
+    );
 }
 
 #[tokio::test]
@@ -411,19 +536,37 @@ async fn box_id_persists_across_a_fresh_appstate_pointed_at_the_same_dir() {
     let gateway_dir = tempfile::tempdir().unwrap();
     let (_, token) = DeviceStore::open(gateway_dir.path()).issue("t");
 
-    let app1 = build_router(AppState::new(gateway_dir.path().to_path_buf(), GatewayConfig::default()));
+    let app1 = build_router(AppState::new(
+        gateway_dir.path().to_path_buf(),
+        GatewayConfig::default(),
+    ));
     let base1 = spawn(app1).await;
-    let res1 =
-        reqwest::Client::new().get(format!("{base1}/v1/box-id")).bearer_auth(&token).send().await.unwrap();
+    let res1 = reqwest::Client::new()
+        .get(format!("{base1}/v1/box-id"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
     let body1: serde_json::Value = res1.json().await.unwrap();
     let id1 = body1["box_id"].as_str().unwrap().to_string();
 
-    let app2 = build_router(AppState::new(gateway_dir.path().to_path_buf(), GatewayConfig::default()));
+    let app2 = build_router(AppState::new(
+        gateway_dir.path().to_path_buf(),
+        GatewayConfig::default(),
+    ));
     let base2 = spawn(app2).await;
-    let res2 =
-        reqwest::Client::new().get(format!("{base2}/v1/box-id")).bearer_auth(&token).send().await.unwrap();
+    let res2 = reqwest::Client::new()
+        .get(format!("{base2}/v1/box-id"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
     let body2: serde_json::Value = res2.json().await.unwrap();
-    assert_eq!(body2["box_id"].as_str().unwrap(), id1, "id must survive a restart against the same dir");
+    assert_eq!(
+        body2["box_id"].as_str().unwrap(),
+        id1,
+        "id must survive a restart against the same dir"
+    );
 }
 
 /// Adversarial: many requests fire at a gateway whose `box_id.txt` does not
@@ -434,7 +577,10 @@ async fn box_id_persists_across_a_fresh_appstate_pointed_at_the_same_dir() {
 async fn box_id_concurrent_first_calls_converge_on_one_id() {
     let gateway_dir = tempfile::tempdir().unwrap();
     let (_, token) = DeviceStore::open(gateway_dir.path()).issue("t");
-    let app = build_router(AppState::new(gateway_dir.path().to_path_buf(), GatewayConfig::default()));
+    let app = build_router(AppState::new(
+        gateway_dir.path().to_path_buf(),
+        GatewayConfig::default(),
+    ));
     let base = spawn(app).await;
 
     let mut handles = Vec::new();
@@ -456,7 +602,11 @@ async fn box_id_concurrent_first_calls_converge_on_one_id() {
     for h in handles {
         ids.insert(h.await.unwrap());
     }
-    assert_eq!(ids.len(), 1, "every concurrent first-call must converge on exactly one id, got {ids:?}");
+    assert_eq!(
+        ids.len(),
+        1,
+        "every concurrent first-call must converge on exactly one id, got {ids:?}"
+    );
 }
 
 #[cfg(unix)]
@@ -465,11 +615,18 @@ async fn box_id_file_is_0600() {
     use std::os::unix::fs::PermissionsExt;
     let gateway_dir = tempfile::tempdir().unwrap();
     let (_, token) = DeviceStore::open(gateway_dir.path()).issue("t");
-    let app = build_router(AppState::new(gateway_dir.path().to_path_buf(), GatewayConfig::default()));
+    let app = build_router(AppState::new(
+        gateway_dir.path().to_path_buf(),
+        GatewayConfig::default(),
+    ));
     let base = spawn(app).await;
 
-    let res =
-        reqwest::Client::new().get(format!("{base}/v1/box-id")).bearer_auth(&token).send().await.unwrap();
+    let res = reqwest::Client::new()
+        .get(format!("{base}/v1/box-id"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
     assert_eq!(res.status(), 200);
 
     let mode = std::fs::metadata(gateway_dir.path().join("box_id.txt"))
@@ -487,11 +644,18 @@ async fn box_id_regenerates_when_file_is_empty() {
     let gateway_dir = tempfile::tempdir().unwrap();
     std::fs::write(gateway_dir.path().join("box_id.txt"), "").unwrap();
     let (_, token) = DeviceStore::open(gateway_dir.path()).issue("t");
-    let app = build_router(AppState::new(gateway_dir.path().to_path_buf(), GatewayConfig::default()));
+    let app = build_router(AppState::new(
+        gateway_dir.path().to_path_buf(),
+        GatewayConfig::default(),
+    ));
     let base = spawn(app).await;
 
-    let res =
-        reqwest::Client::new().get(format!("{base}/v1/box-id")).bearer_auth(&token).send().await.unwrap();
+    let res = reqwest::Client::new()
+        .get(format!("{base}/v1/box-id"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
     assert_eq!(res.status(), 200);
     let body: serde_json::Value = res.json().await.unwrap();
     assert_eq!(body["box_id"].as_str().unwrap().len(), 32);
@@ -507,17 +671,27 @@ async fn box_id_regenerates_when_file_is_malformed_but_nonempty() {
     // Too short, and contains a non-hex char ('z').
     std::fs::write(gateway_dir.path().join("box_id.txt"), "not-a-real-boxid-z").unwrap();
     let (_, token) = DeviceStore::open(gateway_dir.path()).issue("t");
-    let app = build_router(AppState::new(gateway_dir.path().to_path_buf(), GatewayConfig::default()));
+    let app = build_router(AppState::new(
+        gateway_dir.path().to_path_buf(),
+        GatewayConfig::default(),
+    ));
     let base = spawn(app).await;
 
-    let res =
-        reqwest::Client::new().get(format!("{base}/v1/box-id")).bearer_auth(&token).send().await.unwrap();
+    let res = reqwest::Client::new()
+        .get(format!("{base}/v1/box-id"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
     assert_eq!(res.status(), 200);
     let body: serde_json::Value = res.json().await.unwrap();
     let id = body["box_id"].as_str().unwrap();
     assert_eq!(id.len(), 32);
     assert!(id.chars().all(|c| c.is_ascii_hexdigit()));
-    assert_ne!(id, "not-a-real-boxid-z", "the malformed content must never be echoed back as-is");
+    assert_ne!(
+        id, "not-a-real-boxid-z",
+        "the malformed content must never be echoed back as-is"
+    );
 }
 
 /// Adversarial (review-fix regression test): the SAME 16-way concurrent
@@ -532,7 +706,10 @@ async fn box_id_concurrent_calls_against_a_preexisting_empty_file_converge_on_on
     let gateway_dir = tempfile::tempdir().unwrap();
     std::fs::write(gateway_dir.path().join("box_id.txt"), "").unwrap();
     let (_, token) = DeviceStore::open(gateway_dir.path()).issue("t");
-    let app = build_router(AppState::new(gateway_dir.path().to_path_buf(), GatewayConfig::default()));
+    let app = build_router(AppState::new(
+        gateway_dir.path().to_path_buf(),
+        GatewayConfig::default(),
+    ));
     let base = spawn(app).await;
 
     let mut handles = Vec::new();
@@ -568,19 +745,33 @@ async fn box_id_concurrent_calls_against_a_preexisting_empty_file_converge_on_on
 async fn box_id_creation_leaves_no_stray_tmp_files() {
     let gateway_dir = tempfile::tempdir().unwrap();
     let (_, token) = DeviceStore::open(gateway_dir.path()).issue("t");
-    let app = build_router(AppState::new(gateway_dir.path().to_path_buf(), GatewayConfig::default()));
+    let app = build_router(AppState::new(
+        gateway_dir.path().to_path_buf(),
+        GatewayConfig::default(),
+    ));
     let base = spawn(app).await;
 
-    let res =
-        reqwest::Client::new().get(format!("{base}/v1/box-id")).bearer_auth(&token).send().await.unwrap();
+    let res = reqwest::Client::new()
+        .get(format!("{base}/v1/box-id"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
     assert_eq!(res.status(), 200);
 
     let leftovers: Vec<_> = std::fs::read_dir(gateway_dir.path())
         .unwrap()
         .filter_map(|e| e.ok())
-        .filter(|e| e.file_name().to_string_lossy().starts_with("box_id.txt.tmp-"))
+        .filter(|e| {
+            e.file_name()
+                .to_string_lossy()
+                .starts_with("box_id.txt.tmp-")
+        })
         .collect();
-    assert!(leftovers.is_empty(), "no temp file should survive a successful creation: {leftovers:?}");
+    assert!(
+        leftovers.is_empty(),
+        "no temp file should survive a successful creation: {leftovers:?}"
+    );
 }
 
 /// Adversarial: `omega doctor` stdout with a check line whose glyph slot
@@ -602,18 +793,37 @@ async fn doctor_survives_multibyte_glyph_in_check_line() {
         "cat <<'EOF2'\nOmegaOS doctor\n\n  [\u{20ac}] weird glyph line\n\n[+] ok\nEOF2\nexit 0",
     );
     let (_, token) = DeviceStore::open(gateway_dir.path()).issue("t");
-    let app = build_router(AppState::new(gateway_dir.path().to_path_buf(), GatewayConfig::default()));
+    let app = build_router(AppState::new(
+        gateway_dir.path().to_path_buf(),
+        GatewayConfig::default(),
+    ));
     let base = spawn(app).await;
 
-    let res =
-        reqwest::Client::new().get(format!("{base}/v1/doctor")).bearer_auth(&token).send().await.unwrap();
-    assert_eq!(res.status(), 200, "a malformed check line must never crash the connection");
+    let res = reqwest::Client::new()
+        .get(format!("{base}/v1/doctor"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        res.status(),
+        200,
+        "a malformed check line must never crash the connection"
+    );
     let body: serde_json::Value = res.json().await.unwrap();
-    assert_eq!(body["checks"].as_array().unwrap().len(), 0, "the unrecognized-glyph line is skipped");
+    assert_eq!(
+        body["checks"].as_array().unwrap().len(),
+        0,
+        "the unrecognized-glyph line is skipped"
+    );
 
     // The server process itself must still be alive for a second request.
-    let res2 =
-        reqwest::Client::new().get(format!("{base}/v1/doctor")).bearer_auth(&token).send().await.unwrap();
+    let res2 = reqwest::Client::new()
+        .get(format!("{base}/v1/doctor"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
     assert_eq!(res2.status(), 200);
 
     clear_env();

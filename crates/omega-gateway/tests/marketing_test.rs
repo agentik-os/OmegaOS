@@ -28,7 +28,10 @@ async fn spawn(app: axum::Router) -> String {
 
 async fn app_and_token(gateway_dir: &std::path::Path) -> (axum::Router, String) {
     let (_, token) = DeviceStore::open(gateway_dir).issue("t");
-    let app = build_router(AppState::new(gateway_dir.to_path_buf(), GatewayConfig::default()));
+    let app = build_router(AppState::new(
+        gateway_dir.to_path_buf(),
+        GatewayConfig::default(),
+    ));
     (app, token)
 }
 
@@ -83,15 +86,31 @@ fn write_layer_file(dir: &std::path::Path, name: &str, content: &str) {
 fn write_full_marketing_project(station: &std::path::Path, dir_name: &str) {
     let root = station.join(dir_name);
     let marketing = root.join("marketing");
-    write_layer_file(&marketing.join("00-context"), "product-marketing.md", "context");
-    write_layer_file(&marketing.join("01-strategy"), "gtm-strategy.md", "strategy");
+    write_layer_file(
+        &marketing.join("00-context"),
+        "product-marketing.md",
+        "context",
+    );
+    write_layer_file(
+        &marketing.join("01-strategy"),
+        "gtm-strategy.md",
+        "strategy",
+    );
     write_layer_file(&marketing.join("02-copy"), "copywriting.md", "copy");
     write_layer_file(&marketing.join("03-visual-identity"), "DA.md", "visual");
-    write_layer_file(&marketing.join("06-branding"), "SOCIAL-BRAND-BOOK.md", "branding");
+    write_layer_file(
+        &marketing.join("06-branding"),
+        "SOCIAL-BRAND-BOOK.md",
+        "branding",
+    );
     std::fs::create_dir_all(marketing.join("04-publishing").join("daily-engine")).unwrap();
     let cal_dir = marketing.join("05-calendar");
     std::fs::create_dir_all(&cal_dir).unwrap();
-    std::fs::write(cal_dir.join("calendar-90d.json"), r#"{"posts": ["p1", "p2", "p3"]}"#).unwrap();
+    std::fs::write(
+        cal_dir.join("calendar-90d.json"),
+        r#"{"posts": ["p1", "p2", "p3"]}"#,
+    )
+    .unwrap();
 }
 
 /// A bare marketing-enabled project: just the `marketing/` dir itself, no
@@ -105,10 +124,17 @@ fn write_bare_marketing_project(station: &std::path::Path, dir_name: &str) {
 async fn get_marketing_requires_auth() {
     let _g = LOCK.lock().await;
     let gateway_dir = tempfile::tempdir().unwrap();
-    let app = build_router(AppState::new(gateway_dir.path().to_path_buf(), GatewayConfig::default()));
+    let app = build_router(AppState::new(
+        gateway_dir.path().to_path_buf(),
+        GatewayConfig::default(),
+    ));
     let base = spawn(app).await;
 
-    let res = reqwest::Client::new().get(format!("{base}/v1/marketing")).send().await.unwrap();
+    let res = reqwest::Client::new()
+        .get(format!("{base}/v1/marketing"))
+        .send()
+        .await
+        .unwrap();
     assert_eq!(res.status(), 401);
 }
 
@@ -125,8 +151,12 @@ async fn get_marketing_returns_empty_when_no_marketing_projects() {
     let (app, token) = app_and_token(gateway_dir.path()).await;
     let base = spawn(app).await;
 
-    let res =
-        reqwest::Client::new().get(format!("{base}/v1/marketing")).bearer_auth(&token).send().await.unwrap();
+    let res = reqwest::Client::new()
+        .get(format!("{base}/v1/marketing"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
     assert_eq!(res.status(), 200);
     let body: serde_json::Value = res.json().await.unwrap();
     assert_eq!(body["projects"].as_array().unwrap().len(), 0);
@@ -149,8 +179,12 @@ async fn get_marketing_returns_full_status_flags_and_never_populates_accounts() 
     let (app, token) = app_and_token(gateway_dir.path()).await;
     let base = spawn(app).await;
 
-    let res =
-        reqwest::Client::new().get(format!("{base}/v1/marketing")).bearer_auth(&token).send().await.unwrap();
+    let res = reqwest::Client::new()
+        .get(format!("{base}/v1/marketing"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
     assert_eq!(res.status(), 200);
     let body: serde_json::Value = res.json().await.unwrap();
     let projects = body["projects"].as_array().unwrap();
@@ -162,7 +196,10 @@ async fn get_marketing_returns_full_status_flags_and_never_populates_accounts() 
     assert_eq!(p["has_content"], true);
     assert_eq!(p["calendar_posts"], 3);
     assert_eq!(p["engine_on"], true);
-    assert!(p["accounts"].is_null(), "accounts must never be populated by the list endpoint");
+    assert!(
+        p["accounts"].is_null(),
+        "accounts must never be populated by the list endpoint"
+    );
     assert_eq!(p["accounts_tried"], false);
     assert_eq!(p["has_context"], true);
     assert_eq!(p["has_strategy"], true);
@@ -171,7 +208,10 @@ async fn get_marketing_returns_full_status_flags_and_never_populates_accounts() 
     assert_eq!(p["has_branding"], true);
     // `path` is deliberately never sent over the wire (server-internal, same
     // posture ProjectEntry already takes for /v1/projects).
-    assert!(p.get("path").is_none(), "path must not be exposed on the wire");
+    assert!(
+        p.get("path").is_none(),
+        "path must not be exposed on the wire"
+    );
 
     clear_env();
     restore_path(&old_path);
@@ -196,8 +236,12 @@ async fn get_marketing_returns_multiple_projects_name_sorted() {
     let (app, token) = app_and_token(gateway_dir.path()).await;
     let base = spawn(app).await;
 
-    let res =
-        reqwest::Client::new().get(format!("{base}/v1/marketing")).bearer_auth(&token).send().await.unwrap();
+    let res = reqwest::Client::new()
+        .get(format!("{base}/v1/marketing"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
     assert_eq!(res.status(), 200);
     let body: serde_json::Value = res.json().await.unwrap();
     let projects = body["projects"].as_array().unwrap();
@@ -237,8 +281,12 @@ async fn get_marketing_returns_504_when_crontab_hangs_past_the_timeout() {
     let base = spawn(app).await;
 
     let started = std::time::Instant::now();
-    let res =
-        reqwest::Client::new().get(format!("{base}/v1/marketing")).bearer_auth(&token).send().await.unwrap();
+    let res = reqwest::Client::new()
+        .get(format!("{base}/v1/marketing"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
     let elapsed = started.elapsed();
 
     assert_eq!(res.status(), 504);
@@ -248,7 +296,10 @@ async fn get_marketing_returns_504_when_crontab_hangs_past_the_timeout() {
     );
     let body: serde_json::Value = res.json().await.unwrap();
     assert!(
-        body["error"].as_str().unwrap_or_default().contains("timed out"),
+        body["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("timed out"),
         "expected a 'timed out' error message, got: {body}"
     );
 
@@ -307,8 +358,12 @@ async fn get_marketing_dedupes_when_registry_name_differs_from_directory_name() 
     let (app, token) = app_and_token(gateway_dir.path()).await;
     let base = spawn(app).await;
 
-    let res =
-        reqwest::Client::new().get(format!("{base}/v1/marketing")).bearer_auth(&token).send().await.unwrap();
+    let res = reqwest::Client::new()
+        .get(format!("{base}/v1/marketing"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
     assert_eq!(res.status(), 200);
     let body: serde_json::Value = res.json().await.unwrap();
     let projects = body["projects"].as_array().unwrap();

@@ -6,7 +6,7 @@
 //! Each `<gateway_dir>/chats/<id>/` dir is hardened to 0700.
 
 use crate::fsperm::{harden_dir, harden_file};
-use crate::protocol::{ChatAgent, ChatMeta, ChatMessage};
+use crate::protocol::{ChatAgent, ChatMessage, ChatMeta};
 use crate::util::random_hex;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -29,7 +29,10 @@ impl ChatStore {
         let chats_dir = gateway_dir.join("chats");
         std::fs::create_dir_all(&chats_dir).ok();
         harden_dir(&chats_dir);
-        Self { chats_dir, active_turns: Mutex::new(HashSet::new()) }
+        Self {
+            chats_dir,
+            active_turns: Mutex::new(HashSet::new()),
+        }
     }
 
     /// Marks chat `id` as having a turn in flight. Returns `true` and
@@ -78,7 +81,11 @@ impl ChatStore {
                 } else {
                     harden_file(&tmp);
                     if let Err(e) = std::fs::rename(&tmp, &path) {
-                        tracing::error!("failed to rename {} -> {}: {e}", tmp.display(), path.display());
+                        tracing::error!(
+                            "failed to rename {} -> {}: {e}",
+                            tmp.display(),
+                            path.display()
+                        );
                     } else {
                         harden_file(&path);
                     }
@@ -121,11 +128,15 @@ impl ChatStore {
             return metas;
         };
         for entry in entries.flatten() {
-            let Ok(file_type) = entry.file_type() else { continue };
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
             if !file_type.is_dir() {
                 continue;
             }
-            let Some(id) = entry.file_name().to_str().map(str::to_string) else { continue };
+            let Some(id) = entry.file_name().to_str().map(str::to_string) else {
+                continue;
+            };
             if let Some(meta) = self.get(&id) {
                 metas.push(meta);
             }
@@ -157,7 +168,10 @@ impl ChatStore {
             return;
         };
         use std::io::Write;
-        let file = std::fs::OpenOptions::new().create(true).append(true).open(&path);
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path);
         match file {
             Ok(mut f) => {
                 if let Err(e) = writeln!(f, "{line}") {
@@ -202,7 +216,12 @@ impl ChatStore {
     /// reached (nothing older exists). `limit` is clamped server-side
     /// regardless of what the caller asks, so a hostile `limit` cannot
     /// force an unbounded read.
-    pub fn tail_page(&self, id: &str, before: Option<u64>, limit: usize) -> (Vec<ChatMessage>, Option<u64>) {
+    pub fn tail_page(
+        &self,
+        id: &str,
+        before: Option<u64>,
+        limit: usize,
+    ) -> (Vec<ChatMessage>, Option<u64>) {
         const MAX_LIMIT: usize = 500;
         const CHUNK_SIZE: u64 = 64 * 1024;
         let limit = limit.min(MAX_LIMIT);
@@ -266,7 +285,11 @@ impl ChatStore {
 
         let take = limit.min(lines.len());
         let window = &lines[lines.len() - take..];
-        let next_cursor = if lines.len() > take { Some(window[0].0) } else { None };
+        let next_cursor = if lines.len() > take {
+            Some(window[0].0)
+        } else {
+            None
+        };
 
         let mut messages = Vec::with_capacity(take);
         for (_, bytes) in window.iter().rev() {
@@ -301,7 +324,12 @@ mod tests {
     fn create_then_get_roundtrip() {
         let dir = tempfile::tempdir().unwrap();
         let store = ChatStore::open(dir.path());
-        let meta = store.create(ChatAgent::Claude, "/tmp/proj".to_string(), Some("hi".to_string()), None);
+        let meta = store.create(
+            ChatAgent::Claude,
+            "/tmp/proj".to_string(),
+            Some("hi".to_string()),
+            None,
+        );
 
         let fetched = store.get(&meta.id).expect("chat should exist");
         assert_eq!(fetched.id, meta.id);
@@ -348,7 +376,9 @@ mod tests {
         )
         .unwrap();
 
-        let meta = store.get("legacy1").expect("legacy meta.json should still parse");
+        let meta = store
+            .get("legacy1")
+            .expect("legacy meta.json should still parse");
         assert!(meta.account_slug.is_none());
     }
 
@@ -367,11 +397,19 @@ mod tests {
 
         store.append_message(
             &meta.id,
-            &ChatMessage { role: "user".to_string(), text: "first".to_string(), ts: "t1".to_string() },
+            &ChatMessage {
+                role: "user".to_string(),
+                text: "first".to_string(),
+                ts: "t1".to_string(),
+            },
         );
         store.append_message(
             &meta.id,
-            &ChatMessage { role: "assistant".to_string(), text: "second".to_string(), ts: "t2".to_string() },
+            &ChatMessage {
+                role: "assistant".to_string(),
+                text: "second".to_string(),
+                ts: "t2".to_string(),
+            },
         );
 
         let transcript = store.transcript(&meta.id);
@@ -409,7 +447,11 @@ mod tests {
         // bump a's updated_at past b's by appending to it
         store.append_message(
             &a.id,
-            &ChatMessage { role: "user".to_string(), text: "bump".to_string(), ts: "t".to_string() },
+            &ChatMessage {
+                role: "user".to_string(),
+                text: "bump".to_string(),
+                ts: "t".to_string(),
+            },
         );
 
         let listed = store.list();
@@ -424,11 +466,20 @@ mod tests {
         let store = ChatStore::open(dir.path());
         let meta = store.create(ChatAgent::Claude, "/tmp".to_string(), None, None);
 
-        assert!(store.try_start_turn(&meta.id), "first call should start the turn");
-        assert!(!store.try_start_turn(&meta.id), "second call while active must be rejected");
+        assert!(
+            store.try_start_turn(&meta.id),
+            "first call should start the turn"
+        );
+        assert!(
+            !store.try_start_turn(&meta.id),
+            "second call while active must be rejected"
+        );
 
         store.end_turn(&meta.id);
-        assert!(store.try_start_turn(&meta.id), "after end_turn, a new turn may start");
+        assert!(
+            store.try_start_turn(&meta.id),
+            "after end_turn, a new turn may start"
+        );
     }
 
     #[test]
@@ -447,7 +498,10 @@ mod tests {
         let b = store.create(ChatAgent::Claude, "/tmp".to_string(), None, None);
 
         assert!(store.try_start_turn(&a.id));
-        assert!(store.try_start_turn(&b.id), "a different chat id must not be blocked by a's active turn");
+        assert!(
+            store.try_start_turn(&b.id),
+            "a different chat id must not be blocked by a's active turn"
+        );
     }
 
     #[test]
@@ -460,7 +514,10 @@ mod tests {
         store.set_provider_session(&meta.id, "claude-session-abc");
 
         let fetched = store.get(&meta.id).unwrap();
-        assert_eq!(fetched.provider_session_id.as_deref(), Some("claude-session-abc"));
+        assert_eq!(
+            fetched.provider_session_id.as_deref(),
+            Some("claude-session-abc")
+        );
     }
 
     #[test]
@@ -468,10 +525,19 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let meta = {
             let store = ChatStore::open(dir.path());
-            let meta = store.create(ChatAgent::Claude, "/tmp".to_string(), Some("persisted".to_string()), None);
+            let meta = store.create(
+                ChatAgent::Claude,
+                "/tmp".to_string(),
+                Some("persisted".to_string()),
+                None,
+            );
             store.append_message(
                 &meta.id,
-                &ChatMessage { role: "user".to_string(), text: "hello".to_string(), ts: "t1".to_string() },
+                &ChatMessage {
+                    role: "user".to_string(),
+                    text: "hello".to_string(),
+                    ts: "t1".to_string(),
+                },
             );
             meta
         };
@@ -534,13 +600,20 @@ mod tests {
         let meta = store.create(ChatAgent::Claude, "/tmp".to_string(), None, None);
         store.append_message(
             &meta.id,
-            &ChatMessage { role: "user".to_string(), text: "hi".to_string(), ts: "t1".to_string() },
+            &ChatMessage {
+                role: "user".to_string(),
+                text: "hi".to_string(),
+                ts: "t1".to_string(),
+            },
         );
 
         let (messages, cursor) = store.tail_page(&meta.id, None, 10);
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].text, "hi");
-        assert!(cursor.is_none(), "one message fits well under the limit -> no next page");
+        assert!(
+            cursor.is_none(),
+            "one message fits well under the limit -> no next page"
+        );
     }
 
     #[test]
@@ -551,7 +624,11 @@ mod tests {
         for i in 0..3 {
             store.append_message(
                 &meta.id,
-                &ChatMessage { role: "user".to_string(), text: format!("m{i}"), ts: format!("t{i}") },
+                &ChatMessage {
+                    role: "user".to_string(),
+                    text: format!("m{i}"),
+                    ts: format!("t{i}"),
+                },
             );
         }
 
@@ -560,7 +637,10 @@ mod tests {
         assert_eq!(messages[0].text, "m2", "newest first");
         assert_eq!(messages[1].text, "m1");
         assert_eq!(messages[2].text, "m0");
-        assert!(cursor.is_none(), "transcript has exactly `limit` messages -> no next page");
+        assert!(
+            cursor.is_none(),
+            "transcript has exactly `limit` messages -> no next page"
+        );
     }
 
     #[test]
@@ -571,7 +651,11 @@ mod tests {
         for i in 0..5 {
             store.append_message(
                 &meta.id,
-                &ChatMessage { role: "user".to_string(), text: format!("m{i}"), ts: format!("t{i}") },
+                &ChatMessage {
+                    role: "user".to_string(),
+                    text: format!("m{i}"),
+                    ts: format!("t{i}"),
+                },
             );
         }
 
@@ -583,7 +667,11 @@ mod tests {
         let cursor = cursor.expect("2 older messages remain -> a next_cursor must be returned");
 
         let (page2, cursor2) = store.tail_page(&meta.id, Some(cursor), 3);
-        assert_eq!(page2.len(), 2, "the next older page has exactly the 2 remaining messages, no gap, no dupe");
+        assert_eq!(
+            page2.len(),
+            2,
+            "the next older page has exactly the 2 remaining messages, no gap, no dupe"
+        );
         assert_eq!(page2[0].text, "m1");
         assert_eq!(page2[1].text, "m0");
         assert!(cursor2.is_none());
@@ -598,7 +686,11 @@ mod tests {
         for i in 0..total {
             store.append_message(
                 &meta.id,
-                &ChatMessage { role: "user".to_string(), text: format!("m{i}"), ts: format!("t{i}") },
+                &ChatMessage {
+                    role: "user".to_string(),
+                    text: format!("m{i}"),
+                    ts: format!("t{i}"),
+                },
             );
         }
 
@@ -610,12 +702,18 @@ mod tests {
             collected_newest_first.extend(page.into_iter().map(|m| m.text));
             cursor = next;
         }
-        assert!(cursor.is_none(), "the transcript divides evenly into exactly 3 pages of 3");
+        assert!(
+            cursor.is_none(),
+            "the transcript divides evenly into exactly 3 pages of 3"
+        );
 
         let mut chronological = collected_newest_first;
         chronological.reverse();
         let expected: Vec<String> = (0..total).map(|i| format!("m{i}")).collect();
-        assert_eq!(chronological, expected, "3 pages of 3, reversed, must equal the full transcript");
+        assert_eq!(
+            chronological, expected,
+            "3 pages of 3, reversed, must equal the full transcript"
+        );
     }
 
     #[test]
@@ -625,20 +723,35 @@ mod tests {
         let meta = store.create(ChatAgent::Claude, "/tmp".to_string(), None, None);
         store.append_message(
             &meta.id,
-            &ChatMessage { role: "user".to_string(), text: "one".to_string(), ts: "t1".to_string() },
+            &ChatMessage {
+                role: "user".to_string(),
+                text: "one".to_string(),
+                ts: "t1".to_string(),
+            },
         );
         {
             use std::io::Write;
-            let mut f = std::fs::OpenOptions::new().append(true).open(store.transcript_path(&meta.id)).unwrap();
+            let mut f = std::fs::OpenOptions::new()
+                .append(true)
+                .open(store.transcript_path(&meta.id))
+                .unwrap();
             writeln!(f, "{{not valid json").unwrap();
         }
         store.append_message(
             &meta.id,
-            &ChatMessage { role: "assistant".to_string(), text: "three".to_string(), ts: "t3".to_string() },
+            &ChatMessage {
+                role: "assistant".to_string(),
+                text: "three".to_string(),
+                ts: "t3".to_string(),
+            },
         );
 
         let (messages, cursor) = store.tail_page(&meta.id, None, 10);
-        assert_eq!(messages.len(), 2, "the corrupted middle line must be skipped, not panic");
+        assert_eq!(
+            messages.len(),
+            2,
+            "the corrupted middle line must be skipped, not panic"
+        );
         assert_eq!(messages[0].text, "three", "newest first");
         assert_eq!(messages[1].text, "one");
         assert!(cursor.is_none());
@@ -660,7 +773,9 @@ mod tests {
         const N: usize = 400_000;
         {
             use std::io::Write;
-            let mut writer = std::io::BufWriter::new(std::fs::File::create(store.transcript_path(&meta.id)).unwrap());
+            let mut writer = std::io::BufWriter::new(
+                std::fs::File::create(store.transcript_path(&meta.id)).unwrap(),
+            );
             for i in 0..N {
                 let msg = ChatMessage {
                     role: "user".to_string(),
@@ -671,8 +786,13 @@ mod tests {
             }
             writer.flush().unwrap();
         }
-        let file_len = std::fs::metadata(store.transcript_path(&meta.id)).unwrap().len();
-        assert!(file_len > 10_000_000, "transcript should be tens of MB, got {file_len} bytes");
+        let file_len = std::fs::metadata(store.transcript_path(&meta.id))
+            .unwrap()
+            .len();
+        assert!(
+            file_len > 10_000_000,
+            "transcript should be tens of MB, got {file_len} bytes"
+        );
 
         let bound = std::time::Duration::from_millis(250);
 
@@ -682,10 +802,17 @@ mod tests {
         eprintln!("tail_page on a {file_len}-byte ({N}-message) transcript took {elapsed_huge:?}");
 
         assert_eq!(messages.len(), 20);
-        assert_eq!(messages[0].text, format!("message number {}", N - 1), "newest first");
+        assert_eq!(
+            messages[0].text,
+            format!("message number {}", N - 1),
+            "newest first"
+        );
         assert_eq!(messages[19].text, format!("message number {}", N - 20));
         assert!(next_cursor.is_some());
-        assert!(elapsed_huge < bound, "tail_page on a huge transcript took {elapsed_huge:?}, expected < {bound:?}");
+        assert!(
+            elapsed_huge < bound,
+            "tail_page on a huge transcript took {elapsed_huge:?}, expected < {bound:?}"
+        );
 
         // A small transcript's tail_page call should land in the same rough
         // ballpark -- proof that latency does not scale with total file size.
@@ -693,7 +820,11 @@ mod tests {
         for i in 0..20 {
             store.append_message(
                 &small.id,
-                &ChatMessage { role: "user".to_string(), text: format!("small {i}"), ts: format!("t{i}") },
+                &ChatMessage {
+                    role: "user".to_string(),
+                    text: format!("small {i}"),
+                    ts: format!("t{i}"),
+                },
             );
         }
         let start2 = std::time::Instant::now();
@@ -703,7 +834,10 @@ mod tests {
 
         assert_eq!(messages2.len(), 20);
         assert!(cursor2.is_none());
-        assert!(elapsed_small < bound, "tail_page on a small transcript took {elapsed_small:?}, expected < {bound:?}");
+        assert!(
+            elapsed_small < bound,
+            "tail_page on a small transcript took {elapsed_small:?}, expected < {bound:?}"
+        );
     }
 
     #[cfg(unix)]
@@ -715,11 +849,23 @@ mod tests {
         let meta = store.create(ChatAgent::Claude, "/tmp".to_string(), None, None);
         store.append_message(
             &meta.id,
-            &ChatMessage { role: "user".to_string(), text: "hi".to_string(), ts: "t".to_string() },
+            &ChatMessage {
+                role: "user".to_string(),
+                text: "hi".to_string(),
+                ts: "t".to_string(),
+            },
         );
 
-        let transcript_path = dir.path().join("chats").join(&meta.id).join("transcript.jsonl");
-        let mode = std::fs::metadata(&transcript_path).unwrap().permissions().mode() & 0o777;
+        let transcript_path = dir
+            .path()
+            .join("chats")
+            .join(&meta.id)
+            .join("transcript.jsonl");
+        let mode = std::fs::metadata(&transcript_path)
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
         assert_eq!(mode, 0o600, "transcript.jsonl must be 0600");
     }
 }

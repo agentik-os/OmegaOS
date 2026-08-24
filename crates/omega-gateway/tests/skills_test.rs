@@ -53,7 +53,10 @@ async fn get_skills_returns_the_full_catalog_capped_at_the_default_limit() {
     std::env::set_var("OMEGA_DIR", omega.path());
     let gateway_dir = tempfile::tempdir().unwrap();
     let (_, token) = DeviceStore::open(gateway_dir.path()).issue("t");
-    let app = build_router(AppState::new(gateway_dir.path().to_path_buf(), GatewayConfig::default()));
+    let app = build_router(AppState::new(
+        gateway_dir.path().to_path_buf(),
+        GatewayConfig::default(),
+    ));
     let base = spawn(app).await;
 
     let res = reqwest::Client::new()
@@ -69,7 +72,11 @@ async fn get_skills_returns_the_full_catalog_capped_at_the_default_limit() {
     assert_eq!(total, 61);
 
     let skills = body["skills"].as_array().unwrap();
-    assert!(skills.len() <= 50, "default cap is 50, got {}", skills.len());
+    assert!(
+        skills.len() <= 50,
+        "default cap is 50, got {}",
+        skills.len()
+    );
     clear_env();
 }
 
@@ -80,7 +87,10 @@ async fn get_skills_filters_by_q_and_caps_by_limit() {
     std::env::set_var("OMEGA_DIR", omega.path());
     let gateway_dir = tempfile::tempdir().unwrap();
     let (_, token) = DeviceStore::open(gateway_dir.path()).issue("t");
-    let app = build_router(AppState::new(gateway_dir.path().to_path_buf(), GatewayConfig::default()));
+    let app = build_router(AppState::new(
+        gateway_dir.path().to_path_buf(),
+        GatewayConfig::default(),
+    ));
     let base = spawn(app).await;
 
     let res = reqwest::Client::new()
@@ -93,8 +103,15 @@ async fn get_skills_filters_by_q_and_caps_by_limit() {
     let body: serde_json::Value = res.json().await.unwrap();
 
     let skills = body["skills"].as_array().unwrap();
-    assert!(skills.len() <= 5, "limit=5 must cap the returned skills, got {}", skills.len());
-    assert!(!skills.is_empty(), "expected at least one skill matching 'audit'");
+    assert!(
+        skills.len() <= 5,
+        "limit=5 must cap the returned skills, got {}",
+        skills.len()
+    );
+    assert!(
+        !skills.is_empty(),
+        "expected at least one skill matching 'audit'"
+    );
 
     for skill in skills {
         let name = skill["name"].as_str().unwrap().to_lowercase();
@@ -113,10 +130,17 @@ async fn get_skills_requires_auth() {
     let omega = skill_fixture();
     std::env::set_var("OMEGA_DIR", omega.path());
     let gateway_dir = tempfile::tempdir().unwrap();
-    let app = build_router(AppState::new(gateway_dir.path().to_path_buf(), GatewayConfig::default()));
+    let app = build_router(AppState::new(
+        gateway_dir.path().to_path_buf(),
+        GatewayConfig::default(),
+    ));
     let base = spawn(app).await;
 
-    let res = reqwest::Client::new().get(format!("{base}/v1/skills")).send().await.unwrap();
+    let res = reqwest::Client::new()
+        .get(format!("{base}/v1/skills"))
+        .send()
+        .await
+        .unwrap();
     assert_eq!(res.status(), 401);
     clear_env();
 }
@@ -128,7 +152,10 @@ async fn get_skills_filters_by_server_category() {
     std::env::set_var("OMEGA_DIR", omega.path());
     let gateway_dir = tempfile::tempdir().unwrap();
     let (_, token) = DeviceStore::open(gateway_dir.path()).issue("t");
-    let app = build_router(AppState::new(gateway_dir.path().to_path_buf(), GatewayConfig::default()));
+    let app = build_router(AppState::new(
+        gateway_dir.path().to_path_buf(),
+        GatewayConfig::default(),
+    ));
     let base = spawn(app).await;
     let response = reqwest::Client::new()
         .get(format!("{base}/v1/skills?category=Audit&limit=200"))
@@ -151,7 +178,10 @@ async fn skill_detail_returns_content_but_never_a_host_path() {
     std::env::set_var("OMEGA_DIR", omega.path());
     let gateway_dir = tempfile::tempdir().unwrap();
     let (_, token) = DeviceStore::open(gateway_dir.path()).issue("t");
-    let app = build_router(AppState::new(gateway_dir.path().to_path_buf(), GatewayConfig::default()));
+    let app = build_router(AppState::new(
+        gateway_dir.path().to_path_buf(),
+        GatewayConfig::default(),
+    ));
     let base = spawn(app).await;
     let response = reqwest::Client::new()
         .get(format!("{base}/v1/skills/monitor"))

@@ -23,7 +23,10 @@ async fn spawn(app: axum::Router) -> String {
 
 async fn app_and_token(gateway_dir: &std::path::Path) -> (axum::Router, String) {
     let (_, token) = DeviceStore::open(gateway_dir).issue("t");
-    let app = build_router(AppState::new(gateway_dir.to_path_buf(), GatewayConfig::default()));
+    let app = build_router(AppState::new(
+        gateway_dir.to_path_buf(),
+        GatewayConfig::default(),
+    ));
     (app, token)
 }
 
@@ -40,7 +43,12 @@ async fn get_config_on_a_fresh_box_returns_defaults_with_no_keys_set() {
     let (app, token) = app_and_token(gateway_dir.path()).await;
     let base = spawn(app).await;
 
-    let res = reqwest::Client::new().get(format!("{base}/v1/config")).bearer_auth(&token).send().await.unwrap();
+    let res = reqwest::Client::new()
+        .get(format!("{base}/v1/config"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
     assert_eq!(res.status(), 200);
     let body: serde_json::Value = res.json().await.unwrap();
     assert_eq!(body["claude"]["api_key_set"], false);
@@ -69,12 +77,20 @@ async fn put_config_sets_a_known_key_and_never_echoes_the_secret_back() {
         .unwrap();
     assert_eq!(res.status(), 200);
     let body_text = res.text().await.unwrap();
-    assert!(!body_text.contains("sk-super-secret-value"), "the secret must never round-trip on the wire");
+    assert!(
+        !body_text.contains("sk-super-secret-value"),
+        "the secret must never round-trip on the wire"
+    );
     let body: serde_json::Value = serde_json::from_str(&body_text).unwrap();
     assert_eq!(body["claude"]["api_key_set"], true);
 
     // Persisted -- a follow-up GET reflects it too.
-    let res2 = reqwest::Client::new().get(format!("{base}/v1/config")).bearer_auth(&token).send().await.unwrap();
+    let res2 = reqwest::Client::new()
+        .get(format!("{base}/v1/config"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
     let body2: serde_json::Value = res2.json().await.unwrap();
     assert_eq!(body2["claude"]["api_key_set"], true);
 
@@ -160,10 +176,17 @@ async fn get_config_requires_auth() {
     let gateway_dir = tempfile::tempdir().unwrap();
     let omega_dir = tempfile::tempdir().unwrap();
     std::env::set_var("OMEGA_DIR", omega_dir.path());
-    let app = build_router(AppState::new(gateway_dir.path().to_path_buf(), GatewayConfig::default()));
+    let app = build_router(AppState::new(
+        gateway_dir.path().to_path_buf(),
+        GatewayConfig::default(),
+    ));
     let base = spawn(app).await;
 
-    let res = reqwest::Client::new().get(format!("{base}/v1/config")).send().await.unwrap();
+    let res = reqwest::Client::new()
+        .get(format!("{base}/v1/config"))
+        .send()
+        .await
+        .unwrap();
     assert_eq!(res.status(), 401);
 
     clear_env();
@@ -219,7 +242,12 @@ async fn get_config_on_a_corrupt_providers_toml_is_500_not_a_silent_empty_view()
     let (app, token) = app_and_token(gateway_dir.path()).await;
     let base = spawn(app).await;
 
-    let res = reqwest::Client::new().get(format!("{base}/v1/config")).bearer_auth(&token).send().await.unwrap();
+    let res = reqwest::Client::new()
+        .get(format!("{base}/v1/config"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
     assert_eq!(res.status(), 500);
 
     clear_env();
@@ -262,7 +290,10 @@ async fn put_config_requires_auth() {
     let gateway_dir = tempfile::tempdir().unwrap();
     let omega_dir = tempfile::tempdir().unwrap();
     std::env::set_var("OMEGA_DIR", omega_dir.path());
-    let app = build_router(AppState::new(gateway_dir.path().to_path_buf(), GatewayConfig::default()));
+    let app = build_router(AppState::new(
+        gateway_dir.path().to_path_buf(),
+        GatewayConfig::default(),
+    ));
     let base = spawn(app).await;
 
     let res = reqwest::Client::new()

@@ -13,7 +13,10 @@ async fn spawn(app: axum::Router) -> String {
 async fn get_projects_returns_the_discovered_project_list() {
     let gateway_dir = tempfile::tempdir().unwrap();
     let (_, token) = DeviceStore::open(gateway_dir.path()).issue("t");
-    let app = build_router(AppState::new(gateway_dir.path().to_path_buf(), GatewayConfig::default()));
+    let app = build_router(AppState::new(
+        gateway_dir.path().to_path_buf(),
+        GatewayConfig::default(),
+    ));
     let base = spawn(app).await;
 
     let res = reqwest::Client::new()
@@ -33,17 +36,33 @@ async fn get_projects_returns_the_discovered_project_list() {
     );
 
     let first = &projects[0];
-    assert!(first["name"].as_str().is_some(), "first project missing name");
-    assert!(first["container"].as_str().is_some(), "first project missing container");
-    assert!(first["stack"].as_array().is_some(), "first project missing stack");
+    assert!(
+        first["name"].as_str().is_some(),
+        "first project missing name"
+    );
+    assert!(
+        first["container"].as_str().is_some(),
+        "first project missing container"
+    );
+    assert!(
+        first["stack"].as_array().is_some(),
+        "first project missing stack"
+    );
 }
 
 #[tokio::test]
 async fn get_projects_requires_auth() {
     let gateway_dir = tempfile::tempdir().unwrap();
-    let app = build_router(AppState::new(gateway_dir.path().to_path_buf(), GatewayConfig::default()));
+    let app = build_router(AppState::new(
+        gateway_dir.path().to_path_buf(),
+        GatewayConfig::default(),
+    ));
     let base = spawn(app).await;
 
-    let res = reqwest::Client::new().get(format!("{base}/v1/projects")).send().await.unwrap();
+    let res = reqwest::Client::new()
+        .get(format!("{base}/v1/projects"))
+        .send()
+        .await
+        .unwrap();
     assert_eq!(res.status(), 401);
 }

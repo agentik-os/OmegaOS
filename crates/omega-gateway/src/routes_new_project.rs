@@ -117,7 +117,8 @@ const MAX_SLUG_LEN: usize = 64;
 fn is_slug(s: &str) -> bool {
     !s.is_empty()
         && !s.starts_with('-')
-        && s.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+        && s.chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
 }
 
 /// Validates `name`/`category`/`group` BEFORE any upgrade or spawn, and
@@ -129,10 +130,16 @@ fn resolve_new_project_request(
     group: &str,
 ) -> Result<(String, String, Option<String>), (StatusCode, String)> {
     if name.is_empty() {
-        return Err((StatusCode::BAD_REQUEST, "name must not be empty".to_string()));
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "name must not be empty".to_string(),
+        ));
     }
     if name.len() > MAX_SLUG_LEN {
-        return Err((StatusCode::BAD_REQUEST, format!("name too long (max {MAX_SLUG_LEN} bytes)")));
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!("name too long (max {MAX_SLUG_LEN} bytes)"),
+        ));
     }
     if !is_slug(name) {
         return Err((
@@ -141,11 +148,18 @@ fn resolve_new_project_request(
         ));
     }
 
-    let category = if category.is_empty() { DEFAULT_CATEGORY.to_string() } else { category.to_string() };
+    let category = if category.is_empty() {
+        DEFAULT_CATEGORY.to_string()
+    } else {
+        category.to_string()
+    };
     if !ALLOWED_CATEGORIES.contains(&category.as_str()) {
         return Err((
             StatusCode::BAD_REQUEST,
-            format!("unknown category: {category} (must be one of: {})", ALLOWED_CATEGORIES.join(", ")),
+            format!(
+                "unknown category: {category} (must be one of: {})",
+                ALLOWED_CATEGORIES.join(", ")
+            ),
         ));
     }
 
@@ -153,12 +167,16 @@ fn resolve_new_project_request(
         None
     } else {
         if group.len() > MAX_SLUG_LEN {
-            return Err((StatusCode::BAD_REQUEST, format!("group too long (max {MAX_SLUG_LEN} bytes)")));
+            return Err((
+                StatusCode::BAD_REQUEST,
+                format!("group too long (max {MAX_SLUG_LEN} bytes)"),
+            ));
         }
         if !is_slug(group) {
             return Err((
                 StatusCode::BAD_REQUEST,
-                "group must match ^[a-z0-9-]+$ (lowercase letters, digits, hyphens only)".to_string(),
+                "group must match ^[a-z0-9-]+$ (lowercase letters, digits, hyphens only)"
+                    .to_string(),
             ));
         }
         Some(group.to_string())
@@ -208,7 +226,9 @@ pub async fn stream(
             let Ok(permit) = state.new_project_permits.clone().try_acquire_owned() else {
                 return StatusCode::TOO_MANY_REQUESTS.into_response();
             };
-            ws.on_upgrade(move |socket| new_project_stream_loop(socket, name, category, group, permit))
+            ws.on_upgrade(move |socket| {
+                new_project_stream_loop(socket, name, category, group, permit)
+            })
         }
         Err((code, _msg)) => code.into_response(),
     }
@@ -239,7 +259,10 @@ async fn forward_lines<R: AsyncRead + Unpin>(
     loop {
         match lines.next_line().await {
             Ok(Some(text)) => {
-                let frame = NewProjectStreamMsg::Line { stream: stream_name.to_string(), text };
+                let frame = NewProjectStreamMsg::Line {
+                    stream: stream_name.to_string(),
+                    text,
+                };
                 if tx.send(frame).await.is_err() {
                     return;
                 }
@@ -261,7 +284,10 @@ async fn forward_lines<R: AsyncRead + Unpin>(
 /// see [`new_project_stream_loop`]'s doc comment.
 async fn kill_process_group(pid: u32) {
     let _ = tokio::task::spawn_blocking(move || {
-        std::process::Command::new("kill").arg("--").arg(format!("-{pid}")).status()
+        std::process::Command::new("kill")
+            .arg("--")
+            .arg(format!("-{pid}"))
+            .status()
     })
     .await;
 }
@@ -362,7 +388,9 @@ async fn new_project_stream_loop(
         Err(e) => {
             let _ = send_new_project_frame(
                 &mut socket,
-                &NewProjectStreamMsg::Error { message: format!("failed to spawn omega: {e}") },
+                &NewProjectStreamMsg::Error {
+                    message: format!("failed to spawn omega: {e}"),
+                },
             )
             .await;
             let _ = socket.send(Message::Close(None)).await;
@@ -442,8 +470,13 @@ async fn new_project_stream_loop(
     let _ = stderr_task.await;
 
     let exit_frame = match child.wait().await {
-        Ok(status) => NewProjectStreamMsg::Exit { success: status.success(), code: status.code() },
-        Err(e) => NewProjectStreamMsg::Error { message: format!("failed to wait on child: {e}") },
+        Ok(status) => NewProjectStreamMsg::Exit {
+            success: status.success(),
+            code: status.code(),
+        },
+        Err(e) => NewProjectStreamMsg::Error {
+            message: format!("failed to wait on child: {e}"),
+        },
     };
     let _ = send_new_project_frame(&mut socket, &exit_frame).await;
     let _ = socket.send(Message::Close(None)).await;
@@ -483,7 +516,8 @@ mod resolve_new_project_request_tests {
 
     #[test]
     fn accepts_valid_slug_name() {
-        let (name, category, group) = resolve_new_project_request("my-cool-project-1", "", "").unwrap();
+        let (name, category, group) =
+            resolve_new_project_request("my-cool-project-1", "", "").unwrap();
         assert_eq!(name, "my-cool-project-1");
         assert_eq!(category, "works");
         assert_eq!(group, None);
@@ -545,7 +579,11 @@ mod resolve_new_project_request_tests {
     fn rejects_name_starting_with_dash() {
         for bad in ["--build", "--dry-run", "-x"] {
             let err = resolve_new_project_request(bad, "", "").unwrap_err();
-            assert_eq!(err.0, StatusCode::BAD_REQUEST, "expected rejection for {bad:?}");
+            assert_eq!(
+                err.0,
+                StatusCode::BAD_REQUEST,
+                "expected rejection for {bad:?}"
+            );
         }
     }
 

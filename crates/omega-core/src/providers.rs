@@ -336,10 +336,7 @@ impl ProvidersConfig {
 
     pub(crate) fn validate(&self) -> Result<()> {
         if !self.antigravity.effort.is_empty()
-            && !matches!(
-                self.antigravity.effort.as_str(),
-                "low" | "medium" | "high"
-            )
+            && !matches!(self.antigravity.effort.as_str(), "low" | "medium" | "high")
         {
             anyhow::bail!("invalid antigravity.effort; expected low, medium, or high");
         }
@@ -977,13 +974,9 @@ mod provider_capability_tests {
     #[test]
     fn current_cli_catalog_avoids_retired_or_fabricated_model_ids() {
         assert_eq!(ProvidersConfig::default_model("codex"), "gpt-5.6");
-        assert!(
-            !ProvidersConfig::models_for("codex").contains(&"gpt-5.5-codex")
-        );
+        assert!(!ProvidersConfig::models_for("codex").contains(&"gpt-5.5-codex"));
         assert_eq!(ProvidersConfig::default_model("gemini"), "auto");
-        assert!(
-            ProvidersConfig::models_for("gemini").contains(&"gemini-3.1-pro-preview")
-        );
+        assert!(ProvidersConfig::models_for("gemini").contains(&"gemini-3.1-pro-preview"));
         assert!(!ProvidersConfig::models_for("gemini").contains(&"gemini-3.1-pro"));
         assert_eq!(ProvidersConfig::default_model("glm"), "glm-5.3");
     }
@@ -993,7 +986,11 @@ mod provider_capability_tests {
         assert!(ProvidersConfig::is_known("antigravity"));
         assert_eq!(ProvidersConfig::auth_type("antigravity"), "oauth");
         assert!(ProvidersConfig::models_for("antigravity").is_empty());
-        assert!(ProvidersConfig::default().antigravity.dangerously_skip_permissions);
+        assert!(
+            ProvidersConfig::default()
+                .antigravity
+                .dangerously_skip_permissions
+        );
     }
 
     #[test]

@@ -12,8 +12,8 @@
 //! scoped root, before any filesystem access beyond the read-only `discover`
 //! walk itself.
 
-use crate::server::AppState;
 use crate::protocol::{FileEntry, FileReadResponse, FilesResponse};
+use crate::server::AppState;
 use axum::{
     extract::{Query, State},
     http::StatusCode,
@@ -33,7 +33,10 @@ type ApiError = (StatusCode, Json<serde_json::Value>);
 pub const MAX_FILE_READ_BYTES: u64 = 512 * 1024;
 
 fn bad_request(msg: impl Into<String>) -> ApiError {
-    (StatusCode::BAD_REQUEST, Json(json!({ "error": msg.into() })))
+    (
+        StatusCode::BAD_REQUEST,
+        Json(json!({ "error": msg.into() })),
+    )
 }
 
 fn not_found(msg: impl Into<String>) -> ApiError {
@@ -45,7 +48,10 @@ fn forbidden(msg: impl Into<String>) -> ApiError {
 }
 
 fn internal(msg: impl std::fmt::Display) -> ApiError {
-    (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": msg.to_string() })))
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        Json(json!({ "error": msg.to_string() })),
+    )
 }
 
 /// The three ways [`resolve_scoped_path`] can refuse to hand back a path.
@@ -121,7 +127,9 @@ fn path_error_to_api(err: PathError) -> ApiError {
 /// `foo..bar`).
 pub fn resolve_scoped_path(root: &Path, rel: &str) -> Result<PathBuf, PathError> {
     if rel.contains('\0') {
-        return Err(PathError::Invalid("path must not contain a NUL byte".into()));
+        return Err(PathError::Invalid(
+            "path must not contain a NUL byte".into(),
+        ));
     }
     let rel_path = Path::new(rel);
     if rel_path.is_absolute() {
@@ -153,7 +161,9 @@ pub fn resolve_scoped_path(root: &Path, rel: &str) -> Result<PathBuf, PathError>
             // reason OTHER than absence (e.g. EACCES on a search bit) is
             // skipped too, which keeps the fallthrough on the safe side.
             for ancestor in joined.ancestors().skip(1) {
-                let Ok(canon_ancestor) = std::fs::canonicalize(ancestor) else { continue };
+                let Ok(canon_ancestor) = std::fs::canonicalize(ancestor) else {
+                    continue;
+                };
                 return if canon_ancestor.starts_with(&canon_root) {
                     Err(PathError::NotFound)
                 } else {
@@ -186,9 +196,12 @@ fn read_capped_text(path: &Path) -> Result<String, ApiError> {
     }
     let bytes = std::fs::read(path).map_err(|e| internal(format!("read failed: {e}")))?;
     if bytes.contains(&0u8) {
-        return Err(bad_request("file contains a NUL byte, refusing as non-text"));
+        return Err(bad_request(
+            "file contains a NUL byte, refusing as non-text",
+        ));
     }
-    String::from_utf8(bytes).map_err(|_| bad_request("file is not valid UTF-8, refusing as non-text"))
+    String::from_utf8(bytes)
+        .map_err(|_| bad_request("file is not valid UTF-8, refusing as non-text"))
 }
 
 /// Validates `project_name` against the discovered-project allowlist and
@@ -229,18 +242,30 @@ pub async fn list(
 
     let entries = tokio::task::spawn_blocking(move || -> Result<Vec<FileEntry>, ApiError> {
         let resolved = resolve_scoped_path(&root, &rel).map_err(path_error_to_api)?;
-        let meta = std::fs::metadata(&resolved).map_err(|e| internal(format!("stat failed: {e}")))?;
+        let meta =
+            std::fs::metadata(&resolved).map_err(|e| internal(format!("stat failed: {e}")))?;
         if !meta.is_dir() {
             return Err(bad_request("path is not a directory"));
         }
-        let read_dir = std::fs::read_dir(&resolved).map_err(|e| internal(format!("read_dir failed: {e}")))?;
+        let read_dir =
+            std::fs::read_dir(&resolved).map_err(|e| internal(format!("read_dir failed: {e}")))?;
         let mut out = Vec::new();
         for entry in read_dir {
             let entry = entry.map_err(|e| internal(format!("read_dir entry failed: {e}")))?;
-            let file_type = entry.file_type().map_err(|e| internal(format!("file_type failed: {e}")))?;
+            let file_type = entry
+                .file_type()
+                .map_err(|e| internal(format!("file_type failed: {e}")))?;
             let is_dir = file_type.is_dir();
-            let size = if is_dir { None } else { entry.metadata().ok().map(|m| m.len()) };
-            out.push(FileEntry { name: entry.file_name().to_string_lossy().to_string(), is_dir, size });
+            let size = if is_dir {
+                None
+            } else {
+                entry.metadata().ok().map(|m| m.len())
+            };
+            out.push(FileEntry {
+                name: entry.file_name().to_string_lossy().to_string(),
+                is_dir,
+                size,
+            });
         }
         // Directories first, then alphabetical (byte order) within each
         // group — arbitrary but documented; not the focus of this endpoint.
@@ -273,7 +298,8 @@ pub async fn read(
 
     let content = tokio::task::spawn_blocking(move || -> Result<String, ApiError> {
         let resolved = resolve_scoped_path(&root, &rel).map_err(path_error_to_api)?;
-        let meta = std::fs::metadata(&resolved).map_err(|e| internal(format!("stat failed: {e}")))?;
+        let meta =
+            std::fs::metadata(&resolved).map_err(|e| internal(format!("stat failed: {e}")))?;
         if meta.is_dir() {
             return Err(bad_request("path is a directory, not a file"));
         }
@@ -359,9 +385,12 @@ mod tests {
         let outside = base.path().join("outside");
         std::fs::create_dir_all(&root).unwrap();
         std::fs::create_dir_all(&outside).unwrap(); // the outside DIR is real...
-        // ...but this specific leaf file does not exist.
+                                                    // ...but this specific leaf file does not exist.
         let err = resolve_scoped_path(&root, "../outside/does-not-exist.txt").unwrap_err();
-        assert!(matches!(err, PathError::Escaped), "expected Escaped, got {err:?}");
+        assert!(
+            matches!(err, PathError::Escaped),
+            "expected Escaped, got {err:?}"
+        );
     }
 
     #[test]
@@ -386,7 +415,8 @@ mod tests {
         std::fs::create_dir_all(base.path().join("real-dir")).unwrap();
 
         let outside_dir_exists = resolve_scoped_path(&root, "../real-dir/leaf.txt").unwrap_err();
-        let outside_dir_missing = resolve_scoped_path(&root, "../no-such-dir/leaf.txt").unwrap_err();
+        let outside_dir_missing =
+            resolve_scoped_path(&root, "../no-such-dir/leaf.txt").unwrap_err();
         assert!(
             matches!(outside_dir_exists, PathError::Escaped),
             "expected Escaped, got {outside_dir_exists:?}"
@@ -410,8 +440,14 @@ mod tests {
 
         let deep_exists = resolve_scoped_path(&root, "../real-dir/a/b/c.txt").unwrap_err();
         let deep_missing = resolve_scoped_path(&root, "../no-such-dir/a/b/c.txt").unwrap_err();
-        assert!(matches!(deep_exists, PathError::Escaped), "got {deep_exists:?}");
-        assert!(matches!(deep_missing, PathError::Escaped), "got {deep_missing:?}");
+        assert!(
+            matches!(deep_exists, PathError::Escaped),
+            "got {deep_exists:?}"
+        );
+        assert!(
+            matches!(deep_missing, PathError::Escaped),
+            "got {deep_missing:?}"
+        );
     }
 
     #[test]
@@ -425,7 +461,10 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
 
         let err = resolve_scoped_path(&root, "no-such-subdir/nope.txt").unwrap_err();
-        assert!(matches!(err, PathError::NotFound), "expected NotFound, got {err:?}");
+        assert!(
+            matches!(err, PathError::NotFound),
+            "expected NotFound, got {err:?}"
+        );
     }
 
     #[test]
@@ -436,7 +475,10 @@ mod tests {
         std::fs::write(root.join("file.txt"), "hi").unwrap();
 
         let resolved = resolve_scoped_path(&root, "sub/../file.txt").unwrap();
-        assert_eq!(resolved, std::fs::canonicalize(root.join("file.txt")).unwrap());
+        assert_eq!(
+            resolved,
+            std::fs::canonicalize(root.join("file.txt")).unwrap()
+        );
     }
 
     #[test]
