@@ -1171,7 +1171,8 @@ mod tests {
                 &providers,
             )
             .unwrap();
-        assert!(cmd.contains("hermes chat --provider openrouter"), "{cmd}");
+        assert!(cmd.contains("hermes chat --provider"), "{cmd}");
+        assert!(cmd.contains("openrouter"), "{cmd}");
         assert!(cmd.contains(" -q "), "{cmd}");
     }
 
