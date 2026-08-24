@@ -10,7 +10,7 @@ async fn spawn(app: axum::Router) -> String {
 }
 
 #[tokio::test]
-async fn get_agents_returns_the_fixed_eight_agent_roster() {
+async fn get_agents_returns_the_canonical_agent_roster() {
     let gateway_dir = tempfile::tempdir().unwrap();
     let (_, token) = DeviceStore::open(gateway_dir.path()).issue("t");
     let app = build_router(AppState::new(
@@ -29,7 +29,11 @@ async fn get_agents_returns_the_fixed_eight_agent_roster() {
     let body: serde_json::Value = res.json().await.unwrap();
 
     let agents = body["agents"].as_array().unwrap();
-    assert_eq!(agents.len(), 8, "Agent::all() is a fixed 8-element slice");
+    assert_eq!(
+        agents.len(),
+        omega_core::agents::Agent::all().len(),
+        "gateway roster must mirror Agent::all()"
+    );
 
     let claude = agents
         .iter()
@@ -40,6 +44,8 @@ async fn get_agents_returns_the_fixed_eight_agent_roster() {
         claude["available"].is_boolean(),
         "available must be a boolean (value is PATH-dependent, not asserted)"
     );
+    assert!(agents.iter().any(|agent| agent["name"] == "antigravity"));
+    assert!(agents.iter().any(|agent| agent["name"] == "openrouter"));
 }
 
 #[tokio::test]
