@@ -172,6 +172,41 @@ fn session_authority_lock(state_dir: &Path, session: &str) -> Result<std::fs::Fi
     crate::scope::lock_private_state_file(state_dir, &format!(".session-authority-{session}.lock"))
 }
 
+/// Expand `~` / `~/…` the way the operator typed `--dir ~/Desktop`.
+///
+/// A literal `~/Desktop` cwd is not a real folder. Codex then splash-exits
+/// and the pane looks like bash. TUI New Codex never passed a raw tilde.
+/// Codex itself is fine when launched from the Omega menu.
+pub fn expand_user_path(raw: &str) -> PathBuf {
+    let trimmed = raw.trim();
+    if trimmed == "~" {
+        return dirs::home_dir().unwrap_or_else(|| PathBuf::from(trimmed));
+    }
+    if let Some(rest) = trimmed.strip_prefix("~/") {
+        if let Some(home) = dirs::home_dir() {
+            return home.join(rest);
+        }
+    }
+    PathBuf::from(trimmed)
+}
+
+/// Resolve `--dir` for `omega new`: omit (`None` = same as TUI, rmux cwd),
+/// expand `~`, and refuse a path that is not an existing directory.
+pub fn resolve_session_working_dir(raw: Option<&str>) -> Result<Option<PathBuf>> {
+    let Some(raw) = raw else {
+        return Ok(None);
+    };
+    let expanded = expand_user_path(raw);
+    if !expanded.is_dir() {
+        anyhow::bail!(
+            "--dir '{}' does not exist (expanded: {}). Create it or pass a real directory.",
+            raw,
+            expanded.display()
+        );
+    }
+    Ok(Some(expanded))
+}
+
 /// Slugify an arbitrary string into a safe rmux session name.
 ///
 /// rmux keys kill/rename/capture on the session name; spaces, non-ASCII, and
@@ -1673,6 +1708,49 @@ mod sanitize_tests {
     use super::{resolve_agent_command, sanitize_session_name as s};
     use super::{EnsureSessionPolicy, MAX_SESSION_NAME_LEN, TYPED_AGENT_SESSION_POLICY};
     use crate::agents::Agent;
+    use std::path::PathBuf;
+
+    #[test]
+    fn expand_user_path_resolves_tilde_home() {
+        let home = dirs::home_dir().expect("home");
+        assert_eq!(crate::session::expand_user_path("~"), home);
+        assert_eq!(
+            crate::session::expand_user_path("~/Desktop"),
+            home.join("Desktop")
+        );
+        assert_eq!(
+            crate::session::expand_user_path("/abs/project"),
+            PathBuf::from("/abs/project")
+        );
+        assert_ne!(
+            crate::session::expand_user_path("~/Desktop").as_os_str(),
+            std::ffi::OsStr::new("~/Desktop"),
+            "omega new --dir ~/Desktop must not chdir into a literal tilde path"
+        );
+    }
+
+    #[test]
+    fn resolve_session_working_dir_matches_tui_when_omitted() {
+        assert!(crate::session::resolve_session_working_dir(None)
+            .unwrap()
+            .is_none());
+        let tmp = tempfile::TempDir::new().unwrap();
+        let got = crate::session::resolve_session_working_dir(tmp.path().to_str()).unwrap();
+        assert_eq!(got.as_deref(), Some(tmp.path()));
+        let missing = tmp.path().join("not-a-dir");
+        let err = crate::session::resolve_session_working_dir(missing.to_str())
+            .expect_err("missing --dir must fail before spawn");
+        assert!(
+            err.to_string().contains("does not exist"),
+            "missing dir error: {err}"
+        );
+        let home = dirs::home_dir().expect("home");
+        assert_eq!(
+            crate::session::resolve_session_working_dir(Some("~")).unwrap(),
+            Some(home),
+            "`--dir ~` must expand to $HOME, not a literal tilde"
+        );
+    }
 
     #[test]
     fn clean_names_unchanged() {

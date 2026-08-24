@@ -910,12 +910,9 @@ impl Dispatcher {
     /// After spawn: if the agent dies to bash or the pane vanishes, fail JSON.
     /// Empty splash frames stay `running` — that is not death.
     async fn observe_spawned_oracle(&self, oracle: &str, provider: &str) -> Result<()> {
-        let mut last_health = crate::session_health::record_launch(
-            &self.config.state_dir,
-            oracle,
-            provider,
-        )
-        .unwrap_or_else(|_| crate::session_health::SessionHealth::launch(oracle, provider));
+        let mut last_health =
+            crate::session_health::record_launch(&self.config.state_dir, oracle, provider)
+                .unwrap_or_else(|_| crate::session_health::SessionHealth::launch(oracle, provider));
         for probe in 0..3 {
             tokio::time::sleep(Duration::from_secs(2)).await;
             let live = self
@@ -951,9 +948,10 @@ impl Dispatcher {
                 );
             }
             if live
-                && pane
-                    .as_deref()
-                    .is_some_and(|text| !text.trim().is_empty() && !crate::session_health::pane_fell_to_silent_bash(text))
+                && pane.as_deref().is_some_and(|text| {
+                    !text.trim().is_empty()
+                        && !crate::session_health::pane_fell_to_silent_bash(text)
+                })
             {
                 return Ok(());
             }
@@ -1462,13 +1460,16 @@ impl Dispatcher {
         // The legacy OracleState is now a projection carrying the same stable
         // mission identity. It remains for existing readers during migration,
         // but is never allowed to invent an empty mission for this path.
-        let oracle_state =
+        let mut oracle_state =
             OracleState::from_ledger(&oracle_name, &mission_record, &classified_outcome)?;
+        // Stamp session_id on the FIRST write. A later resolve+rewrite can
+        // fail CAS and leave ANALYSE with session_id null — that is an
+        // Omega persist hole, not "Codex is down".
+        let session_id = gen_session_uuid();
+        oracle_state.session_id = Some(session_id.clone());
         oracle_state.write(&self.config.state_dir)?;
         seed_lab_plan(&self.config.state_dir, &oracle_name).with_context(|| {
-            format!(
-                "seeding Lab plan for {oracle_name} — ANALYSE with 0/0 is not a dispatch"
-            )
+            format!("seeding Lab plan for {oracle_name} — ANALYSE with 0/0 is not a dispatch")
         })?;
 
         let ship = OraclePromptGenerator::should_ship(mission);
@@ -1593,12 +1594,14 @@ impl Dispatcher {
             &[crate::providers::ProviderCapability::LongContext],
         )
         .map_err(|error| anyhow::anyhow!("provider capability negotiation failed: {error}"))?;
-        let session_id = resolve_session_id(
-            &self.config.state_dir,
-            &oracle_name,
-            project,
-            &work_path,
-        );
+        // First write already stamped session_id. Reminting here used to
+        // rewrite under CAS and leave ANALYSE with session_id=null when that
+        // rewrite lost. Resurrect still calls resolve_session_id (fresh
+        // conversation). This is an Omega persist hole, not "Codex is down".
+        let session_id = match oracle_state.session_id.clone() {
+            Some(id) => id,
+            None => resolve_session_id(&self.config.state_dir, &oracle_name, project, &work_path),
+        };
         if matches!(agent, crate::agents::Agent::Claude) {
             let mut opts = crate::agents::LaunchOptions::default();
             // Ultracode posture: the oracle is the strategic brain — it reasons
@@ -3476,8 +3479,22 @@ mod ledger_followup_tests {
         );
         classified.next_mission_state = Some(MissionState::Classified);
         let classified = ledger.append(classified).unwrap();
-        let state = OracleState::from_ledger("oracle-OmegaOS", &mission, &classified).unwrap();
+        let mut state = OracleState::from_ledger("oracle-OmegaOS", &mission, &classified).unwrap();
+        assert!(
+            state.session_id.is_none(),
+            "from_ledger must not invent a conversation id"
+        );
+        let session_id = gen_session_uuid();
+        state.session_id = Some(session_id.clone());
         state.write(tmp.path()).unwrap();
+        let loaded = OracleState::read(tmp.path(), "oracle-OmegaOS")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            loaded.session_id.as_deref(),
+            Some(session_id.as_str()),
+            "first persist must carry session_id so ANALYSE is not session_id=null"
+        );
         seed_lab_plan(tmp.path(), "oracle-OmegaOS").unwrap();
         let todo = crate::oracle_todo::OracleTodo::load(tmp.path(), "oracle-OmegaOS").unwrap();
         assert_eq!(todo.tasks.len(), 11);

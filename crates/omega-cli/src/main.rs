@@ -3351,8 +3351,16 @@ async fn cmd_new(
     let config = OmegaConfig::load().context("cannot load OmegaOS config for session creation")?;
     config.ensure_dirs()?;
 
-    let workspace = match dir {
-        Some(dir) => std::path::PathBuf::from(dir),
+    // Same cwd contract as TUI New Codex/Claude: omit --dir → None (rmux
+    // inherits the process cwd). `--dir ~/Desktop` must expand; a literal
+    // tilde path is how Codex splash-exits into bash. Codex itself is not
+    // broken — Gareth's menu launch stays in the TUI.
+    let working_dir = omega_core::session::resolve_session_working_dir(dir)?;
+    let dir_arg = working_dir
+        .as_ref()
+        .map(|path| path.to_string_lossy().into_owned());
+    let workspace = match working_dir {
+        Some(path) => path,
         None => std::env::current_dir().context("resolving session workspace")?,
     };
     let scope_claim = match &files {
@@ -3364,21 +3372,29 @@ async fn cmd_new(
         )?),
         None => None,
     };
-    let dispatch_authority = omega_core::session::SessionDispatchAuthority::generate(
-        name,
-        scope_claim
-            .as_ref()
-            .and_then(|claim| claim.claim_id.as_deref()),
-    );
-    let dispatch_authority = match dispatch_authority {
-        Ok(authority) => authority,
-        Err(error) => {
-            if let Some(claim) = &scope_claim {
-                omega_core::scope::ScopeClaim::release_exact(&config.state_dir, claim)
-                    .context("rolling back scope after dispatch authority preparation failed")?;
+    // Dispatch-authority env is for `--cmd` (and worker/oracle spawn). The
+    // TUI New-agent path never injects it; Home `--agent` must match that.
+    let dispatch_authority = if cmd.is_some() {
+        let prepared = omega_core::session::SessionDispatchAuthority::generate(
+            name,
+            scope_claim
+                .as_ref()
+                .and_then(|claim| claim.claim_id.as_deref()),
+        );
+        match prepared {
+            Ok(authority) => Some(authority),
+            Err(error) => {
+                if let Some(claim) = &scope_claim {
+                    omega_core::scope::ScopeClaim::release_exact(&config.state_dir, claim)
+                        .context(
+                            "rolling back scope after dispatch authority preparation failed",
+                        )?;
+                }
+                return Err(error).context("preparing immutable session dispatch authority");
             }
-            return Err(error).context("preparing immutable session dispatch authority");
         }
+    } else {
+        None
     };
 
     let creation: Result<()> = async {
@@ -3386,13 +3402,16 @@ async fn cmd_new(
 
         // Priority: explicit --cmd overrides --agent
         if let Some(explicit_cmd) = cmd {
+            let authority = dispatch_authority.as_ref().ok_or_else(|| {
+                anyhow::anyhow!("explicit --cmd always prepares session dispatch authority")
+            })?;
             let _session = mgr
                 .create_command_session_create_only_with_authority(
                     &config.state_dir,
                     name,
-                    dir,
+                    dir_arg.as_deref(),
                     explicit_cmd,
-                    &dispatch_authority,
+                    authority,
                 )
                 .await?;
         } else if let Some(agent_name) = agent {
@@ -3408,16 +3427,9 @@ async fn cmd_new(
                     agent_enum.display_name()
                 );
             }
-            let launch = agent_enum.try_launch(prompt)?;
+            // Same entry as TUI `Action::CreateSessionAutoName`.
             let _session = mgr
-                .create_agent_session_create_only_with_authority(
-                    &config.state_dir,
-                    name,
-                    dir,
-                    agent_enum,
-                    launch,
-                    &dispatch_authority,
-                )
+                .create_session_with_agent(name, dir_arg.as_deref(), agent_enum, prompt)
                 .await?;
             println!("Agent: {}", agent_enum.display_name());
             observe_new_agent_session(&mgr, &config.state_dir, name, agent_enum.name()).await?;
@@ -3429,16 +3441,14 @@ async fn cmd_new(
                         config.agent_command
                     )
                 })?;
-            let launch = default_agent.try_launch(prompt)?;
+            if !default_agent.is_available() {
+                eprintln!(
+                    "Warning: {} not detected on this system. Session will be created anyway.",
+                    default_agent.display_name()
+                );
+            }
             let _session = mgr
-                .create_agent_session_create_only_with_authority(
-                    &config.state_dir,
-                    name,
-                    dir,
-                    default_agent,
-                    launch,
-                    &dispatch_authority,
-                )
+                .create_session_with_agent(name, dir_arg.as_deref(), default_agent, prompt)
                 .await?;
             println!("Agent: {} (OmegaOS default)", default_agent.display_name());
             observe_new_agent_session(&mgr, &config.state_dir, name, default_agent.name()).await?;
@@ -5050,9 +5060,7 @@ fn get_config_value(cfg: &omega_core::providers::ProvidersConfig, key: &str) -> 
         ("pi", "approve") | ("pi", "yolo") => cfg.pi.approve.to_string(),
         ("glm", "model") => cfg.glm.model.clone(),
         ("glm", "api_key") => redacted_secret(&cfg.glm.api_key),
-        ("glm", "dangerously_skip_permissions") => {
-            cfg.glm.dangerously_skip_permissions.to_string()
-        }
+        ("glm", "dangerously_skip_permissions") => cfg.glm.dangerously_skip_permissions.to_string(),
         ("openrouter", "model") => cfg.openrouter.model.clone(),
         ("openrouter", "api_key") => redacted_secret(&cfg.openrouter.api_key),
         ("openrouter", "base_url") => cfg.openrouter.base_url.clone(),
@@ -11952,12 +11960,7 @@ async fn cmd_status(name: &str, json: bool) -> Result<()> {
                 .map(|h| serde_json::to_value(h).unwrap_or(serde_json::Value::Null));
             println!(
                 "{}",
-                build_session_status_json(
-                    name,
-                    session_live,
-                    provider.as_deref(),
-                    health.as_ref(),
-                )
+                build_session_status_json(name, session_live, provider.as_deref(), health.as_ref(),)
             );
             return Ok(());
         }

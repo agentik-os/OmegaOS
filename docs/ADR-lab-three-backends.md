@@ -42,8 +42,12 @@ Grok Bot is not a fourth Omega backend and not a substitute for `omega send`.
 ## Launch contract
 
 The pane **is** the agent. Agent exit = session death. Never `; exec bash`
-after the agent. `omega new --agent {codex,claude,hermes}` shares
-`Agent::try_launch` with the TUI.
+after the agent. `omega new --agent {codex,claude,hermes}` uses the same
+`SessionManager::create_session_with_agent` entry as TUI New Codex /
+New Claude / New Hermes (`Action::CreateSessionAutoName`). Same argv
+(`Agent::try_launch`), no dispatch-authority env on the Home pane,
+`--dir ~/…` expanded (a missing directory is a hard error). Codex
+itself is not broken: the operator's menu launch stays in the TUI.
 
 Codex unattended pair (0.149+):
 
