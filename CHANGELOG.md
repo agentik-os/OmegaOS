@@ -7,6 +7,10 @@ for [semantic versioning](https://semver.org) once it reaches 1.0. Until then,
 
 ## [Unreleased]
 
+- Published the matching npm bootstrap as `omega-os@1.5.14` so `npx omega-os`
+  clones `main` with worker project cwd, record-only Verify Command, and the
+  Codex `--sandbox` / `--ask-for-approval never` launch pair.
+
 ## [0.1.14] — 2026-08-24
 
 ### Provider compatibility and installation
