@@ -365,10 +365,18 @@ fn record_session_provider(name: &str, agent: Agent) -> Result<()> {
     });
     let bytes = serde_json::to_vec_pretty(&payload).context("serializing session provider")?;
     crate::config::atomic_write_private(&path, &bytes)
-        .with_context(|| format!("recording provider for session {name}"))
+        .with_context(|| format!("recording provider for session {name}"))?;
+    // Same chokepoint as provider provenance: TUI New Codex and `omega new
+    // --agent` both land here. Launch starts `running`; observe marks `failed`
+    // if the agent dies to bash or the pane disappears.
+    let state_dir = crate::config::omega_dir().join("state");
+    if let Err(error) = crate::session_health::record_launch(&state_dir, name, agent.name()) {
+        tracing::warn!(session = %name, error = %error, "failed to record session launch health");
+    }
+    Ok(())
 }
 
-pub(crate) fn read_session_provider(name: &str) -> Option<String> {
+pub fn read_session_provider(name: &str) -> Option<String> {
     let payload: serde_json::Value =
         serde_json::from_slice(&std::fs::read(session_provider_path(name)).ok()?).ok()?;
     let recorded_session = payload.get("session")?.as_str()?;
@@ -542,10 +550,13 @@ impl SessionManager {
 
         if let Some(cmd) = command {
             let mut process = ProcessSpec::shell(cmd);
-            if !environment.is_empty() {
+            let mut env = environment.to_vec();
+            if !env.iter().any(|(key, _)| key == "OMEGA_SESSION") {
+                env.push(("OMEGA_SESSION".to_string(), safe.clone()));
+            }
+            if !env.is_empty() {
                 process.environment = Some(
-                    environment
-                        .iter()
+                    env.iter()
                         .map(|(key, value)| format!("{key}={value}"))
                         .collect(),
                 );

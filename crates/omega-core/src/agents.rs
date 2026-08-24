@@ -1221,6 +1221,35 @@ mod tests {
     }
 
     #[test]
+    fn home_launch_stays_alive_for_codex_claude_hermes() {
+        for agent in [Agent::Codex, Agent::Claude, Agent::Hermes] {
+            let cmd = launch(agent, None, LaunchOptions::default());
+            assert!(
+                !cmd.contains("; exec bash"),
+                "{} Home launch must not fall through to bash: {cmd}",
+                agent.name()
+            );
+            assert!(
+                cmd.contains("exec "),
+                "{} Home pane must exec the agent (same as TUI New {}): {cmd}",
+                agent.name(),
+                agent.display_name()
+            );
+            assert!(
+                cmd.contains("bash -c "),
+                "{} must share the pane_bash wrapper TUI uses: {cmd}",
+                agent.name()
+            );
+        }
+        let tui = launch(Agent::Codex, None, LaunchOptions::default());
+        let cli = Agent::Codex.try_launch(None).unwrap().command().to_string();
+        assert_eq!(
+            tui, cli,
+            "omega new --agent codex must use the same command as TUI New Codex"
+        );
+    }
+
+    #[test]
     fn agent_pane_is_the_agent_not_a_bash_fallback() {
         for agent in [
             Agent::Claude,

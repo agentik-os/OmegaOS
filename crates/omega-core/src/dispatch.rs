@@ -686,6 +686,54 @@ fn seed_lab_plan(state_dir: &Path, oracle_name: &str) -> Result<()> {
     Ok(())
 }
 
+/// Last `omega dispatch` delivery for an oracle — the Cursor-sidebar `reply`
+/// record Grok reads from `status --json` without attaching.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct LastDelivery {
+    pub tag: String,
+    pub at: String,
+    pub preview: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confirmed: Option<bool>,
+}
+
+pub fn last_delivery_path(state_dir: &Path, oracle_name: &str) -> Result<std::path::PathBuf> {
+    crate::scope::validate_session_identity(oracle_name)?;
+    let key = oracle_name.strip_prefix("oracle-").unwrap_or(oracle_name);
+    crate::scope::validate_session_identity(key)?;
+    Ok(state_dir.join(format!("oracle-{key}.delivery.json")))
+}
+
+pub fn persist_last_delivery(
+    state_dir: &Path,
+    oracle_name: &str,
+    tag: &str,
+    preview: &str,
+    confirmed: Option<bool>,
+) -> Result<()> {
+    let path = last_delivery_path(state_dir, oracle_name)?;
+    let preview: String = preview.chars().take(240).collect();
+    let record = LastDelivery {
+        tag: tag.to_string(),
+        at: chrono::Utc::now().to_rfc3339(),
+        preview,
+        confirmed,
+    };
+    let bytes = serde_json::to_vec_pretty(&record).context("serializing last delivery")?;
+    crate::config::atomic_write_private(&path, &bytes)
+        .with_context(|| format!("writing last delivery {}", path.display()))
+}
+
+pub fn read_last_delivery(state_dir: &Path, oracle_name: &str) -> Result<Option<LastDelivery>> {
+    let path = last_delivery_path(state_dir, oracle_name)?;
+    let Some(bytes) = crate::config::read_private_optional(&path)? else {
+        return Ok(None);
+    };
+    Ok(Some(serde_json::from_slice(&bytes).with_context(|| {
+        format!("parsing last delivery {}", path.display())
+    })?))
+}
+
 /// Mint a FRESH `--session-id` for an oracle dispatch and persist it.
 ///
 /// CRITICAL: `claude --session-id <uuid>` CREATES a session with that exact id and
@@ -857,6 +905,61 @@ impl Dispatcher {
         self.dispatch_oracle_with_agent(project, mission, None, false)
             .await
             .map(|outcome| outcome.oracle_name)
+    }
+
+    /// After spawn: if the agent dies to bash or the pane vanishes, fail JSON.
+    /// Empty splash frames stay `running` — that is not death.
+    async fn observe_spawned_oracle(&self, oracle: &str, provider: &str) -> Result<()> {
+        let mut last_health = crate::session_health::record_launch(
+            &self.config.state_dir,
+            oracle,
+            provider,
+        )
+        .unwrap_or_else(|_| crate::session_health::SessionHealth::launch(oracle, provider));
+        for probe in 0..3 {
+            tokio::time::sleep(Duration::from_secs(2)).await;
+            let live = self
+                .session_mgr
+                .list_sessions()
+                .await
+                .ok()
+                .is_some_and(|sessions| sessions.iter().any(|session| session.name == oracle));
+            let pane = if live {
+                self.session_mgr.capture_pane(oracle).await.ok()
+            } else {
+                None
+            };
+            last_health = crate::session_health::observe(
+                &self.config.state_dir,
+                oracle,
+                provider,
+                live,
+                pane.as_deref(),
+            )?;
+            if last_health.is_failed() {
+                anyhow::bail!(
+                    "{}",
+                    serde_json::json!({
+                        "error": "agent_exited",
+                        "oracle": oracle,
+                        "provider": provider,
+                        "delivery": "spawned_failed",
+                        "reason": last_health.reason,
+                        "probe": probe,
+                        "message": "oracle agent died after launch; session is failed, not a silent bash. Retry or pass --new."
+                    })
+                );
+            }
+            if live
+                && pane
+                    .as_deref()
+                    .is_some_and(|text| !text.trim().is_empty() && !crate::session_health::pane_fell_to_silent_bash(text))
+            {
+                return Ok(());
+            }
+        }
+        let _ = last_health;
+        Ok(())
     }
 
     /// Probe the pane until it presents a typeable composer, bounded by
@@ -1260,6 +1363,13 @@ impl Dispatcher {
                 // mission already delivered, and it created a sibling oracle
                 // carrying the same mission_text.
                 if let Some(delivery) = followup_disposition(outcome) {
+                    let _ = persist_last_delivery(
+                        &state_dir,
+                        &oracle,
+                        delivery.tag(),
+                        mission,
+                        Some(matches!(delivery, DispatchDelivery::Followup)),
+                    );
                     return Ok(DispatchOutcome {
                         oracle_name: oracle,
                         delivery,
@@ -1269,6 +1379,13 @@ impl Dispatcher {
                 // are how follow-up on a not-ready composer duplicated the
                 // mission (DISPATCH_DELIVERY=spawned_pane_not_ready). Wait
                 // or fail JSON — same as Cursor Cloud Agent `reply`.
+                let _ = persist_last_delivery(
+                    &state_dir,
+                    &oracle,
+                    "followup_blocked",
+                    mission,
+                    Some(false),
+                );
                 anyhow::bail!(
                     "{}",
                     serde_json::json!({
@@ -1348,13 +1465,11 @@ impl Dispatcher {
         let oracle_state =
             OracleState::from_ledger(&oracle_name, &mission_record, &classified_outcome)?;
         oracle_state.write(&self.config.state_dir)?;
-        if let Err(error) = seed_lab_plan(&self.config.state_dir, &oracle_name) {
-            tracing::warn!(
-                oracle = %oracle_name,
-                error = %error,
-                "failed to seed AGK Lab plan; oracle prompt still carries the loop"
-            );
-        }
+        seed_lab_plan(&self.config.state_dir, &oracle_name).with_context(|| {
+            format!(
+                "seeding Lab plan for {oracle_name} — ANALYSE with 0/0 is not a dispatch"
+            )
+        })?;
 
         let ship = OraclePromptGenerator::should_ship(mission);
         let god_mode = OraclePromptGenerator::is_god_mode(mission);
@@ -1663,6 +1778,26 @@ impl Dispatcher {
                     let _ = f.write_all(line.as_bytes());
                 }
             }
+        }
+        let _ = persist_last_delivery(
+            &self.config.state_dir,
+            &oracle_name,
+            DispatchDelivery::Spawned.tag(),
+            mission,
+            None,
+        );
+        if let Err(error) = self
+            .observe_spawned_oracle(&oracle_name, agent.name())
+            .await
+        {
+            let _ = persist_last_delivery(
+                &self.config.state_dir,
+                &oracle_name,
+                "spawned_failed",
+                mission,
+                Some(false),
+            );
+            return Err(error);
         }
         Ok(DispatchOutcome {
             oracle_name,
@@ -3297,5 +3432,56 @@ mod ledger_followup_tests {
             "the final pre-keystroke revalidation must notice closure during the probe"
         );
         assert!(append_followup_event(tmp.path(), "oracle-terminal", "too late", true).is_err());
+    }
+
+    #[test]
+    fn last_delivery_is_visible_for_status_json_without_a_pane() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        persist_last_delivery(
+            tmp.path(),
+            "oracle-OmegaOS",
+            "followup",
+            "also verify the Telegram path",
+            Some(true),
+        )
+        .unwrap();
+        let got = read_last_delivery(tmp.path(), "oracle-OmegaOS")
+            .unwrap()
+            .expect("delivery");
+        assert_eq!(got.tag, "followup");
+        assert_eq!(got.confirmed, Some(true));
+        assert!(got.preview.contains("Telegram"));
+        let json = serde_json::to_value(&got).unwrap();
+        assert!(json.get("pane").is_none());
+    }
+
+    #[test]
+    fn seed_lab_plan_writes_eleven_steps_or_fails() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let ledger = MissionLedger::open(mission_ledger_path(tmp.path())).unwrap();
+        let mission = Mission::new("OmegaOS", "tiny mission", PathBuf::from("/tmp/OmegaOS"));
+        ledger
+            .create_mission(
+                &mission,
+                &format!("test:{}:created", mission.id.as_str()),
+                "test",
+            )
+            .unwrap();
+        let mut classified = AppendEvent::new(
+            mission.id.clone(),
+            1,
+            format!("test:{}:classified", mission.id.as_str()),
+            "test",
+            "mission_classified",
+        );
+        classified.next_mission_state = Some(MissionState::Classified);
+        let classified = ledger.append(classified).unwrap();
+        let state = OracleState::from_ledger("oracle-OmegaOS", &mission, &classified).unwrap();
+        state.write(tmp.path()).unwrap();
+        seed_lab_plan(tmp.path(), "oracle-OmegaOS").unwrap();
+        let todo = crate::oracle_todo::OracleTodo::load(tmp.path(), "oracle-OmegaOS").unwrap();
+        assert_eq!(todo.tasks.len(), 11);
+        assert_eq!(todo.tasks[0].title, "Understand");
+        assert_eq!(todo.tasks[0].status, crate::oracle_todo::TodoStatus::Doing);
     }
 }

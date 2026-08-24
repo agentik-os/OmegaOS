@@ -62,6 +62,7 @@ pub mod rules;
 pub mod scope;
 pub mod service;
 pub mod session;
+pub mod session_health;
 pub mod session_log;
 pub mod session_monitor;
 pub mod ship;

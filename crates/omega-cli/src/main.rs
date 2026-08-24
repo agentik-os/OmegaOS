@@ -3303,6 +3303,43 @@ async fn run_tui_loop(
     Ok(())
 }
 
+/// After `omega new --agent`, fail JSON if the pane is already bash / gone.
+/// Same launcher as TUI New Codex/Claude/Hermes (`try_launch`).
+async fn observe_new_agent_session(
+    mgr: &SessionManager,
+    state_dir: &std::path::Path,
+    name: &str,
+    provider: &str,
+) -> Result<()> {
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    let live = mgr
+        .list_sessions()
+        .await
+        .ok()
+        .is_some_and(|sessions| sessions.iter().any(|session| session.name == name));
+    let pane = if live {
+        mgr.capture_pane(name).await.ok()
+    } else {
+        None
+    };
+    let health =
+        omega_core::session_health::observe(state_dir, name, provider, live, pane.as_deref())?;
+    if health.is_failed() {
+        println!("{}", serde_json::to_string_pretty(&health)?);
+        anyhow::bail!(
+            "{}",
+            serde_json::json!({
+                "error": "agent_exited",
+                "session": name,
+                "provider": provider,
+                "reason": health.reason,
+                "message": "agent pane died; session is failed, not a silent bash"
+            })
+        );
+    }
+    Ok(())
+}
+
 async fn cmd_new(
     name: &str,
     dir: Option<&str>,
@@ -3383,6 +3420,7 @@ async fn cmd_new(
                 )
                 .await?;
             println!("Agent: {}", agent_enum.display_name());
+            observe_new_agent_session(&mgr, &config.state_dir, name, agent_enum.name()).await?;
         } else {
             let default_agent = omega_core::agents::Agent::from_name(&config.agent_command)
                 .ok_or_else(|| {
@@ -3403,6 +3441,7 @@ async fn cmd_new(
                 )
                 .await?;
             println!("Agent: {} (OmegaOS default)", default_agent.display_name());
+            observe_new_agent_session(&mgr, &config.state_dir, name, default_agent.name()).await?;
         }
         Ok(())
     }
@@ -9700,6 +9739,29 @@ fn l4_refusal_reasons(todo: &omega_core::oracle_todo::OracleTodo) -> Vec<String>
 /// agent cannot see. Worse, the silent rewrite restamped `ts` on every look,
 /// which is precisely the field patrol's stall detector reads: merely LOOKING
 /// at a stalled mission made it look alive.
+fn worker_finish_reports(state_dir: &std::path::Path, session: &str) -> Vec<serde_json::Value> {
+    let Some(state) = omega_core::oracle_lifecycle::OracleState::read(state_dir, session)
+        .ok()
+        .flatten()
+    else {
+        return Vec::new();
+    };
+    state
+        .workers
+        .iter()
+        .filter_map(|worker| {
+            let done =
+                omega_core::done::DoneSignal::read(state_dir, &worker.session_name).ok()??;
+            Some(serde_json::json!({
+                "session": worker.session_name,
+                "status": done.status,
+                "summary": done.summary,
+                "evidence": done.artifacts,
+            }))
+        })
+        .collect()
+}
+
 fn cmd_progress_readback(state_dir: &std::path::Path, session: &str, json: bool) -> Result<()> {
     let key = session.strip_prefix("oracle-").unwrap_or(session);
     let path = state_dir.join(format!("oracle-{}.progress.json", key));
@@ -9710,6 +9772,7 @@ fn cmd_progress_readback(state_dir: &std::path::Path, session: &str, json: bool)
     let tasks = parse_plan_tasks(&doc);
     if json {
         let done = tasks.iter().filter(|t| t.status == "done").count();
+        let reports = worker_finish_reports(state_dir, session);
         println!(
             "{}",
             serde_json::json!({
@@ -9723,6 +9786,7 @@ fn cmd_progress_readback(state_dir: &std::path::Path, session: &str, json: bool)
                     .iter()
                     .map(|t| serde_json::json!({ "t": t.title, "s": t.status }))
                     .collect::<Vec<_>>(),
+                "worker_reports": reports,
             })
         );
     } else if !path.exists() {
@@ -11233,6 +11297,12 @@ async fn cmd_gate(
             .map(|session| session.name)
             .collect();
         let oracle = resolve_oracle_alias(oracle, &live, &config.state_dir);
+        let caller = std::env::var("OMEGA_SESSION").ok();
+        omega_core::gate::refuse_writer_self_approval(
+            &oracle,
+            approver.unwrap_or(""),
+            caller.as_deref(),
+        )?;
         let result = omega_core::gate::GateResult::human_acceptance(
             &oracle,
             approver.unwrap_or_default(),
@@ -11619,7 +11689,9 @@ async fn cmd_oracles(all: bool) -> Result<()> {
         .map(|s| s.name.clone())
         .collect();
     if all {
-        for st in omega_core::oracle_lifecycle::OracleState::read_all_strict(&config.state_dir)? {
+        // Diagnostic roster: tolerant sweep. A leftover `oracle-mac-purge-*`
+        // projection must not take `oracles --all` down (Gareth 2026-08-24).
+        for st in omega_core::oracle_lifecycle::OracleState::read_all(&config.state_dir) {
             if is_stale_purge_oracle(&st.oracle_name) {
                 continue;
             }
@@ -11783,16 +11855,68 @@ async fn cmd_workers(oracle: Option<&str>) -> Result<()> {
     Ok(())
 }
 
+/// Lifecycle JSON for `omega status --json`. Never includes pane text —
+/// Grok observes without attaching.
+struct OracleStatusJson<'a> {
+    name: &'a str,
+    session_id: Option<&'a str>,
+    live: bool,
+    phase: &'a str,
+    project: Option<&'a str>,
+    done: usize,
+    total: usize,
+    doing: Option<&'a str>,
+    running: &'a [String],
+    terminal: &'a [String],
+    reports: &'a [serde_json::Value],
+    gate_passed: bool,
+    closeable: bool,
+    refused_because: &'a [String],
+    delivery: Option<&'a serde_json::Value>,
+    health: Option<&'a serde_json::Value>,
+}
+
+fn build_oracle_status_json(view: OracleStatusJson<'_>) -> serde_json::Value {
+    serde_json::json!({
+        "session": view.name,
+        "session_id": view.session_id,
+        "live": view.live,
+        "phase": view.phase,
+        "project": view.project,
+        "plan": { "done": view.done, "total": view.total },
+        "doing": view.doing,
+        "workers": {
+            "running": view.running,
+            "terminal": view.terminal,
+            "reports": view.reports,
+        },
+        "gate_passed": view.gate_passed,
+        "closeable": view.closeable,
+        "refused_because": view.refused_because,
+        "delivery": view.delivery,
+        "health": view.health,
+    })
+}
+
+fn build_session_status_json(
+    name: &str,
+    live: bool,
+    provider: Option<&str>,
+    health: Option<&serde_json::Value>,
+) -> serde_json::Value {
+    serde_json::json!({
+        "session": name,
+        "live": live,
+        "provider": provider,
+        "health": health,
+    })
+}
+
 /// `omega status <session> [--json]`.
 ///
-/// A NON-oracle session keeps the original behaviour byte for byte (the last
-/// 30 lines of its pane), because that is what every prompt template and the
-/// `/omega-status` command tell an agent to read.
-///
-/// An ORACLE gets the lifecycle block FIRST, then the same pane tail. The old
-/// output answered "what is it printing right now" but never "is this mission
-/// closeable", so the operator had to reconstruct the close-gate by hand from
-/// three state files, and usually reconstructed it wrong.
+/// `--json` is lifecycle only (no pane dump) so an external orchestrator can
+/// observe without attaching. A NON-oracle human print still dumps the last
+/// 30 pane lines. An ORACLE human print is the lifecycle block then the pane.
 async fn cmd_status(name: &str, json: bool) -> Result<()> {
     // Resolve the mission-key spelling BEFORE classifying: `dentistrygpt-3`
     // classifies as a plain session, so it took the pane-capture branch and died
@@ -11812,6 +11936,31 @@ async fn cmd_status(name: &str, json: bool) -> Result<()> {
     let is_oracle = omega_core::session::OmegaSession::classify(name).role
         == omega_core::session::SessionRole::Oracle;
     if !is_oracle {
+        if json {
+            let session_live = live.iter().any(|s| s.name == name);
+            let provider = omega_core::session::read_session_provider(name);
+            if !session_live {
+                let _ = omega_core::session_health::observe(
+                    &config.state_dir,
+                    name,
+                    provider.as_deref().unwrap_or("unknown"),
+                    false,
+                    None,
+                );
+            }
+            let health = omega_core::session_health::read(&config.state_dir, name)?
+                .map(|h| serde_json::to_value(h).unwrap_or(serde_json::Value::Null));
+            println!(
+                "{}",
+                build_session_status_json(
+                    name,
+                    session_live,
+                    provider.as_deref(),
+                    health.as_ref(),
+                )
+            );
+            return Ok(());
+        }
         let content = mgr.capture_pane(name).await?;
         let lines: Vec<&str> = content.lines().collect();
         let start = lines.len().saturating_sub(30);
@@ -11891,6 +12040,17 @@ async fn cmd_status(name: &str, json: bool) -> Result<()> {
         .unwrap_or_else(|| "(no lifecycle state)".to_string());
 
     if json {
+        if !session_live {
+            let provider = omega_core::session::read_session_provider(name)
+                .unwrap_or_else(|| "unknown".to_string());
+            let _ = omega_core::session_health::observe(
+                &config.state_dir,
+                name,
+                &provider,
+                false,
+                None,
+            );
+        }
         let mut reports = Vec::new();
         for worker_name in workers.running.iter().chain(workers.terminal.iter()) {
             if let Ok(Some(done)) =
@@ -11904,24 +12064,33 @@ async fn cmd_status(name: &str, json: bool) -> Result<()> {
                 }));
             }
         }
+        let delivery = omega_core::dispatch::read_last_delivery(&config.state_dir, name)
+            .ok()
+            .flatten()
+            .and_then(|d| serde_json::to_value(d).ok());
+        let health = omega_core::session_health::read(&config.state_dir, name)
+            .ok()
+            .flatten()
+            .and_then(|h| serde_json::to_value(h).ok());
         println!(
             "{}",
-            serde_json::json!({
-                "session": name,
-                "session_id": state.as_ref().and_then(|s| s.session_id.clone()),
-                "live": session_live,
-                "phase": phase,
-                "project": state.as_ref().map(|s| s.project.clone()),
-                "plan": { "done": done, "total": total },
-                "doing": doing.map(|t| t.title.clone()),
-                "workers": {
-                    "running": workers.running,
-                    "terminal": workers.terminal,
-                    "reports": reports,
-                },
-                "gate_passed": gate_passed,
-                "closeable": !verdict.refused,
-                "refused_because": verdict.reasons,
+            build_oracle_status_json(OracleStatusJson {
+                name,
+                session_id: state.as_ref().and_then(|s| s.session_id.as_deref()),
+                live: session_live,
+                phase: &phase,
+                project: state.as_ref().map(|s| s.project.as_str()),
+                done,
+                total,
+                doing: doing.map(|t| t.title.as_str()),
+                running: &workers.running,
+                terminal: &workers.terminal,
+                reports: &reports,
+                gate_passed,
+                closeable: !verdict.refused,
+                refused_because: &verdict.reasons,
+                delivery: delivery.as_ref(),
+                health: health.as_ref(),
             })
         );
         return Ok(());
@@ -17299,6 +17468,68 @@ mod phase1_tests {
         assert!(is_stale_purge_oracle("oracle-mac-purge-20260822-2"));
         assert!(!is_stale_purge_oracle("oracle-omega-orch-audit"));
         assert!(!is_stale_purge_oracle("oracle-OmegaOS"));
+    }
+
+    #[test]
+    fn status_json_payload_never_includes_pane_dump() {
+        let reports = vec![serde_json::json!({
+            "session": "OmegaOS-worker-a",
+            "status": "done_clean",
+            "summary": "wrote the file",
+            "evidence": []
+        })];
+        let delivery = serde_json::json!({
+            "tag": "followup",
+            "at": "2026-08-24T00:00:00Z",
+            "preview": "also check capture"
+        });
+        let health = serde_json::json!({
+            "session": "oracle-OmegaOS",
+            "provider": "codex",
+            "status": "running"
+        });
+        let json = build_oracle_status_json(OracleStatusJson {
+            name: "oracle-OmegaOS",
+            session_id: Some("sess-1"),
+            live: true,
+            phase: "ANALYSE",
+            project: Some("OmegaOS"),
+            done: 0,
+            total: 11,
+            doing: Some("Understand"),
+            running: &[],
+            terminal: &["OmegaOS-worker-a".to_string()],
+            reports: &reports,
+            gate_passed: false,
+            closeable: false,
+            refused_because: &["plan 0/11 — pas 100% (L4)".to_string()],
+            delivery: Some(&delivery),
+            health: Some(&health),
+        });
+        let rendered = serde_json::to_string(&json).unwrap();
+        assert!(json.get("pane").is_none(), "{rendered}");
+        assert!(!rendered.contains("─── pane"));
+        assert!(!rendered.contains("bash-5.3"));
+        assert_eq!(json["session"], "oracle-OmegaOS");
+        assert_eq!(json["session_id"], "sess-1");
+        assert_eq!(json["delivery"]["tag"], "followup");
+        assert_eq!(json["health"]["status"], "running");
+        assert_eq!(json["plan"]["total"], 11);
+        assert_eq!(json["workers"]["reports"][0]["status"], "done_clean");
+        let home = build_session_status_json(
+            "t-codex",
+            false,
+            Some("codex"),
+            Some(&serde_json::json!({
+                "session": "t-codex",
+                "provider": "codex",
+                "status": "failed",
+                "reason": "agent_exited: pane fell through to bash"
+            })),
+        );
+        let home_rendered = serde_json::to_string(&home).unwrap();
+        assert!(home.get("pane").is_none(), "{home_rendered}");
+        assert_eq!(home["health"]["status"], "failed");
     }
 
     #[test]

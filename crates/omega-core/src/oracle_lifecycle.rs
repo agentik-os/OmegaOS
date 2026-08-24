@@ -2440,6 +2440,32 @@ mod tests {
     }
 
     #[test]
+    fn read_all_skips_dead_purge_projections_without_crashing() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("oracle-mac-purge-20260822.state.json"),
+            b"{",
+        )
+        .unwrap();
+        let mission = Mission::new("demo", "safe", PathBuf::from("/tmp"));
+        OracleState::new("oracle-demo", &mission)
+            .write(tmp.path())
+            .unwrap();
+        let names: Vec<String> = OracleState::read_all(tmp.path())
+            .into_iter()
+            .map(|state| state.oracle_name)
+            .collect();
+        assert!(
+            !names.iter().any(|name| name.contains("purge")),
+            "broken purge projection must not abort the sweep: {names:?}"
+        );
+        assert!(
+            names.iter().any(|name| name == "oracle-demo"),
+            "valid oracles must still appear beside a dead purge file: {names:?}"
+        );
+    }
+
+    #[test]
     fn oracle_state_cas_refuses_stale_full_document_writer() {
         let tmp = tempfile::TempDir::new().unwrap();
         let mission = Mission::new("Acme", "safe", PathBuf::from("/tmp"));

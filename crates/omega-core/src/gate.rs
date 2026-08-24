@@ -139,6 +139,53 @@ impl Rubric {
     }
 }
 
+/// The writer (oracle or worker) cannot gate-accept its own mission.
+/// Gareth / a human on a regular terminal can. `caller_session` is
+/// `OMEGA_SESSION` when `omega gate` is typed from inside an agent pane.
+pub fn refuse_writer_self_approval(
+    oracle: &str,
+    approver: &str,
+    caller_session: Option<&str>,
+) -> Result<()> {
+    if looks_like_writer_identity(approver, oracle) {
+        anyhow::bail!(
+            "{}",
+            serde_json::json!({
+                "error": "writer_cannot_self_approve",
+                "oracle": oracle,
+                "approver": approver,
+                "message": "the writer cannot gate-accept its own work. A human signs off with omega gate --accept --approver <human> --evidence <what you verified>."
+            })
+        );
+    }
+    if let Some(caller) = caller_session {
+        if looks_like_writer_identity(caller, oracle) {
+            anyhow::bail!(
+                "{}",
+                serde_json::json!({
+                    "error": "writer_cannot_self_approve",
+                    "oracle": oracle,
+                    "caller": caller,
+                    "message": "omega gate --accept from an oracle/worker pane is refused. Sign off from a human terminal."
+                })
+            );
+        }
+    }
+    Ok(())
+}
+
+fn looks_like_writer_identity(name: &str, oracle: &str) -> bool {
+    let n = name.trim().to_ascii_lowercase();
+    if n.is_empty() {
+        return false;
+    }
+    let oracle = oracle.trim().to_ascii_lowercase();
+    n == oracle
+        || n.starts_with("oracle-")
+        || n.contains("-worker-")
+        || n.starts_with("worker-")
+}
+
 // ── GateResult impl ──
 
 impl GateResult {
@@ -251,6 +298,7 @@ impl GateResult {
         if evidence.is_empty() {
             anyhow::bail!("an acceptance needs evidence: pass --evidence \"<what you verified>\"");
         }
+        refuse_writer_self_approval(oracle, approver, None)?;
         Ok(Self {
             oracle: oracle.to_string(),
             timestamp: Utc::now(),
@@ -1285,6 +1333,14 @@ mod tests {
         assert!(GateResult::human_acceptance("oracle-p-1", "   ", "evidence").is_err());
         assert!(GateResult::human_acceptance("oracle-p-1", "gs", "").is_err());
         assert!(GateResult::human_acceptance("oracle-p-1", "gs", "  ").is_err());
+    }
+
+    #[test]
+    fn a_writer_cannot_gate_accept_itself() {
+        assert!(GateResult::human_acceptance("oracle-p-1", "oracle-p-1", "trust me").is_err());
+        assert!(GateResult::human_acceptance("oracle-p-1", "p-1-worker-auth", "trust me").is_err());
+        assert!(refuse_writer_self_approval("oracle-p-1", "gs", Some("oracle-p-1")).is_err());
+        assert!(refuse_writer_self_approval("oracle-p-1", "gs", None).is_ok());
     }
 
     #[test]
