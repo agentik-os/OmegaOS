@@ -706,7 +706,7 @@ fi
 # import error, so the enforcement vanished with nothing to see. Assert the whole
 # chain so that class of bug is caught here instead of in production.
 HOOK_PARITY_OK=1
-for f in stop-verify-hook.sh omega-session-contract.sh omega-prompt-scan.sh omega-plan-mirror.sh omega_plan_state.py; do
+for f in stop-verify-hook.sh omega-session-contract.sh omega-prompt-scan.sh omega-plan-mirror.sh omega-audit-guard.sh track-tool-use.sh omega_plan_state.py; do
   [ -f "scripts/hooks/$f" ] || { bad "hook payload missing from repo: scripts/hooks/$f"; HOOK_PARITY_OK=0; }
 done
 grep -q 'scripts/hooks/"\*\.py' install.sh || { bad "install.sh does not copy scripts/hooks/*.py (shared parser would not ship)"; HOOK_PARITY_OK=0; }
@@ -714,6 +714,13 @@ for marker in stop-verify-hook omega-session-contract omega-prompt-scan omega-pl
   grep -q "$marker" install.sh || { bad "install.sh never registers $marker"; HOOK_PARITY_OK=0; }
 done
 [ "$HOOK_PARITY_OK" = "1" ] && ok "anti-abandon hooks shipped, copied (*.sh + *.py) and registered by install.sh"
+if [ "$(grep -c '\.hooks.PreToolUse' install.sh)" -ge 2 ] \
+  && [ "$(grep -c '\.hooks.PostToolUse' install.sh)" -ge 2 ] \
+  && grep -q -- '--dangerously-bypass-hook-trust' crates/omega-core/src/agents.rs; then
+  ok "Claude and Codex both receive audit/tracker hooks; detached Codex trust is explicit"
+else
+  bad "Codex hook enforcement is not in parity with Claude"
+fi
 
 # 10b. Post-update coherence: an install must reconcile itself, and the
 # staleness check must have something true to compare against.
@@ -772,7 +779,8 @@ if grep -q 'skip_metadata' tools/agent-reach/install-agent-reach.sh \
 else
   bad "Agent Reach can publish upstream-only metadata that breaks omega sync"
 fi
-if grep -q 'rsync -a --delete "$sk_dir/"' install.sh \
+if grep -q 'mirror_owned_dir "$sk_dir"' install.sh \
+  && grep -q 'rsync -a --delete "$src/" "$dst/"' install.sh \
   && grep -q 'rsync -a --delete --exclude=node_modules' install.sh \
   && grep -q 'skills validate --root "$sk_dir"' install.sh \
   && grep -q 'SKMIRROR_REJECTED' install.sh; then

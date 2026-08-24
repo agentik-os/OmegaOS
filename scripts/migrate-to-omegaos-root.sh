@@ -40,9 +40,9 @@ mkdir -p "$ROOT"
 
 # 2. Quiesce writers so nothing writes into ~/.omega mid-move.
 STOPPED_SERVICE=""
-if command -v systemctl >/dev/null 2>&1 && systemctl --user is-active --quiet omega-telegram.service 2>/dev/null; then
-    systemctl --user stop omega-telegram.service && STOPPED_SERVICE=1
-    info "Stopped omega-telegram.service for the move"
+if command -v systemctl >/dev/null 2>&1 && systemctl --user is-active --quiet omega-tg-bot.service 2>/dev/null; then
+    systemctl --user stop omega-tg-bot.service && STOPPED_SERVICE=1
+    info "Stopped omega-tg-bot.service for the move"
 fi
 CRON_BACKUP=""
 if command -v crontab >/dev/null 2>&1 && crontab -l >/dev/null 2>&1; then
@@ -91,12 +91,13 @@ if [[ ! -e "$ROOT/Setup" ]]; then
     ok "Linked repo: $ROOT/Setup → $SRC"
 fi
 
-# 6. Restart writers.
-if command -v crontab >/dev/null 2>&1 && ! crontab -l 2>/dev/null | grep -q 'omega patrol'; then
-    ( crontab -l 2>/dev/null; echo "* * * * * $HOME/.local/bin/omega patrol --once >> $SYS/logs/omega-patrol.log 2>&1" ) | crontab - || true
-    info "Restored omega patrol cron"
+# 6. Restart writers. Restore the exact marker-bearing crontab captured above;
+# synthesizing one patrol line used to drop usage/update/self-heal jobs.
+if [[ -n "$CRON_BACKUP" ]] && command -v crontab >/dev/null 2>&1; then
+    printf '%s\n' "$CRON_BACKUP" | crontab - || true
+    info "Restored omega crons"
 fi
-[[ -n "$STOPPED_SERVICE" ]] && systemctl --user start omega-telegram.service 2>/dev/null || true
+[[ -n "$STOPPED_SERVICE" ]] && systemctl --user start omega-tg-bot.service 2>/dev/null || true
 
 echo
 ok "Migration complete. Layout:"

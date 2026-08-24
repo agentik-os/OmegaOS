@@ -93,6 +93,21 @@ install_binary() {
     mv -f "$dst.new" "$dst"
 }
 
+# Mirror one installer-owned directory exactly. The fallback removes the old
+# managed copy first; plain `cp -r` retained files deleted upstream forever.
+mirror_owned_dir() {
+    local src="$1" dst="$2"
+    mkdir -p "$(dirname "$dst")"
+    if command -v rsync >/dev/null 2>&1; then
+        mkdir -p "$dst"
+        rsync -a --delete "$src/" "$dst/"
+    else
+        rm -rf "$dst"
+        mkdir -p "$dst"
+        cp -a "$src/." "$dst/"
+    fi
+}
+
 # Privileged command runner — the ONE way this script touches sudo that can
 # ever PROMPT (sole exception: the system-wide rmux config block in Phase 5
 # uses raw `sudo` but self-gates on `sudo -n true`, so it never prompts). Tries
@@ -1231,7 +1246,7 @@ fi
 STEPPER_SKILL_DST="$OMEGA_DIR/skills/stepper-os"
 if [[ -d "$OMEGA_SRC/skills/stepper-os" ]]; then
     mkdir -p "$STEPPER_SKILL_DST" "$HOME/.claude/commands"
-    cp -rf "$OMEGA_SRC/skills/stepper-os/." "$STEPPER_SKILL_DST/"
+    mirror_owned_dir "$OMEGA_SRC/skills/stepper-os" "$STEPPER_SKILL_DST"
     for cmd in stepper-os omg-stepper-os; do
         cat > "$HOME/.claude/commands/$cmd.md" <<EOF
 # /$cmd
@@ -1329,6 +1344,9 @@ if [[ ! -f "$OMEGA_DIR/config.toml" ]]; then
 else
     ok "Config already exists: $OMEGA_DIR/config.toml"
 fi
+# Always refresh a non-authoritative reference so upgrades expose new knobs
+# without overwriting operator state.
+cp config/default.toml "$OMEGA_DIR/config.toml.defaults"
 if [[ ! -f "$OMEGA_DIR/providers.toml" ]]; then
     cp config/providers.default.toml "$OMEGA_DIR/providers.toml"
     chmod 600 "$OMEGA_DIR/providers.toml"
@@ -1336,18 +1354,20 @@ if [[ ! -f "$OMEGA_DIR/providers.toml" ]]; then
 else
     ok "Provider config already exists: $OMEGA_DIR/providers.toml"
 fi
+cp config/providers.default.toml "$OMEGA_DIR/providers.toml.defaults"
 
 # Run the dedicated flow-aware reconciler through the newly installed binary.
 # Its JSON and exit status are authoritative. An active device login is
-# reported and preserved; an actual reconciliation failure stays visible.
+# reported and preserved; an actual reconciliation failure stays visible but
+# does not leave the rest of the installation half-applied.
 if [[ -x "$INSTALL_DIR/omega" ]]; then
     CODEX_RECONCILE_OUTPUT=""
     if CODEX_RECONCILE_OUTPUT=$(OMEGA_DIR="$OMEGA_DIR" CODEX_HOME="$CODEX_NATIVE_DIR" \
         "$INSTALL_DIR/omega" codex-reconcile --json 2>&1); then
         ok "Codex credential reconciliation: $CODEX_RECONCILE_OUTPUT"
     else
-        err "Codex credential reconciliation failed: $CODEX_RECONCILE_OUTPUT"
-        exit 1
+        warn "Codex credential reconciliation failed: $CODEX_RECONCILE_OUTPUT"
+        warn "Continuing install; repair with: omega codex-reconcile --json"
     fi
 fi
 
@@ -1415,7 +1435,7 @@ fi
 # Credentials are symlinked so OAuth still works.
 BRIDGE_CFG="$OMEGA_DIR/claude-bridge-config"
 mkdir -p "$BRIDGE_CFG"
-echo '{}' > "$BRIDGE_CFG/settings.json"
+[[ -f "$BRIDGE_CFG/settings.json" ]] || echo '{}' > "$BRIDGE_CFG/settings.json"
 # Ensure the symlink target exists so the bridge never reads through a dangling
 # link before `claude` login writes real creds (NEVER clobber an existing file).
 [[ -e "$OMEGA_DIR/credentials/claude.json" ]] || : > "$OMEGA_DIR/credentials/claude.json"
@@ -1907,12 +1927,7 @@ if [[ -d "$DI_SRC" ]]; then
         [[ -f "$skill_md" ]] || continue
         di_dir="$(dirname "$skill_md")"; di_name="$(basename "$di_dir")"
         [[ -d "$OMEGA_SRC/skills/$di_name" ]] && continue   # OmegaOS-vendored = canon, skip
-        mkdir -p "$OMEGA_DIR/skills/$di_name"
-        if command -v rsync >/dev/null 2>&1; then
-            rsync -a "$di_dir/" "$OMEGA_DIR/skills/$di_name/" 2>/dev/null || true
-        else
-            cp -r "$di_dir/." "$OMEGA_DIR/skills/$di_name/" 2>/dev/null || true
-        fi
+        mirror_owned_dir "$di_dir" "$OMEGA_DIR/skills/$di_name" 2>/dev/null || true
         find "$OMEGA_DIR/skills/$di_name" -name '*.sh' -exec chmod +x {} + 2>/dev/null || true
         : > "$OMEGA_DIR/skills/$di_name/.omega-managed" 2>/dev/null || true
         DI_N=$((DI_N + 1))
@@ -2015,8 +2030,7 @@ CBEOF
         [[ -f "$skill_md" ]] || continue
         cb_dir="$(dirname "$skill_md")"; cb_name="$(basename "$cb_dir")"
         [[ -d "$OMEGA_SRC/skills/$cb_name" ]] && continue
-        mkdir -p "$OMEGA_DIR/skills/$cb_name"
-        cp -rf "$cb_dir/." "$OMEGA_DIR/skills/$cb_name/" 2>/dev/null || true
+        mirror_owned_dir "$cb_dir" "$OMEGA_DIR/skills/$cb_name" 2>/dev/null || true
         CB_N=$((CB_N + 1))
     done
 
@@ -3226,6 +3240,11 @@ fi
 #   omega install-bindings
 mkdir -p "$OMEGA_DIR"
 if [[ -f config/rmux.conf.omega ]]; then
+    if [[ -f "$OMEGA_DIR/rmux.conf.omega" ]] \
+        && ! cmp -s config/rmux.conf.omega "$OMEGA_DIR/rmux.conf.omega"; then
+        cp -p "$OMEGA_DIR/rmux.conf.omega" "$OMEGA_DIR/rmux.conf.omega.pre-update"
+        info "Previous customized rmux config backed up to $OMEGA_DIR/rmux.conf.omega.pre-update"
+    fi
     cp config/rmux.conf.omega "$OMEGA_DIR/rmux.conf.omega"
     ok "rmux config available at $OMEGA_DIR/rmux.conf.omega (run 'omega install-bindings' to activate)"
 fi
@@ -3412,14 +3431,19 @@ if [[ -d "$OMEGA_SRC/scripts/hooks" ]]; then
         mkdir -p "$HOME/.codex"
         [[ -f "$CODEX_HOOKS" ]] || echo '{}' > "$CODEX_HOOKS"
         TMP="$(mktemp)"
-        jq --arg verify "$HOOKS_DST/stop-verify-hook.sh" \
+        jq --arg track "$HOOKS_DST/track-tool-use.sh" \
+           --arg verify "$HOOKS_DST/stop-verify-hook.sh" \
+           --arg guard "$HOOKS_DST/omega-audit-guard.sh" \
            --arg contract "$HOOKS_DST/omega-session-contract.sh" \
-           --arg scan "$HOOKS_DST/omega-prompt-scan.sh" '
+           --arg scan "$HOOKS_DST/omega-prompt-scan.sh" \
+           --arg mirror "$HOOKS_DST/omega-plan-mirror.sh" '
           .hooks = (.hooks // {})
+          | .hooks.PostToolUse = ((.hooks.PostToolUse // []) | map(select(((.hooks[0].command // "") | test("track-tool-use|omega-plan-mirror")) | not)) + [{"matcher":"*","hooks":[{"type":"command","command":$track}]},{"matcher":"TaskCreate|TaskUpdate|TodoWrite|update_plan","hooks":[{"type":"command","command":$mirror}]}])
           | .hooks.Stop = ((.hooks.Stop // []) | map(select(((.hooks[0].command // "") | test("stop-verify")) | not)) + [{"hooks":[{"type":"command","command":$verify}]}])
+          | .hooks.PreToolUse = ((.hooks.PreToolUse // []) | map(select(((.hooks[0].command // "") | test("omega-audit-guard")) | not)) + [{"matcher":"Bash","hooks":[{"type":"command","command":$guard}]}])
           | .hooks.SessionStart = ((.hooks.SessionStart // []) | map(select(((.hooks[0].command // "") | test("omega-session-contract")) | not)) + [{"hooks":[{"type":"command","command":$contract}]}])
           | .hooks.UserPromptSubmit = ((.hooks.UserPromptSubmit // []) | map(select(((.hooks[0].command // "") | test("omega-prompt-scan")) | not)) + [{"hooks":[{"type":"command","command":$scan}]}])
-        ' "$CODEX_HOOKS" > "$TMP" 2>/dev/null && mv "$TMP" "$CODEX_HOOKS" && ok "Codex hooks registered (SessionStart contract + Stop finish-guard + prompt scan)" || { rm -f "$TMP"; info "Codex hook merge skipped (jq error)"; }
+        ' "$CODEX_HOOKS" > "$TMP" 2>/dev/null && mv "$TMP" "$CODEX_HOOKS" && ok "Codex hooks registered (contract + finish-guard + prompt scan + plan mirror + audit guard + tracker)" || { rm -f "$TMP"; info "Codex hook merge skipped (jq error)"; }
     else
         info "jq not found — hooks copied to $HOOKS_DST; install jq to auto-register them in settings.json"
     fi
@@ -3723,15 +3747,8 @@ if [[ -d "$SKILLS_REPO_DIR/.git" ]]; then
             SKMIRROR_REJECTED=$((SKMIRROR_REJECTED + 1))
             continue
         fi
-        mkdir -p "$OMEGA_DIR/skills/$sk_name"
-        if command -v rsync >/dev/null 2>&1; then
-            # This directory is an SSOT mirror, not a merge surface. Remove
-            # files deleted upstream so stale nested protocols cannot survive
-            # indefinitely and later collide in the strict installed catalog.
-            rsync -a --delete "$sk_dir/" "$OMEGA_DIR/skills/$sk_name/" 2>/dev/null || true
-        else
-            cp -r "$sk_dir/." "$OMEGA_DIR/skills/$sk_name/" 2>/dev/null || true
-        fi
+        # This directory is an SSOT mirror, not a merge surface.
+        mirror_owned_dir "$sk_dir" "$OMEGA_DIR/skills/$sk_name" 2>/dev/null || true
         # Stamped AFTER the mirror, so the `--delete` pass cannot strip it.
         # See the stamping block further down for why this matters.
         : > "$OMEGA_DIR/skills/$sk_name/.omega-managed" 2>/dev/null || true
