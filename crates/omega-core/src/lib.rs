@@ -77,3 +77,4 @@ pub mod timeline;
 pub mod trajectory;
 pub mod tuilog;
 pub mod verifier;
+pub mod worker_spawn;

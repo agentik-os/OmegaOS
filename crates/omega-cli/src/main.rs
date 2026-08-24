@@ -7850,43 +7850,12 @@ struct V3WorkerAttempt {
     plan_revision: u64,
 }
 
+#[cfg(test)]
 fn declared_verify_command(prompt: &str) -> Option<Vec<String>> {
-    let lines: Vec<&str> = prompt.lines().collect();
-    for (index, line) in lines.iter().enumerate() {
-        let lower = line.to_lowercase();
-        let marker = lower
-            .find("verify command:")
-            .or_else(|| lower.find("verify-command:"));
-        let Some(marker) = marker else {
-            continue;
-        };
-        let colon = line[marker..].find(':').map(|offset| marker + offset)?;
-        let mut command = line[colon + 1..].trim();
-        if command.is_empty() {
-            command = lines
-                .iter()
-                .skip(index + 1)
-                .map(|candidate| candidate.trim())
-                .find(|candidate| !candidate.is_empty() && !candidate.starts_with("```"))?;
-        }
-        command = command
-            .trim_start_matches("- ")
-            .trim()
-            .trim_matches('`')
-            .trim();
-        if command.is_empty()
-            || command
-                .chars()
-                .any(|ch| matches!(ch, ';' | '&' | '|' | '<' | '>' | '`' | '$' | '\n' | '\r'))
-        {
-            return None;
-        }
-        let argv = shlex::split(command)?;
-        if !argv.is_empty() {
-            return Some(argv);
-        }
+    match omega_core::worker_spawn::parse_verify_contract(prompt)? {
+        omega_core::worker_spawn::VerifySpec::Command { argv } => Some(argv),
+        omega_core::worker_spawn::VerifySpec::FileExists { path } => Some(vec![path]),
     }
-    None
 }
 
 fn declared_done_criteria(prompt: &str) -> Vec<String> {
@@ -7936,28 +7905,44 @@ fn prepare_v3_worker_attempt(
     }
     let ledger = omega_core::mission_ledger::MissionLedger::open(&ledger_path)?;
     let mut projection = state.require_ledger_authority(&ledger)?;
-    let argv = declared_verify_command(prompt).ok_or_else(|| {
+    // Record the oracle-authored Verify Command. Do NOT execute it here —
+    // the file does not exist yet (Gareth: `(eval):1: no such file or
+    // directory: CLAUDE_OK.txt` at spawn).
+    let spec = omega_core::worker_spawn::parse_verify_contract(prompt).ok_or_else(|| {
         anyhow::anyhow!(
-            "worker brief has no safe, directly executable `Verify Command:`; \
-             shell operators are not accepted in immutable verifier contracts"
+            "worker brief has no safe `Verify Command:` (shell operators are not accepted). \
+             The oracle must fill R-RUBRIC when it writes the prompt; do not ask a human for --force."
         )
     })?;
+    let verifier_check = match spec {
+        omega_core::worker_spawn::VerifySpec::FileExists { path } => {
+            omega_core::mission::VerifierCheck {
+                schema_version: omega_core::mission::CONTRACT_SCHEMA_VERSION,
+                check_id: format!("verify-{task}"),
+                kind: omega_core::mission::VerifierCheckKind::FileExists { path },
+                timeout_secs: 120,
+            }
+        }
+        omega_core::worker_spawn::VerifySpec::Command { argv } => {
+            omega_core::mission::VerifierCheck {
+                schema_version: omega_core::mission::CONTRACT_SCHEMA_VERSION,
+                check_id: format!("verify-{task}"),
+                kind: omega_core::mission::VerifierCheckKind::Command {
+                    argv,
+                    cwd: Some(work_dir.to_string()),
+                    expected_exit_code: 0,
+                },
+                timeout_secs: 120,
+            }
+        }
+    };
     let task_contract = omega_core::mission::TaskContract {
         schema_version: omega_core::mission::CONTRACT_SCHEMA_VERSION,
         task_id: omega_core::mission::TaskId::new(task),
         name: task.to_string(),
         prompt: prompt.to_string(),
         acceptance_criteria: declared_done_criteria(prompt),
-        verifier_checks: vec![omega_core::mission::VerifierCheck {
-            schema_version: omega_core::mission::CONTRACT_SCHEMA_VERSION,
-            check_id: format!("verify-{task}"),
-            kind: omega_core::mission::VerifierCheckKind::Command {
-                argv,
-                cwd: None,
-                expected_exit_code: 0,
-            },
-            timeout_secs: 120,
-        }],
+        verifier_checks: vec![verifier_check],
         required_capabilities: vec!["code_editing".to_string(), "tool_calling".to_string()],
         scope: files.to_vec(),
         risk: omega_core::routing::classify_mission(prompt).risk,
@@ -8441,7 +8426,21 @@ async fn cmd_spawn_worker(
             .and_then(|s| omega_core::session::OmegaSession::classify(s).project),
     };
 
-    let mut work_dir = dir.unwrap_or(".").to_string();
+    // Never pass `.` to rmux — the daemon cwd is often $HOME, which is how
+    // CLAUDE_OK.txt landed in /Users/hacker instead of the project.
+    let oracle_working_dir = oracle_session.as_deref().and_then(|name| {
+        omega_core::oracle_lifecycle::OracleState::read(&config.state_dir, name)
+            .ok()
+            .flatten()
+            .map(|state| state.working_dir)
+    });
+    let process_cwd = std::env::current_dir().context("resolving spawn-worker process cwd")?;
+    let resolved_work_dir = omega_core::worker_spawn::resolve_worker_working_dir(
+        dir,
+        oracle_working_dir.as_deref(),
+        &process_cwd,
+    )?;
+    let mut work_dir = resolved_work_dir.to_string_lossy().into_owned();
     let source_work_dir = std::path::PathBuf::from(&work_dir);
     let mut created_worktree = None;
     let worker_name = omega_core::session::sanitize_session_name(&match &project_name {
@@ -8937,6 +8936,7 @@ async fn cmd_spawn_worker(
     }
 
     println!("● Worker spawned: {}", worker_name);
+    println!("  cwd: {}", work_dir);
     if let Some(p) = &project_name {
         println!("  Under project: {}", p);
     }
@@ -19567,6 +19567,81 @@ mod phase1_tests {
             "Done Criteria: green\nVerify Command: cargo test && curl example.test"
         )
         .is_none());
+        assert_eq!(
+            declared_verify_command("Done Criteria: file exists\nVerify Command: CLAUDE_OK.txt"),
+            Some(vec!["CLAUDE_OK.txt".to_string()]),
+            "a bare artifact is recorded, not eval'd"
+        );
+    }
+
+    #[test]
+    fn spawn_records_bare_verify_file_without_evaling_it() {
+        let state_dir = std::env::temp_dir().join(format!(
+            "omega-v3-no-eval-verify-{}-{}",
+            std::process::id(),
+            chrono::Utc::now().timestamp_micros()
+        ));
+        std::fs::create_dir_all(&state_dir).unwrap();
+        let config = OmegaConfig {
+            state_dir: state_dir.clone(),
+            ..OmegaConfig::default()
+        };
+        let mission =
+            omega_core::mission::Mission::new("OmegaOS", "write marker", state_dir.clone());
+        let ledger = omega_core::mission_ledger::MissionLedger::open(
+            state_dir.join("mission-engine-v3.sqlite3"),
+        )
+        .unwrap();
+        let created = ledger
+            .create_mission(&mission, "test-create", "test")
+            .unwrap();
+        let mut classified = omega_core::mission_ledger::AppendEvent::new(
+            mission.id.clone(),
+            1,
+            "test-classified",
+            "test",
+            "mission_classified",
+        );
+        classified.next_mission_state = Some(omega_core::mission::MissionState::Classified);
+        ledger.append(classified).unwrap();
+        let oracle_name = "oracle-OmegaOS-test";
+        omega_core::oracle_lifecycle::OracleState::from_ledger(oracle_name, &mission, &created)
+            .unwrap()
+            .write(&state_dir)
+            .unwrap();
+
+        let marker = state_dir.join("CLAUDE_OK.txt");
+        assert!(!marker.exists(), "precondition: file must not exist yet");
+        prepare_v3_worker_attempt(
+            &config,
+            Some(oracle_name),
+            "OmegaOS-worker-claude-ok",
+            "claude-ok",
+            "Write CLAUDE_OK.txt\nDone Criteria: file exists\nVerify Command: CLAUDE_OK.txt",
+            state_dir.to_str().unwrap(),
+            &["CLAUDE_OK.txt".to_string()],
+            omega_core::agents::Agent::Claude,
+        )
+        .unwrap();
+        assert!(
+            !marker.exists(),
+            "Verify Command must not be eval'd at spawn before the worker writes the file"
+        );
+        let plan = ledger.active_plan(&mission.id).unwrap().unwrap();
+        let task = plan
+            .tasks
+            .iter()
+            .find(|task| task.task_id.as_str() == "claude-ok")
+            .unwrap();
+        assert!(
+            matches!(
+                task.verifier_checks[0].kind,
+                omega_core::mission::VerifierCheckKind::FileExists { ref path } if path == "CLAUDE_OK.txt"
+            ),
+            "bare artifact verify is FileExists, not a shell command: {:?}",
+            task.verifier_checks[0].kind
+        );
+        let _ = std::fs::remove_dir_all(&state_dir);
     }
 
     #[test]

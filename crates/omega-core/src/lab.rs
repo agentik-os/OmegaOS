@@ -37,9 +37,11 @@ pub fn oracle_lab_block() -> String {
          shell, tests, git, sandbox, verification, human-in-the-loop, finish reports.\n\
          Writers (claude|codex|glm) cannot self-approve. `omega done` is a candidate, \
          never a verdict. Fake-done is forbidden.\n\
-         Spawn writers with a complete brief — Done Criteria AND Verify Command must \
-         appear in the prompt or `omega spawn-worker` refuses:\n\
-         `omega spawn-worker <task> \"<brief>\\nDone Criteria: <measurable>\\nVerify Command: <runtime check>\" --dir <dir> --files a,b`\n\
+         YOU fill R-RUBRIC when you write the worker prompt — Done Criteria AND \
+         a Verify Command (a runtime check, not a bare filename to eval). Do not \
+         leave that for a human `--force`.\n\
+         `omega spawn-worker <task> \"<brief>\\nDone Criteria: <measurable>\\nVerify Command: <runtime check>\" --dir <project-dir> --files a,b`\n\
+         Workers start in that --dir (the project). The parent never evals Verify Command at spawn.\n\
          Workers are claude|codex|glm only. Hermes is Home (`omega new --agent hermes`), \
          never dispatch and never a worker.\n",
         lab_plan_spec()
@@ -81,10 +83,8 @@ pub fn ensure_oracle_worker_rubric(prompt: &str, task: &str) -> String {
         ));
     }
     if !out.to_lowercase().contains("verify") {
-        out.push_str(&format!(
-            "\n{VERIFY_COMMAND_LABEL} run the project's tests or an equivalent runtime check \
-             and keep the evidence in the done report.\n"
-        ));
+        let artifact = format!("{task}.evidence");
+        out.push_str(&format!("\n{VERIFY_COMMAND_LABEL} test -f {artifact}\n"));
     }
     out
 }
@@ -116,6 +116,10 @@ mod tests {
         assert!(worker_prompt_has_rubric(&filled), "{filled}");
         assert!(filled.contains("Done Criteria:"));
         assert!(filled.contains("Verify Command:"));
+        assert!(
+            filled.contains("test -f orch-test.evidence"),
+            "auto-fill must be a runtime check, not a bare filename to eval: {filled}"
+        );
     }
 
     #[test]

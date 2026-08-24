@@ -47,7 +47,10 @@ Grok loop (do not skip steps):
 2. Write a plan, then `omega dispatch <PROJECT> "<MISSION>"` (default
    Codex). Never `--agent hermes`. Never launch a provider setup wizard.
 3. The oracle plans/verifies and never edits. It calls `omega spawn-worker`
-   (claude | codex | glm only). Grok must not spawn workers.
+   (claude | codex | glm only) with `--dir <project>` and a filled R-RUBRIC
+   (Done Criteria + Verify Command). The worker pane starts in that project
+   directory — never rmux `.` / `$HOME`. The parent does not eval Verify
+   Command at spawn. Grok must not spawn workers. `--force` is not the path.
 4. Reap finish reports. Writer `omega done` is a candidate, not a verdict.
 5. A fresh Reviewer lists reasons NOT to merge; Audit if infra/auth/secrets/CI;
    then Afterwork. Gareth alone may `omega gate --accept`.
