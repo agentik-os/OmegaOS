@@ -2292,6 +2292,26 @@ impl App {
         }
     }
 
+    fn record_preview_failure(
+        &mut self,
+        name: &str,
+        capture_kind: &str,
+        error: &dyn std::fmt::Display,
+    ) {
+        self.preview_fail_streak = self.preview_fail_streak.saturating_add(1);
+        self.preview_revision = 0;
+        if self.preview_fail_streak >= 3 {
+            if self.preview_fail_streak == 3 {
+                omega_core::tuilog::log(format!(
+                    "preview: {capture_kind} capture for '{name}' failed 3 consecutive ticks — showing placeholder; last error: {error}"
+                ));
+            }
+            self.preview_content = String::from("(session has no pane content)");
+            self.preview_styled = None;
+            self.preview_cursor = None;
+        }
+    }
+
     pub async fn refresh_preview(&mut self) -> anyhow::Result<()> {
         let name = match self.selected_session() {
             Some(e) => e.session.name.clone(),
@@ -2332,8 +2352,6 @@ impl App {
             }
         }
 
-        // Cached connection — avoid a fresh rmux daemon socket per refresh.
-        let mgr = omega_core::session::SessionManager::connect_cached().await?;
         // Hot tail path stays on the cheap visible-only snapshot. Only when the
         // user is browsing history (follow_tail == false) do we pay for a full
         // scrollback capture, so there is real content above the screen to
@@ -2345,6 +2363,16 @@ impl App {
             // renderer would paint stale history over the live tail.
             self.preview_history_for = None;
             self.preview_history_styled = None;
+            // A missing daemon is a preview capture failure, not a reason to
+            // fail the whole TUI refresh. This also keeps cache-only unit tests
+            // hermetic instead of requiring a real rmux binary.
+            let mgr = match omega_core::session::SessionManager::connect_cached().await {
+                Ok(manager) => manager,
+                Err(error) => {
+                    self.record_preview_failure(&name, "styled", &error);
+                    return Ok(());
+                }
+            };
             // Tail path: capture STYLED rows + text + REAL cursor together.
             // Styled rows carry the `/` selector highlight + Claude's
             // colored UI; plain text is kept as a fallback + for scroll math.
@@ -2391,19 +2419,7 @@ impl App {
                     // last good frame and force a full recapture next tick
                     // (revision=0). Only a SUSTAINED failure (≥3 ticks) — i.e. a
                     // genuinely dead pane — replaces the view with the message.
-                    self.preview_fail_streak = self.preview_fail_streak.saturating_add(1);
-                    self.preview_revision = 0; // force fresh recapture next tick
-                    if self.preview_fail_streak >= 3 {
-                        // Log only on the transition (not every later tick).
-                        if self.preview_fail_streak == 3 {
-                            omega_core::tuilog::log(format!(
-                                "preview: styled capture for '{name}' failed 3 consecutive ticks — showing placeholder; last error: {e:#}"
-                            ));
-                        }
-                        self.preview_content = String::from("(session has no pane content)");
-                        self.preview_styled = None;
-                        self.preview_cursor = None;
-                    }
+                    self.record_preview_failure(&name, "styled", &e);
                     // else: retain this target's last-good frame, or the cleared
                     // frame prepared above when this tick switched sessions.
                 }
@@ -2420,6 +2436,15 @@ impl App {
             // so the next scroll-up gets a fresh deep capture. Depth matches the
             // rmux history-limit so the user can scroll to the very top.
             if self.preview_history_for.as_deref() != Some(name.as_str()) {
+                let mgr = match omega_core::session::SessionManager::connect_cached().await {
+                    Ok(manager) => manager,
+                    Err(error) => {
+                        self.preview_history_for = None;
+                        self.preview_history_styled = None;
+                        self.record_preview_failure(&name, "history", &error);
+                        return Ok(());
+                    }
+                };
                 match mgr.capture_pane_history(&name, 500_000).await {
                     Ok(content) => {
                         // The capture now carries its attributes (-e), so split
@@ -2435,15 +2460,7 @@ impl App {
                     Err(e) => {
                         // Same sticky-last-good policy as the tail path: a
                         // transient capture error must not clobber the view.
-                        self.preview_fail_streak = self.preview_fail_streak.saturating_add(1);
-                        if self.preview_fail_streak >= 3 {
-                            if self.preview_fail_streak == 3 {
-                                omega_core::tuilog::log(format!(
-                                    "preview: history capture for '{name}' failed 3 consecutive ticks — showing placeholder; last error: {e:#}"
-                                ));
-                            }
-                            self.preview_content = String::from("(session has no pane content)");
-                        }
+                        self.record_preview_failure(&name, "history", &e);
                         self.preview_history_for = None;
                         self.preview_history_styled = None;
                     }

@@ -13,6 +13,7 @@
 set -u
 cd "$(dirname "$0")/.." || exit 2
 fail=0
+VERIFY_SOURCE_ONLY="${VERIFY_SOURCE_ONLY:-0}"
 ok()   { printf '  \033[32m✓\033[0m %s\n' "$1"; }
 bad()  { printf '  \033[31m✗ %s\033[0m\n' "$1"; fail=1; }
 
@@ -323,6 +324,8 @@ DUO_INVARIANTS
   else
     bad "omega-duo source self-test failed or incomplete"
   fi
+elif [ "$VERIFY_SOURCE_ONLY" = "1" ] && ! command -v bun >/dev/null 2>&1; then
+  ok "Bun runtime self-test skipped in VERIFY_SOURCE_ONLY mode (installer wiring checked above)"
 else
   bad "Bun absent: omega-duo runtime gate cannot execute"
 fi
@@ -419,6 +422,8 @@ LC_RULE_SRC=$(grep -cE "id:[[:space:]]*\"$LC_RULE_ID\"" crates/omega-core/src/ru
 LC_DOC_SRC=$(find docs -iname '*lifecycle*.md' 2>/dev/null | wc -l)
 if [ "$LC_RULE_SRC" -eq 0 ] && [ "$LC_DOC_SRC" -eq 0 ]; then
   ok "oracle lifecycle contract assets absent from this branch (0 $LC_RULE_ID registrations in rules.rs, 0 docs/*lifecycle*.md): landing check SKIPPED, nothing to verify yet"
+elif [ "$VERIFY_SOURCE_ONLY" = "1" ]; then
+  ok "installed lifecycle landing check skipped in VERIFY_SOURCE_ONLY mode"
 elif [ ! -d "$LC_HOME" ]; then
   ok "$LC_HOME absent (OmegaOS never installed here): lifecycle landing check SKIPPED (sources present: $LC_RULE_SRC $LC_RULE_ID registration(s), $LC_DOC_SRC docs pages)"
 else
@@ -904,6 +909,8 @@ fi
 if command -v bun >/dev/null 2>&1 \
   && bun scripts/verify-os-suite.ts >/dev/null; then
   ok "OS documentation parity: 24 complete manifests and checksum inventories"
+elif [ "$VERIFY_SOURCE_ONLY" = "1" ] && ! command -v bun >/dev/null 2>&1; then
+  ok "OS documentation runtime verifier skipped in VERIFY_SOURCE_ONLY mode (Bun unavailable)"
 else
   bad "OS documentation parity failed (README/README_FR/MANIFEST/integration/skill/checksums)"
 fi

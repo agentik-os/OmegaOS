@@ -1006,8 +1006,7 @@ pub struct SkillRegistry {
 impl SkillRegistry {
     /// Create a registry from the default skills directory (~/.omega/skills/).
     pub fn discover_default() -> Result<Self> {
-        let home = dirs::home_dir().context("no home directory")?;
-        let skills_dir = home.join(".omega").join("skills");
+        let skills_dir = crate::config::omega_dir().join("skills");
         Self::discover(&skills_dir)
     }
 

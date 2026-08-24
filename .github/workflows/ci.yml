@@ -18,7 +18,7 @@ env:
 
 jobs:
   build-test:
-    name: build + test (non-gateway)
+    name: build + test
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
@@ -35,29 +35,26 @@ jobs:
       - name: Cache cargo registry + target
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
 
-      # The gateway is an intentionally excluded, separately preserved WIP
-      # surface. These exact packages are the release unit and the truthful
-      # blocking quality boundary for this mission.
       - name: Format check
-        run: cargo fmt -p omega-core -p omega-tui -p omega -- --check
+        run: cargo fmt --all -- --check
 
       - name: Clippy
-        run: cargo clippy --locked -p omega-core -p omega-tui -p omega --all-targets -- -D warnings
+        run: cargo clippy --locked --workspace --all-targets -- -D warnings
 
       - name: Build (warnings are errors)
-        run: cargo build --release --locked -p omega-core -p omega-tui -p omega
+        run: cargo build --release --locked --workspace
         env:
           RUSTFLAGS: "-D warnings"
 
       - name: Test
-        run: cargo test --locked -p omega-core -p omega-tui -p omega
+        run: cargo test --locked --workspace
 
       - name: Shell syntax
         shell: bash
         run: |
           while IFS= read -r -d '' script; do
             bash -n "$script"
-          done < <(find . -type f -name '*.sh' -not -path './target/*' -not -path './crates/omega-gateway/*' -print0)
+          done < <(find . -type f -name '*.sh' -not -path './target/*' -print0)
 
       - name: Workflow graph contracts
         run: bash scripts/check-workflows.sh
