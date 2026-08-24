@@ -889,23 +889,24 @@ impl SessionManager {
     }
 
     pub async fn send_text(&self, session_name: &str, text: &str) -> Result<()> {
-        // Two hot RPCs (send_text + send_key Enter). Use the cached pane and
-        // a single retry on stale-cache errors so a kill+recreate of the
-        // same name self-heals on the next send.
+        // Type, then SUBMIT. Codex/Claude/Hermes composers often absorb a
+        // lone Enter as a newline; C-m is the CR the TUI treats as send.
+        // Cached pane + one stale-cache retry so kill+recreate self-heals.
         let pane = self.pane_for(session_name).await?;
         match pane.send_text(text).await {
-            Ok(()) => {}
+            Ok(()) => {
+                submit_composer(&pane).await?;
+                Ok(())
+            }
             Err(e) if is_pane_stale(&e) => {
                 self.invalidate_pane(session_name).await;
                 let pane = self.pane_for(session_name).await?;
                 pane.send_text(text).await?;
-                pane.send_key("Enter").await?;
-                return Ok(());
+                submit_composer(&pane).await?;
+                Ok(())
             }
-            Err(e) => return Err(e.into()),
+            Err(e) => Err(e.into()),
         }
-        pane.send_key("Enter").await?;
-        Ok(())
     }
 
     /// Raw text send — no auto-Enter. Used by the TUI interactive preview
@@ -1010,12 +1011,12 @@ impl SessionManager {
     pub async fn send_paste_then_submit(&self, session_name: &str, text: &str) -> Result<()> {
         self.send_paste_block(session_name, text).await?;
         let pane = self.pane_for(session_name).await?;
-        match pane.send_key("Enter").await {
+        match submit_composer(&pane).await {
             Ok(()) => Ok(()),
             Err(e) if is_pane_stale(&e) => {
                 self.invalidate_pane(session_name).await;
                 let pane = self.pane_for(session_name).await?;
-                pane.send_key("Enter").await?;
+                submit_composer(&pane).await?;
                 Ok(())
             }
             Err(e) => Err(e.into()),
@@ -1072,15 +1073,24 @@ impl SessionManager {
     /// (the snapshot itself), not three.
     pub async fn capture_pane(&self, session_name: &str) -> Result<String> {
         let pane = self.pane_for(session_name).await?;
-        match pane.snapshot().await {
-            Ok(snapshot) => Ok(snapshot.visible_text()),
+        let visible = match pane.snapshot().await {
+            Ok(snapshot) => snapshot.visible_text(),
             Err(e) if is_pane_stale(&e) => {
                 self.invalidate_pane(session_name).await;
                 let pane = self.pane_for(session_name).await?;
-                let snapshot = pane.snapshot().await?;
-                Ok(snapshot.visible_text())
+                pane.snapshot().await?.visible_text()
             }
-            Err(e) => Err(e.into()),
+            Err(e) => return Err(e.into()),
+        };
+        if !visible.trim().is_empty() {
+            return Ok(visible);
+        }
+        // Alt-screen / splash frames can snapshot empty while the agent is
+        // live. Scrollback still has the TUI — prefer that over a blank
+        // `omega capture` while Codex/Claude/Hermes are running.
+        match self.capture_pane_history(session_name, 200).await {
+            Ok(history) if !history.trim().is_empty() => Ok(history),
+            _ => Ok(visible),
         }
     }
 
@@ -1447,6 +1457,14 @@ fn is_pane_stale(err: &rmux_sdk::RmuxError) -> bool {
         rmux_sdk::RmuxError::PaneNotFound { .. }
             | rmux_sdk::RmuxError::OwnedSessionLeaseLost { .. }
     )
+}
+
+/// Submit a typed composer: Enter, then C-m. Codex/Claude/Hermes often treat
+/// a lone Enter as a newline; the CR is what actually sends.
+async fn submit_composer(pane: &Pane) -> std::result::Result<(), rmux_sdk::RmuxError> {
+    pane.send_key("Enter").await?;
+    pane.send_key("C-m").await?;
+    Ok(())
 }
 
 /// Parse `capture-pane -e` output into styled rows PLUS the stripped plain

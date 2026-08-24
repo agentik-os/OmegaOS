@@ -275,7 +275,7 @@ pub fn classify_mission(mission: &str) -> RoutingDecision {
         return RoutingDecision {
             complexity: Complexity::Simple,
             reasoning: vec!["INVALID: mission text is empty — nothing to route".to_string()],
-            suggested_agent: "morpheus".to_string(),
+            suggested_agent: "codex".to_string(),
             decompose: false,
             use_team: false,
             use_quality_gate: false,
@@ -544,8 +544,8 @@ pub fn classify_mission(mission: &str) -> RoutingDecision {
     };
     let suggested_agent = match topology {
         RoutingTopology::Council => "council",
-        RoutingTopology::ManagerTools | RoutingTopology::ParallelWorkers => "oracle",
-        RoutingTopology::SingleAgent | RoutingTopology::Handoff => "morpheus",
+        RoutingTopology::ManagerTools | RoutingTopology::ParallelWorkers => "codex",
+        RoutingTopology::SingleAgent | RoutingTopology::Handoff => "codex",
     };
 
     let audit_skills = detect_audit_skills(mission);
@@ -708,6 +708,9 @@ mod tests {
     fn normal_mission_does_not_route_to_council() {
         let d = classify_mission("fix typo in README");
         assert_ne!(d.suggested_agent, "council");
+        assert_ne!(d.suggested_agent, "morpheus");
+        assert_ne!(d.suggested_agent, "oracle");
+        assert_eq!(d.suggested_agent, "codex");
     }
 
     #[test]

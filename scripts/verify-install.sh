@@ -334,6 +334,7 @@ fi
 if [ -f crates/omega-core/src/executor.rs ] && [ -f crates/omega-core/src/guardian.rs ]; then ok "orchestration engine (executor + guardian) in source"; else bad "engine source (executor/guardian) missing"; fi
 if grep -qE "PlanRun|PlanStatus|plan-run|plan_run" crates/omega-cli/src/main.rs; then ok "omega plan-run/plan-status CLI present"; else bad "engine CLI commands missing from main.rs"; fi
 if [ -f skills/planner/SKILL.md ] && [ -f skills/planner/fallback/plan.ts ] && grep -q "omg-planner" install.sh; then ok "/omg-planner skill + Bun fallback shipped + installed"; else bad "planner skill not shipped/wired in install.sh"; fi
+if [ -f skills/agentic-engineering-lab/SKILL.md ] && grep -q "skills/agentic-engineering-lab" install.sh && grep -q "omg-lab" install.sh && grep -q "pub mod lab" crates/omega-core/src/lib.rs; then ok "AGK Lab skill + rust module shipped + wired"; else bad "agentic-engineering-lab skill or lab module not wired"; fi
 if [ -f skills/new-project/SKILL.md ] && grep -q "skills/new-project" install.sh && grep -q "omg-new-project" install.sh; then ok "/omg-new-project end-to-end skill shipped + installed"; else bad "new-project skill not shipped/wired in install.sh"; fi
 # Linear feedback-resolution skill + one-time setup wizard shipped + wired,
 # self-contained (RULES.md present, no maintainer-private audit-selector dep).
@@ -497,10 +498,12 @@ if grep -q "Native skills synced to" crates/omega-cli/src/main.rs \
 else
   bad "omega sync does not reconcile the native skill tree safely"
 fi
-if grep -q 'home.join(".agents").join("skills")' crates/omega-cli/src/main.rs && grep -q 'Codex skills synced' crates/omega-cli/src/main.rs; then
-  ok "Codex shared skill activation (~/.agents/skills) is wired from the canonical registry"
+if grep -q 'home.join(".agents").join("skills")' crates/omega-cli/src/main.rs \
+  && grep -q 'CODEX_SESSIONSTART_SKILLS' crates/omega-cli/src/main.rs \
+  && grep -q 'agentic-engineering-lab' crates/omega-cli/src/main.rs; then
+  ok "Codex SessionStart skills are allowlisted (no 90-skill dump)"
 else
-  bad "Codex shared skill activation missing (AGENTS.md mentions are not skill discovery)"
+  bad "Codex SessionStart skill allowlist missing"
 fi
 # Quality Arsenal audit SKILLS shipped + wired (the registry is 23 audits; the
 # skill dirs must match so a fresh install can actually run them — excludes the

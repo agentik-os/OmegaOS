@@ -377,7 +377,8 @@ fn minimum_agent_version(agent: crate::agents::Agent) -> Option<semver::Version>
     let raw = match agent {
         // Opus 5 support starts here.
         Agent::Claude | Agent::Glm => "2.1.219",
-        // --approve-for-me is stable from 0.147 onward.
+        // --sandbox workspace-write + --ask-for-approval never (never pair
+        // sandbox with --approve-for-me; 0.149 dies).
         Agent::Codex => "0.147.0",
         // First stable Gemini 3.1 model support.
         Agent::Gemini => "0.31.0",

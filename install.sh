@@ -2944,6 +2944,26 @@ else
     info "Acceptance skill not found — skipping"
 fi
 
+# AGK Agentic Engineering Lab — the mission loop oracles actually run.
+LAB_SRC="$OMEGA_SRC/skills/agentic-engineering-lab"
+LAB_DST="$OMEGA_DIR/skills/agentic-engineering-lab"
+if [[ -d "$LAB_SRC" ]]; then
+    mkdir -p "$LAB_DST"
+    cp -r "$LAB_SRC"/* "$LAB_DST/"
+    cat > "$OMG_CMD_DST/omg-lab.md" <<EOF
+# /omg-lab
+
+AGK Agentic Engineering Lab loop — Understand → Explain → Design → Build →
+Debug → Test → Evaluate → Secure → Deploy → Observe → Improve. Persist the
+plan, spawn writers, verify, report. Read and follow:
+
+\`$LAB_DST/SKILL.md\`
+EOF
+    ok "Agentic Engineering Lab skill installed → $LAB_DST/ (+ /omg-lab stub)"
+else
+    info "Agentic Engineering Lab skill not found — skipping"
+fi
+
 # Install the OmegaOS pipeline skills (vision, prd, brand-identity) the new-project
 # flow delegates to — shipped as /omg-* so a FRESH install is self-contained (the
 # pipeline no longer depends on the user's personal /vision /prd /brand-identity

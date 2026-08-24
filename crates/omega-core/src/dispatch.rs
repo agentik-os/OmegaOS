@@ -382,7 +382,8 @@ pub const FOLLOWUP_ROUTING_ENV: &str = "OMEGA_FOLLOWUP_ROUTING";
 /// It shipped the other way round first, and deliberately: the routing
 /// DECISION ([`route_dispatch`]) was sound, but the DELIVERY half accepted
 /// three classes of pane that are not the agent's composer — a live bash shell
-/// left behind by `bash -c '<agent> …; exec bash'` after the agent dies, a
+/// (legacy launches used to `exec bash` after the agent; a dead agent can
+/// still leave a shell if someone typed `bash` in the pane), a
 /// modal whose hint wrapped or which carried no hint at all, and a composer
 /// holding the operator's unsent draft — each reproduced in runtime. The
 /// default flips now that the probe demands positive evidence instead
@@ -548,11 +549,10 @@ pub fn route_now(
 /// ANYWHERE in the pane plus the absence of one known question modal, and a
 /// forensic audit reproduced three panes that pass that test and must not:
 ///
-///  1. A LIVE BASH SHELL. Every oracle runs as `bash -c '<agent> …; exec bash'`
-///     (agents.rs:452), so an agent that dies — crash, `--max-turns`, budget,
-///     auth, a reused session id — leaves the session UP, its last frame on
-///     screen with the composer in it, and a shell prompt underneath. The
-///     mission body would have executed there as command lines.
+///  1. A LIVE BASH SHELL. Agent panes now `exec` the agent (agent exit =
+///     session death). A leftover bash pane still exists when the operator
+///     typed `bash`/`codex` by hand, or on a pre-fix session. The mission
+///     body must not execute there as command lines.
 ///  2. A MODAL THE BLACKLIST DOES NOT KNOW: the same question modal with its
 ///     hint hard-wrapped onto two lines (a narrow pane in a split layout), or a
 ///     numbered permission dialog, which draws no hint at all. The Enter that
@@ -639,6 +639,51 @@ fn gen_session_uuid() -> String {
         "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
         b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7], b[8], b[9], b[10], b[11], b[12], b[13], b[14], b[15]
     )
+}
+
+fn resolve_dispatch_agent(
+    agent_override: Option<&str>,
+    configured: &str,
+) -> Result<crate::agents::Agent> {
+    if let Some(name) = agent_override {
+        if name.eq_ignore_ascii_case("hermes") {
+            anyhow::bail!(
+                "{}",
+                serde_json::json!({
+                    "error": "hermes_is_home",
+                    "message": "Hermes is Home (`omega new --agent hermes`). Do not dispatch --agent hermes. Use claude, codex, or glm."
+                })
+            );
+        }
+        crate::agents::Agent::from_name(name).ok_or_else(|| {
+            anyhow::anyhow!(
+                "unknown agent '{}' — expected one of: claude, codex, gemini, pi, glm, kimi, shell",
+                name
+            )
+        })
+    } else {
+        let agent = crate::agents::Agent::from_name(configured).ok_or_else(|| {
+            anyhow::anyhow!(
+                "configured agent `{configured}` is unknown; refusing to dispatch on an implicit provider"
+            )
+        })?;
+        if matches!(agent, crate::agents::Agent::Hermes) {
+            return Ok(crate::agents::Agent::Codex);
+        }
+        Ok(agent)
+    }
+}
+
+fn seed_lab_plan(state_dir: &Path, oracle_name: &str) -> Result<()> {
+    let mut todo = crate::oracle_todo::OracleTodo::load(state_dir, oracle_name)?;
+    todo.set_plan(crate::lab::LAB_LOOP_STEPS.iter().copied());
+    let _ = todo.upsert(
+        "Understand",
+        crate::oracle_todo::TodoStatus::Doing,
+        Some("seeded by omega dispatch — AGK Agentic Engineering Lab loop"),
+    );
+    todo.save(state_dir, oracle_name)?;
+    Ok(())
 }
 
 /// Mint a FRESH `--session-id` for an oracle dispatch and persist it.
@@ -1205,7 +1250,6 @@ impl Dispatcher {
         let followup_allowed = followup_routing_enabled();
         let route = route_now(&state_dir, project, &live, force_new || !followup_allowed);
 
-        let mut pane_not_ready = false;
         let preferred: Option<String> = match route {
             DispatchRoute::Followup { oracle } => {
                 let outcome = self.deliver_followup(&oracle, project, mission).await;
@@ -1221,32 +1265,19 @@ impl Dispatcher {
                         delivery,
                     });
                 }
-                // NOTHING WAS TYPED: the composer never became typeable, the
-                // target stopped qualifying, or its pane could not be re-read
-                // at the last look. The mission exists nowhere, so fall through
-                // to a normal spawn — a followup that lands in a shell, or is
-                // lost, is worse than the sibling oracle we are trying to avoid.
-                pane_not_ready = true;
-                // …but do NOT throw away the idle-recycling candidate on the
-                // way out. Asking the SAME router with `force_new` skips only
-                // the followup branch and returns the `preferred` name the
-                // pre-existing idle-reuse rules would have picked, which is
-                // what the commit message claimed was left unchanged and what
-                // hardcoding `None` here quietly broke. The session list is
-                // re-read because the probe may have slept for eight seconds.
-                let live_now: Vec<String> = self
-                    .session_mgr
-                    .list_sessions()
-                    .await
-                    .unwrap_or_default()
-                    .iter()
-                    .map(|s| s.name.clone())
-                    .collect();
-                match route_now(&state_dir, project, &live_now, true) {
-                    DispatchRoute::Spawn { preferred } => preferred,
-                    // Unreachable: `force_new` skips the followup branch.
-                    DispatchRoute::Followup { .. } => None,
-                }
+                // NOTHING WAS TYPED. Do NOT spawn oracle-*-2. Twin oracles
+                // are how follow-up on a not-ready composer duplicated the
+                // mission (DISPATCH_DELIVERY=spawned_pane_not_ready). Wait
+                // or fail JSON — same as Cursor Cloud Agent `reply`.
+                anyhow::bail!(
+                    "{}",
+                    serde_json::json!({
+                        "error": "followup_pane_not_ready",
+                        "oracle": oracle,
+                        "delivery": "followup_blocked",
+                        "message": "live oracle composer is not typeable; refusing to spawn a sibling. Retry when the pane is ready, or pass --new."
+                    })
+                );
             }
             DispatchRoute::Spawn { preferred } => preferred,
         };
@@ -1317,6 +1348,13 @@ impl Dispatcher {
         let oracle_state =
             OracleState::from_ledger(&oracle_name, &mission_record, &classified_outcome)?;
         oracle_state.write(&self.config.state_dir)?;
+        if let Err(error) = seed_lab_plan(&self.config.state_dir, &oracle_name) {
+            tracing::warn!(
+                oracle = %oracle_name,
+                error = %error,
+                "failed to seed AGK Lab plan; oracle prompt still carries the loop"
+            );
+        }
 
         let ship = OraclePromptGenerator::should_ship(mission);
         let god_mode = OraclePromptGenerator::is_god_mode(mission);
@@ -1386,20 +1424,7 @@ impl Dispatcher {
         // The per-mission override wins over the configured default. Resolve
         // the typed provider before compiling rules so provider-only doctrine
         // cannot leak or disappear through a neutral prompt.
-        let agent = match agent_override {
-            Some(name) => crate::agents::Agent::from_name(name).ok_or_else(|| {
-                anyhow::anyhow!(
-                    "unknown agent '{}' — expected one of: claude, codex, gemini, pi, hermes, glm, kimi, shell",
-                    name
-                )
-            })?,
-            None => crate::agents::Agent::from_name(&self.config.agent_command).ok_or_else(|| {
-                anyhow::anyhow!(
-                    "configured agent `{}` is unknown; refusing to dispatch on an implicit provider",
-                    self.config.agent_command
-                )
-            })?,
-        };
+        let agent = resolve_dispatch_agent(agent_override, &self.config.agent_command)?;
 
         // THE FUNNEL — every dispatched agent (any LLM backend) MUST receive
         // its role-scoped Laws + operational rules via this single call.
@@ -1424,6 +1449,7 @@ impl Dispatcher {
             prompt.push_str("\n\n");
             prompt.push_str(&compiled.markdown);
         }
+        prompt.push_str(&crate::lab::oracle_lab_block());
 
         // Claude-only smart spawn (2026-w20 features): /goal + --effort +
         // budget caps. Gemini/GLM/Pi/Hermes fall back to the bare launcher
@@ -1452,6 +1478,12 @@ impl Dispatcher {
             &[crate::providers::ProviderCapability::LongContext],
         )
         .map_err(|error| anyhow::anyhow!("provider capability negotiation failed: {error}"))?;
+        let session_id = resolve_session_id(
+            &self.config.state_dir,
+            &oracle_name,
+            project,
+            &work_path,
+        );
         if matches!(agent, crate::agents::Agent::Claude) {
             let mut opts = crate::agents::LaunchOptions::default();
             // Ultracode posture: the oracle is the strategic brain — it reasons
@@ -1536,12 +1568,7 @@ impl Dispatcher {
                 ),
             }
             opts.exclude_dynamic_prompt_sections = true;
-            opts.session_id = Some(resolve_session_id(
-                &self.config.state_dir,
-                &oracle_name,
-                project,
-                &work_path,
-            ));
+            opts.session_id = Some(session_id.clone());
             opts.debug_file = Some(
                 self.config
                     .state_dir
@@ -1639,11 +1666,7 @@ impl Dispatcher {
         }
         Ok(DispatchOutcome {
             oracle_name,
-            delivery: if pane_not_ready {
-                DispatchDelivery::SpawnedPaneNotReady
-            } else {
-                DispatchDelivery::Spawned
-            },
+            delivery: DispatchDelivery::Spawned,
         })
     }
 
@@ -1797,6 +1820,12 @@ impl Dispatcher {
                 .create_agent_session_with_opts(oracle_name, &work_dir, agent, Some(&prompt), opts)
                 .await?;
         } else {
+            let _ = resolve_session_id(
+                &self.config.state_dir,
+                oracle_name,
+                &state.project,
+                &state.working_dir,
+            );
             self.session_mgr
                 .create_agent_session(oracle_name, &work_dir, agent.name(), Some(&prompt))
                 .await?;
@@ -2956,12 +2985,25 @@ mod followup_routing_tests {
         }
     }
 
-    /// THE OTHER HALF, and the reason this is not simply "never spawn": when
-    /// NOTHING was typed, the mission exists nowhere and the spawn is the only
-    /// thing that delivers it. That path stays exactly as it was.
+    /// When NOTHING was typed, disposition is None — and the caller now
+    /// returns a JSON error instead of spawning oracle-*-2.
     #[test]
-    fn a_followup_that_was_never_sent_still_falls_back_to_a_spawn() {
+    fn a_followup_that_was_never_sent_does_not_authorize_a_spawn() {
         assert_eq!(followup_disposition(FollowupOutcome::NotSent), None);
+    }
+
+    #[test]
+    fn hermes_is_home_and_cannot_be_dispatched() {
+        let err = resolve_dispatch_agent(Some("hermes"), "codex").unwrap_err();
+        let text = err.to_string();
+        assert!(text.contains("hermes_is_home"), "{text}");
+        assert!(text.contains("omega new --agent hermes"), "{text}");
+    }
+
+    #[test]
+    fn configured_hermes_defaults_dispatch_to_codex() {
+        let agent = resolve_dispatch_agent(None, "hermes").unwrap();
+        assert_eq!(agent, crate::agents::Agent::Codex);
     }
 
     /// The CLI must not open a session journal under a LIVE oracle's name — it

@@ -258,7 +258,7 @@ impl MissionPattern {
                 "Split the goal into INDEPENDENT axes (different files, different questions, \
                  different angles — never the same file twice, R-SCOPE).\n\
                  Spawn ONE worker per axis in the SAME turn you identify them: \
-                 `omega spawn-worker <task> \"<brief>\" --dir <dir> --files a,b`.\n\
+                 `omega spawn-worker <task> \"<brief>\\nDone Criteria: <measurable>\\nVerify Command: <runtime check>\" --dir <dir> --files a,b`.\n\
                  Keep a shared note of what each worker returned. Merge yourself — \
                  never paste a delegate's summary as the verdict (R-ORCH).\n\
                  Say which worker found what, so a wrong finding is traceable to its source."

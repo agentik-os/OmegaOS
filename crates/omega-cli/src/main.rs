@@ -4994,8 +4994,12 @@ fn get_config_value(cfg: &omega_core::providers::ProvidersConfig, key: &str) -> 
         ("codex", "api_key") => redacted_secret(&cfg.codex.api_key),
         ("codex", "base_url") => cfg.codex.base_url.clone(),
         ("codex", "bypass_hook_trust") => cfg.codex.bypass_hook_trust.to_string(),
+        ("codex", "ask_for_approval_never") | ("codex", "yolo") => {
+            cfg.codex.ask_for_approval_never.to_string()
+        }
         ("gemini", "model") => cfg.gemini.model.clone(),
         ("gemini", "api_key") => redacted_secret(&cfg.gemini.api_key),
+        ("gemini", "yolo") => cfg.gemini.yolo.to_string(),
         ("antigravity", "model") => cfg.antigravity.model.clone(),
         ("antigravity", "effort") => cfg.antigravity.effort.clone(),
         ("antigravity", "dangerously_skip_permissions") => {
@@ -5004,18 +5008,24 @@ fn get_config_value(cfg: &omega_core::providers::ProvidersConfig, key: &str) -> 
         ("pi", "provider") => cfg.pi.provider.clone(),
         ("pi", "model") => cfg.pi.model.clone(),
         ("pi", "api_key") => redacted_secret(&cfg.pi.api_key),
+        ("pi", "approve") | ("pi", "yolo") => cfg.pi.approve.to_string(),
         ("glm", "model") => cfg.glm.model.clone(),
         ("glm", "api_key") => redacted_secret(&cfg.glm.api_key),
+        ("glm", "dangerously_skip_permissions") => {
+            cfg.glm.dangerously_skip_permissions.to_string()
+        }
         ("openrouter", "model") => cfg.openrouter.model.clone(),
         ("openrouter", "api_key") => redacted_secret(&cfg.openrouter.api_key),
         ("openrouter", "base_url") => cfg.openrouter.base_url.clone(),
         ("hermes", "provider") => cfg.hermes.provider.clone(),
         ("hermes", "model") => cfg.hermes.model.clone(),
         ("hermes", "api_key") => redacted_secret(&cfg.hermes.api_key),
+        ("hermes", "yolo") => cfg.hermes.yolo.to_string(),
         ("kimi", "model") => cfg.kimi.model.clone(),
         ("kimi", "api_key") => redacted_secret(&cfg.kimi.api_key),
         ("kimi", "base_url") => cfg.kimi.base_url.clone(),
         ("kimi", "provider_type") => cfg.kimi.provider_type.clone(),
+        ("kimi", "auto") | ("kimi", "yolo") => cfg.kimi.auto.to_string(),
         _ => anyhow::bail!("Unknown key: {}", key),
     };
     Ok(s)
@@ -5046,8 +5056,18 @@ fn set_config_value(
                 .parse::<bool>()
                 .with_context(|| format!("invalid boolean {value:?}; expected true or false"))?;
         }
+        ("codex", "ask_for_approval_never") | ("codex", "yolo") => {
+            cfg.codex.ask_for_approval_never = value
+                .parse::<bool>()
+                .with_context(|| format!("invalid boolean {value:?}; expected true or false"))?;
+        }
         ("gemini", "model") => cfg.gemini.model = value.to_string(),
         ("gemini", "api_key") => cfg.gemini.api_key = value.to_string(),
+        ("gemini", "yolo") => {
+            cfg.gemini.yolo = value
+                .parse::<bool>()
+                .with_context(|| format!("invalid boolean {value:?}; expected true or false"))?;
+        }
         ("antigravity", "model") => cfg.antigravity.model = value.to_string(),
         ("antigravity", "effort") => cfg.antigravity.effort = value.to_string(),
         ("antigravity", "dangerously_skip_permissions") => {
@@ -5058,18 +5078,38 @@ fn set_config_value(
         ("pi", "provider") => cfg.pi.provider = value.to_string(),
         ("pi", "model") => cfg.pi.model = value.to_string(),
         ("pi", "api_key") => cfg.pi.api_key = value.to_string(),
+        ("pi", "approve") | ("pi", "yolo") => {
+            cfg.pi.approve = value
+                .parse::<bool>()
+                .with_context(|| format!("invalid boolean {value:?}; expected true or false"))?;
+        }
         ("glm", "model") => cfg.glm.model = value.to_string(),
         ("glm", "api_key") => cfg.glm.api_key = value.to_string(),
+        ("glm", "dangerously_skip_permissions") => {
+            cfg.glm.dangerously_skip_permissions = value
+                .parse::<bool>()
+                .with_context(|| format!("invalid boolean {value:?}; expected true or false"))?;
+        }
         ("openrouter", "model") => cfg.openrouter.model = value.to_string(),
         ("openrouter", "api_key") => cfg.openrouter.api_key = value.to_string(),
         ("openrouter", "base_url") => cfg.openrouter.base_url = value.to_string(),
         ("hermes", "provider") => cfg.hermes.provider = value.to_string(),
         ("hermes", "model") => cfg.hermes.model = value.to_string(),
         ("hermes", "api_key") => cfg.hermes.api_key = value.to_string(),
+        ("hermes", "yolo") => {
+            cfg.hermes.yolo = value
+                .parse::<bool>()
+                .with_context(|| format!("invalid boolean {value:?}; expected true or false"))?;
+        }
         ("kimi", "model") => cfg.kimi.model = value.to_string(),
         ("kimi", "api_key") => cfg.kimi.api_key = value.to_string(),
         ("kimi", "base_url") => cfg.kimi.base_url = value.to_string(),
         ("kimi", "provider_type") => cfg.kimi.provider_type = value.to_string(),
+        ("kimi", "auto") | ("kimi", "yolo") => {
+            cfg.kimi.auto = value
+                .parse::<bool>()
+                .with_context(|| format!("invalid boolean {value:?}; expected true or false"))?;
+        }
         _ => anyhow::bail!("Unknown key: {}", key),
     }
     Ok(())
@@ -8340,6 +8380,12 @@ async fn cmd_spawn_worker(
     // oracle. Resolve the real name by asking rmux to expand #{session_name} for
     // our pane ($RMUX_PANE).
     let oracle_session = current_session_name().filter(|s| s.starts_with("oracle-"));
+    let prompt_owned = if oracle_session.is_some() {
+        omega_core::lab::ensure_oracle_worker_rubric(prompt, task)
+    } else {
+        prompt.to_string()
+    };
+    let prompt = prompt_owned.as_str();
 
     let project_name = match project {
         Some(p) => Some(p.to_string()),
@@ -8406,12 +8452,24 @@ async fn cmd_spawn_worker(
             }
             resolved
         }
-        None => omega_core::agents::Agent::from_name(&config.agent_command).ok_or_else(|| {
-            anyhow::anyhow!(
-                "configured worker agent {:?} is unknown; set an explicit supported provider",
-                config.agent_command
-            )
-        })?,
+        None => {
+            let configured = omega_core::agents::Agent::from_name(&config.agent_command)
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "configured worker agent {:?} is unknown; set an explicit supported provider",
+                        config.agent_command
+                    )
+                })?;
+            let writer = configured.writer_or_codex();
+            if !writer.is_writer() {
+                anyhow::bail!(
+                    "worker agent '{}' is not allowed: only claude, codex and glm carry \
+                     the finish-guard hooks a detached worker needs",
+                    writer.name()
+                );
+            }
+            writer
+        }
     };
     omega_core::providers::ProvidersConfig::try_load()
         .context("cannot load provider config for worker dispatch")?;
@@ -11466,6 +11524,11 @@ struct OracleRow {
     escalation: Option<String>,
 }
 
+fn is_stale_purge_oracle(name: &str) -> bool {
+    let n = name.to_ascii_lowercase();
+    n.contains("mac-purge") || n.contains("-purge-")
+}
+
 fn oracle_row(
     state_dir: &std::path::Path,
     name: &str,
@@ -11557,6 +11620,9 @@ async fn cmd_oracles(all: bool) -> Result<()> {
         .collect();
     if all {
         for st in omega_core::oracle_lifecycle::OracleState::read_all_strict(&config.state_dir)? {
+            if is_stale_purge_oracle(&st.oracle_name) {
+                continue;
+            }
             names.push(st.oracle_name);
         }
         // The GHOST MISSIONS, and they are the whole reason `--all` exists: a
@@ -11581,16 +11647,22 @@ async fn cmd_oracles(all: bool) -> Result<()> {
     }
     names.sort();
     names.dedup();
+    names.retain(|n| !is_stale_purge_oracle(n));
 
     if names.is_empty() {
         println!("No oracle {}.", if all { "on record" } else { "live" });
         return Ok(());
     }
 
-    let rows: Vec<OracleRow> = names
-        .iter()
-        .map(|n| oracle_row(&config.state_dir, n, &live_sessions))
-        .collect::<Result<Vec<_>>>()?;
+    let mut rows: Vec<OracleRow> = Vec::new();
+    for n in &names {
+        match oracle_row(&config.state_dir, n, &live_sessions) {
+            Ok(row) => rows.push(row),
+            Err(error) => {
+                eprintln!("[!] skipping stale oracle {n}: {error}");
+            }
+        }
+    }
 
     // Fixed columns, hard-truncated: a session name can be 50 chars and one long
     // row that wraps costs more than the characters it saves.
@@ -11819,16 +11891,34 @@ async fn cmd_status(name: &str, json: bool) -> Result<()> {
         .unwrap_or_else(|| "(no lifecycle state)".to_string());
 
     if json {
+        let mut reports = Vec::new();
+        for worker_name in workers.running.iter().chain(workers.terminal.iter()) {
+            if let Ok(Some(done)) =
+                omega_core::done::DoneSignal::read(&config.state_dir, worker_name)
+            {
+                reports.push(serde_json::json!({
+                    "session": worker_name,
+                    "status": done.status,
+                    "summary": done.summary,
+                    "evidence": done.artifacts,
+                }));
+            }
+        }
         println!(
             "{}",
             serde_json::json!({
                 "session": name,
+                "session_id": state.as_ref().and_then(|s| s.session_id.clone()),
                 "live": session_live,
                 "phase": phase,
                 "project": state.as_ref().map(|s| s.project.clone()),
                 "plan": { "done": done, "total": total },
                 "doing": doing.map(|t| t.title.clone()),
-                "workers": { "running": workers.running, "terminal": workers.terminal },
+                "workers": {
+                    "running": workers.running,
+                    "terminal": workers.terminal,
+                    "reports": reports,
+                },
                 "gate_passed": gate_passed,
                 "closeable": !verdict.refused,
                 "refused_because": verdict.reasons,
@@ -16710,6 +16800,39 @@ fn resolve_omega_src() -> Option<std::path::PathBuf> {
 /// whose target is INSIDE ~/.omega — user-managed links are never touched.
 /// `symlink_metadata` succeeding while `exists()` (which follows the link)
 /// fails is the dangling test.
+fn prune_unlisted_omega_skill_links(
+    dir: &std::path::Path,
+    omega_dir: &std::path::Path,
+    keep: &[&str],
+) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let skills_root = omega_dir.join("skills");
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Ok(meta) = std::fs::symlink_metadata(&path) else {
+            continue;
+        };
+        if !meta.file_type().is_symlink() {
+            continue;
+        }
+        let Ok(target) = std::fs::read_link(&path) else {
+            continue;
+        };
+        if !target.starts_with(&skills_root) && !target.starts_with(omega_dir) {
+            continue;
+        }
+        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        if keep.contains(&name) {
+            continue;
+        }
+        if std::fs::remove_file(&path).is_ok() {
+            println!("  [-] pruned extra Codex skill link: {}", path.display());
+        }
+    }
+}
+
 fn prune_dangling_omega_links(dir: &std::path::Path, omega_dir: &std::path::Path) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
@@ -17006,33 +17129,38 @@ fn cmd_sync() -> Result<()> {
         }
     }
 
-    // Codex activates reusable skills from the provider-neutral
-    // ~/.agents/skills directory. Link every skill the canonical registry can
-    // parse, including categorized/nested entries. Mentioning a slash command
-    // in AGENTS.md alone does not make a skill discoverable by Codex.
+    // Codex SessionStart injects every skill under ~/.agents/skills.
+    // Dumping the full catalog (90+) exceeds the skills context budget
+    // (live: 49 skills dropped). Link only the Lab loop skill Omega oracles
+    // actually run; prune leftover omega-owned links that are not allowlisted.
+    const CODEX_SESSIONSTART_SKILLS: &[&str] = &["agentic-engineering-lab"];
     let codex_skills = home.join(".agents").join("skills");
     std::fs::create_dir_all(&codex_skills)?;
     prune_dangling_omega_links(&codex_skills, &omega_dir);
+    prune_unlisted_omega_skill_links(&codex_skills, &omega_dir, CODEX_SESSIONSTART_SKILLS);
     let skills_dir = omega_dir.join("skills");
     if skills_dir.exists() {
         use omega_core::skill_registry::{OwnedSkillRoot, SkillCatalogV1, SkillRegistry};
         let catalog = SkillCatalogV1::compile(&[OwnedSkillRoot::new("installed", &skills_dir)])?;
         let registry = SkillRegistry::from_catalog(&catalog, &skills_dir);
+        let mut linked = 0usize;
         for skill in registry.list() {
+            if !CODEX_SESSIONSTART_SKILLS.contains(&skill.name.as_str()) {
+                continue;
+            }
             let Some(skill_dir) = skill.path.parent() else {
                 continue;
             };
             let link = codex_skills.join(&skill.name);
-            if link.exists() {
-                continue;
+            if !link.exists() {
+                #[cfg(unix)]
+                std::os::unix::fs::symlink(skill_dir, &link)?;
+                println!("  [+] Codex SessionStart skill: ${}", skill.name);
             }
-            #[cfg(unix)]
-            std::os::unix::fs::symlink(skill_dir, &link)?;
-            println!("  [+] Codex skill: ${}", skill.name);
+            linked += 1;
         }
         println!(
-            "[+] Codex skills synced: {} canonical entries → {}",
-            registry.count(),
+            "[+] Codex SessionStart skills synced: {linked} allowlisted entries → {}",
             codex_skills.display()
         );
     }
@@ -17157,6 +17285,20 @@ mod phase1_tests {
         assert!(!cfg.claude.dangerously_skip_permissions);
         set_config_value(&mut cfg, "claude.dangerously_skip_permissions", "true").unwrap();
         assert!(cfg.claude.dangerously_skip_permissions);
+        set_config_value(&mut cfg, "glm.dangerously_skip_permissions", "true").unwrap();
+        assert!(cfg.glm.dangerously_skip_permissions);
+        assert_eq!(
+            get_config_value(&cfg, "glm.dangerously_skip_permissions").unwrap(),
+            "true"
+        );
+    }
+
+    #[test]
+    fn oracles_all_ignores_stale_mac_purge_names() {
+        assert!(is_stale_purge_oracle("oracle-mac-purge-20260822"));
+        assert!(is_stale_purge_oracle("oracle-mac-purge-20260822-2"));
+        assert!(!is_stale_purge_oracle("oracle-omega-orch-audit"));
+        assert!(!is_stale_purge_oracle("oracle-OmegaOS"));
     }
 
     #[test]

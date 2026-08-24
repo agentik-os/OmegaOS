@@ -79,7 +79,11 @@ impl fmt::Debug for ProvidersConfig {
     }
 }
 
-#[derive(Clone, Default, Serialize, Deserialize)]
+fn default_true() -> bool {
+    true
+}
+
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct PiConfig {
     #[serde(default)]
@@ -99,9 +103,24 @@ pub struct PiConfig {
     #[doc(hidden)]
     #[serde(default, rename = "extension", skip_serializing)]
     pub legacy_extension: Option<toml::Value>,
+    /// Official Pi CLI has no tool-yolo. `--approve` only skips project-trust.
+    #[serde(default = "default_true")]
+    pub approve: bool,
 }
 
-#[derive(Clone, Default, Serialize, Deserialize)]
+impl Default for PiConfig {
+    fn default() -> Self {
+        Self {
+            provider: String::new(),
+            model: String::new(),
+            api_key: String::new(),
+            legacy_extension: None,
+            approve: true,
+        }
+    }
+}
+
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct HermesConfig {
     /// Hermes provider id. Empty means OpenRouter when an Omega-managed key
@@ -112,6 +131,21 @@ pub struct HermesConfig {
     pub model: String,
     #[serde(default)]
     pub api_key: String,
+    /// Home TUI: `--yolo` + `HERMES_YOLO_MODE=1`. Detached panes have nobody
+    /// to click through tool approvals.
+    #[serde(default = "default_true")]
+    pub yolo: bool,
+}
+
+impl Default for HermesConfig {
+    fn default() -> Self {
+        Self {
+            provider: String::new(),
+            model: String::new(),
+            api_key: String::new(),
+            yolo: true,
+        }
+    }
 }
 
 #[derive(Clone, Default, Serialize, Deserialize)]
@@ -158,6 +192,10 @@ pub struct CodexConfig {
     /// sessions. This also trusts other enabled hooks, so operators can disable
     /// it when they prefer Codex's interactive review.
     pub bypass_hook_trust: bool,
+    /// Unattended pair: `--sandbox workspace-write --ask-for-approval never`.
+    /// Never combine `--sandbox` with `--approve-for-me` (Codex 0.149 dies).
+    #[serde(default = "default_true")]
+    pub ask_for_approval_never: bool,
 }
 
 impl Default for CodexConfig {
@@ -168,17 +206,30 @@ impl Default for CodexConfig {
             base_url: String::new(),
             additional_writable_dirs: Vec::new(),
             bypass_hook_trust: true,
+            ask_for_approval_never: true,
         }
     }
 }
 
-#[derive(Clone, Default, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct GeminiConfig {
     #[serde(default)]
     pub model: String,
     #[serde(default)]
     pub api_key: String,
+    #[serde(default = "default_true")]
+    pub yolo: bool,
+}
+
+impl Default for GeminiConfig {
+    fn default() -> Self {
+        Self {
+            model: String::new(),
+            api_key: String::new(),
+            yolo: true,
+        }
+    }
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -232,6 +283,10 @@ pub struct KimiConfig {
     pub api_key: String,
     pub base_url: String,
     pub provider_type: String,
+    /// Force `--auto` on interactive and `--prompt` launches so detached
+    /// panes do not block on approval dialogs.
+    #[serde(default = "default_true")]
+    pub auto: bool,
 }
 
 impl Default for KimiConfig {
@@ -241,6 +296,7 @@ impl Default for KimiConfig {
             api_key: String::new(),
             base_url: String::new(),
             provider_type: "kimi".to_string(),
+            auto: true,
         }
     }
 }
@@ -259,8 +315,8 @@ macro_rules! impl_redacted_provider_debug {
     };
 }
 
-impl_redacted_provider_debug!(PiConfig, "PiConfig", [provider, model]);
-impl_redacted_provider_debug!(HermesConfig, "HermesConfig", [provider, model]);
+impl_redacted_provider_debug!(PiConfig, "PiConfig", [provider, model, approve]);
+impl_redacted_provider_debug!(HermesConfig, "HermesConfig", [provider, model, yolo]);
 impl_redacted_provider_debug!(OpenRouterConfig, "OpenRouterConfig", [model]);
 impl_redacted_provider_debug!(
     ClaudeConfig,
@@ -270,9 +326,9 @@ impl_redacted_provider_debug!(
 impl_redacted_provider_debug!(
     CodexConfig,
     "CodexConfig",
-    [model, additional_writable_dirs, bypass_hook_trust]
+    [model, additional_writable_dirs, bypass_hook_trust, ask_for_approval_never]
 );
-impl_redacted_provider_debug!(GeminiConfig, "GeminiConfig", [model]);
+impl_redacted_provider_debug!(GeminiConfig, "GeminiConfig", [model, yolo]);
 impl fmt::Debug for AntigravityConfig {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
@@ -291,7 +347,7 @@ impl_redacted_provider_debug!(
     "GlmConfig",
     [model, dangerously_skip_permissions]
 );
-impl_redacted_provider_debug!(KimiConfig, "KimiConfig", [model, provider_type]);
+impl_redacted_provider_debug!(KimiConfig, "KimiConfig", [model, provider_type, auto]);
 
 impl ProvidersConfig {
     pub fn path() -> PathBuf {

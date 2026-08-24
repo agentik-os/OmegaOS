@@ -32,6 +32,7 @@ pub mod graph_risk;
 pub mod guardian;
 pub mod inbox;
 pub mod intent;
+pub mod lab;
 pub mod loop_guard;
 pub mod marketing;
 pub mod mcp_servers;

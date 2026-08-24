@@ -206,6 +206,23 @@ impl Agent {
         }
     }
 
+    /// Writers that may own a detached worker or an oracle mission.
+    /// Hermes is Home (`omega new --agent hermes`) and is never a writer.
+    pub fn is_writer(self) -> bool {
+        matches!(self, Agent::Claude | Agent::Codex | Agent::Glm)
+    }
+
+    /// Map a configured Home/shell provider onto a writer. Used when the
+    /// global `agent_command` is Hermes but a worker/oracle still needs a
+    /// coding agent.
+    pub fn writer_or_codex(self) -> Self {
+        if self.is_writer() {
+            self
+        } else {
+            Agent::Codex
+        }
+    }
+
     pub fn from_name(s: &str) -> Option<Self> {
         match s.to_lowercase().as_str() {
             "claude" => Some(Agent::Claude),
@@ -510,7 +527,7 @@ impl Agent {
                     providers.claude.dangerously_skip_permissions,
                 )?;
                 let mut args = format!(
-                    "{}{}CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1 claude{}",
+                    "{}{}exec CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1 claude{}",
                     env_prefix, trust_prefix, permission_args
                 );
                 if let Some(ref sys_file) = opts.system_prompt_file {
@@ -614,11 +631,8 @@ impl Agent {
                     (None, None) => None,
                 };
                 match final_prompt {
-                    Some(p) => format!(
-                        "bash -c {}",
-                        shell_quote(&format!("{} {}; exec bash", args, shell_quote(&p)))
-                    ),
-                    None => format!("bash -c {}", shell_quote(&format!("{}; exec bash", args))),
+                    Some(p) => pane_bash(&format!("{} {}", args, shell_quote(&p))),
+                    None => pane_bash(&args),
                 }
             }
             Agent::Codex => {
@@ -645,15 +659,19 @@ impl Agent {
                 // dark rmux/omega TUI it blends in. Quoted so the ';' is one env
                 // value, not a shell separator.
                 let trust_prefix = "omega trust-dir \"$PWD\" >/dev/null 2>&1; ";
-                // Codex >=0.147 makes --approve-for-me a complete permission
-                // preset: it sets workspace-write + on-request itself and
-                // explicitly CONFLICTS with a separate --sandbox flag. Omega
-                // installs known hooks. Detached panes bypass the otherwise
-                // blocking review by default; operators with additional
-                // untrusted hooks can disable that explicit provider setting.
+                // Codex >=0.147: `--approve-for-me` CONFLICTS with `--sandbox`
+                // (CLI *or* ~/.codex/config.toml sandbox_mode). Live 0.149.1
+                // dies with "`--sandbox` cannot be used with `--approve-for-me`"
+                // and the pane used to fall through to bash. The valid
+                // unattended pair is workspace-write + never-ask.
+                let approval = if providers.codex.ask_for_approval_never {
+                    "--sandbox workspace-write --ask-for-approval never"
+                } else {
+                    "--sandbox workspace-write --ask-for-approval on-request"
+                };
                 let mut args = format!(
-                    "{}{}COLORFGBG='15;0' codex --strict-config --approve-for-me",
-                    env_prefix, trust_prefix
+                    "{}{}exec COLORFGBG='15;0' codex --strict-config {}",
+                    env_prefix, trust_prefix, approval
                 );
                 if providers.codex.bypass_hook_trust {
                     args.push_str(" --dangerously-bypass-hook-trust");
@@ -676,11 +694,8 @@ impl Agent {
                     args.push_str(" resume --last");
                 }
                 match initial_prompt {
-                    Some(p) => format!(
-                        "bash -c {}",
-                        shell_quote(&format!("{} -- {}; exec bash", args, shell_quote(p)))
-                    ),
-                    None => format!("bash -c {}", shell_quote(&format!("{}; exec bash", args))),
+                    Some(p) => pane_bash(&format!("{} -- {}", args, shell_quote(p))),
+                    None => pane_bash(&args),
                 }
             }
             Agent::Gemini => {
@@ -692,28 +707,24 @@ impl Agent {
                 } else {
                     ""
                 };
+                let yolo_arg = if providers.gemini.yolo { " --yolo" } else { "" };
                 match initial_prompt {
-                    Some(p) => format!(
-                        "bash -c {}",
-                        shell_quote(&format!(
-                            "{}gemini{}{} --prompt-interactive {}; exec bash",
-                            env_prefix,
-                            model_arg,
-                            resume_arg,
-                            shell_quote(p)
-                        ))
-                    ),
-                    None => format!(
-                        "bash -c {}",
-                        shell_quote(&format!(
-                            "{}gemini{}{}; exec bash",
-                            env_prefix, model_arg, resume_arg
-                        ))
-                    ),
+                    Some(p) => pane_bash(&format!(
+                        "{}exec gemini{}{}{} --prompt-interactive {}",
+                        env_prefix,
+                        model_arg,
+                        yolo_arg,
+                        resume_arg,
+                        shell_quote(p)
+                    )),
+                    None => pane_bash(&format!(
+                        "{}exec gemini{}{}{}",
+                        env_prefix, model_arg, yolo_arg, resume_arg
+                    )),
                 }
             }
             Agent::Antigravity => {
-                let mut args = format!("{}agy", env_prefix);
+                let mut args = format!("{}exec agy", env_prefix);
                 if providers.antigravity.dangerously_skip_permissions {
                     args.push_str(" --dangerously-skip-permissions");
                 }
@@ -727,17 +738,12 @@ impl Agent {
                     args.push_str(" --continue");
                 }
                 match initial_prompt {
-                    Some(prompt) => format!(
-                        "bash -c {}",
-                        shell_quote(&format!(
-                            "{} --prompt-interactive {}; exec bash",
-                            args,
-                            shell_quote(prompt)
-                        ))
-                    ),
-                    None => {
-                        format!("bash -c {}", shell_quote(&format!("{}; exec bash", args)))
-                    }
+                    Some(prompt) => pane_bash(&format!(
+                        "{} --prompt-interactive {}",
+                        args,
+                        shell_quote(prompt)
+                    )),
+                    None => pane_bash(&args),
                 }
             }
             Agent::Pi => {
@@ -764,24 +770,22 @@ impl Agent {
                 } else {
                     ""
                 };
+                // Official Pi CLI has no tool-yolo. `--approve` only skips
+                // project-trust; document that, do not invent a bypass.
+                let approve_arg = if providers.pi.approve { " --approve" } else { "" };
                 match initial_prompt {
-                    Some(p) => format!(
-                        "bash -c {}",
-                        shell_quote(&format!(
-                            "{}pi {}{} -- {}; exec bash",
-                            env_prefix,
-                            pi_args,
-                            resume_arg,
-                            shell_quote(p)
-                        ))
-                    ),
-                    None => format!(
-                        "bash -c {}",
-                        shell_quote(&format!(
-                            "{}pi {}{}; exec bash",
-                            env_prefix, pi_args, resume_arg
-                        ))
-                    ),
+                    Some(p) => pane_bash(&format!(
+                        "{}exec pi {}{}{} -- {}",
+                        env_prefix,
+                        pi_args,
+                        approve_arg,
+                        resume_arg,
+                        shell_quote(p)
+                    )),
+                    None => pane_bash(&format!(
+                        "{}exec pi {}{}{}",
+                        env_prefix, pi_args, approve_arg, resume_arg
+                    )),
                 }
             }
             Agent::OpenRouter => {
@@ -801,19 +805,13 @@ impl Agent {
                     resume_arg
                 );
                 match initial_prompt {
-                    Some(prompt) => format!(
-                        "bash -c {}",
-                        shell_quote(&format!(
-                            "{}pi {} -- {}; exec bash",
-                            env_prefix,
-                            args,
-                            shell_quote(prompt)
-                        ))
-                    ),
-                    None => format!(
-                        "bash -c {}",
-                        shell_quote(&format!("{}pi {}; exec bash", env_prefix, args))
-                    ),
+                    Some(prompt) => pane_bash(&format!(
+                        "{}exec pi {} -- {}",
+                        env_prefix,
+                        args,
+                        shell_quote(prompt)
+                    )),
+                    None => pane_bash(&format!("{}exec pi {}", env_prefix, args)),
                 }
             }
             Agent::Hermes => {
@@ -844,25 +842,30 @@ impl Agent {
                 } else {
                     ""
                 };
+                // Home TUI. `--yolo` / HERMES_YOLO_MODE keep tool calls from
+                // blocking a detached pane. Never `-q`: that is a one-shot
+                // query that exits and used to drop the pane to bash.
+                let yolo_arg = if providers.hermes.yolo { " --yolo" } else { "" };
+                let yolo_env = if providers.hermes.yolo {
+                    "HERMES_YOLO_MODE=1 "
+                } else {
+                    ""
+                };
                 match initial_prompt {
-                    Some(p) => format!(
-                        "bash -c {}",
-                        shell_quote(&format!(
-                            "{}hermes chat{}{}{} -q {}; exec bash",
-                            env_prefix,
-                            provider_arg,
-                            hermes_args,
-                            resume_arg,
-                            shell_quote(p)
-                        ))
-                    ),
-                    None => format!(
-                        "bash -c {}",
-                        shell_quote(&format!(
-                            "{}hermes chat{}{}{}; exec bash",
-                            env_prefix, provider_arg, hermes_args, resume_arg
-                        ))
-                    ),
+                    Some(p) => pane_bash(&format!(
+                        "{}exec {}hermes chat{}{}{}{} {}",
+                        env_prefix,
+                        yolo_env,
+                        provider_arg,
+                        hermes_args,
+                        yolo_arg,
+                        resume_arg,
+                        shell_quote(p)
+                    )),
+                    None => pane_bash(&format!(
+                        "{}exec {}hermes chat{}{}{}{}",
+                        env_prefix, yolo_env, provider_arg, hermes_args, yolo_arg, resume_arg
+                    )),
                 }
             }
             Agent::Glm => {
@@ -891,25 +894,19 @@ impl Agent {
                     ""
                 };
                 match initial_prompt {
-                    Some(p) => format!(
-                        "bash -c {}",
-                        shell_quote(&format!(
-                            "{} {}CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1 claude{}{}{} {}; exec bash",
-                            env_prefix,
-                            trust_prefix,
-                            perms,
-                            model_arg,
-                            resume_arg,
-                            shell_quote(p)
-                        ))
-                    ),
-                    None => format!(
-                        "bash -c {}",
-                        shell_quote(&format!(
-                            "{} {}CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1 claude{}{}{}; exec bash",
-                            env_prefix, trust_prefix, perms, model_arg, resume_arg
-                        ))
-                    ),
+                    Some(p) => pane_bash(&format!(
+                        "{} {}exec CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1 claude{}{}{} {}",
+                        env_prefix,
+                        trust_prefix,
+                        perms,
+                        model_arg,
+                        resume_arg,
+                        shell_quote(p)
+                    )),
+                    None => pane_bash(&format!(
+                        "{} {}exec CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1 claude{}{}{}",
+                        env_prefix, trust_prefix, perms, model_arg, resume_arg
+                    )),
                 }
             }
             Agent::Kimi => {
@@ -930,24 +927,20 @@ impl Agent {
                 } else {
                     ""
                 };
+                let auto_arg = if providers.kimi.auto { " --auto" } else { "" };
                 match initial_prompt {
-                    Some(p) => format!(
-                        "bash -c {}",
-                        shell_quote(&format!(
-                            "{}kimi{}{} --prompt {}; exec bash",
-                            env_prefix,
-                            model_arg,
-                            resume_arg,
-                            shell_quote(p)
-                        ))
-                    ),
-                    None => format!(
-                        "bash -c {}",
-                        shell_quote(&format!(
-                            "{}kimi --auto{}{}; exec bash",
-                            env_prefix, model_arg, resume_arg
-                        ))
-                    ),
+                    Some(p) => pane_bash(&format!(
+                        "{}exec kimi{}{}{} --prompt {}",
+                        env_prefix,
+                        auto_arg,
+                        model_arg,
+                        resume_arg,
+                        shell_quote(p)
+                    )),
+                    None => pane_bash(&format!(
+                        "{}exec kimi{}{}{}",
+                        env_prefix, auto_arg, model_arg, resume_arg
+                    )),
                 }
             }
             Agent::Shell => match initial_prompt {
@@ -1098,6 +1091,17 @@ fn shell_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 
+/// The pane process *is* the agent. Callers must put `exec` immediately
+/// before the agent binary so a crash cannot fall through to bash.
+/// Agent exit = session death. Never append `; exec bash` after the agent.
+fn pane_bash(inner: &str) -> String {
+    debug_assert!(
+        !inner.contains("; exec bash"),
+        "agent launch must not fall through to bash: {inner}"
+    );
+    format!("bash -c {}", shell_quote(inner))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1196,18 +1200,53 @@ mod tests {
         let cmd = launch(Agent::Codex, None, LaunchOptions::default());
         // Color is preserved (no NO_COLOR); a dark-terminal hint keeps Codex's
         // band readable (light-on-dark) instead of black-on-black; inline render.
+        // Never pair --sandbox with --approve-for-me (Codex 0.149 dies).
         assert!(
             !cmd.contains("NO_COLOR")
                 && cmd.contains("COLORFGBG=")
                 && cmd.contains("15;0")
-                && cmd.contains("codex --strict-config --approve-for-me")
-                && cmd.contains("--approve-for-me")
-                && !cmd.contains("--sandbox")
+                && cmd.contains("codex --strict-config")
+                && cmd.contains("--sandbox")
+                && cmd.contains("workspace-write")
+                && cmd.contains("--ask-for-approval")
+                && cmd.contains("never")
+                && !cmd.contains("--approve-for-me")
+                && !cmd.contains("; exec bash")
+                && cmd.contains("exec COLORFGBG=")
                 && cmd.contains("--add-dir")
                 && cmd.contains("--dangerously-bypass-hook-trust")
                 && cmd.contains("--no-alt-screen"),
             "Codex launch must keep color and stay terminal-safe: {cmd}"
         );
+    }
+
+    #[test]
+    fn agent_pane_is_the_agent_not_a_bash_fallback() {
+        for agent in [
+            Agent::Claude,
+            Agent::Codex,
+            Agent::Gemini,
+            Agent::Antigravity,
+            Agent::Pi,
+            Agent::OpenRouter,
+            Agent::Hermes,
+            Agent::Glm,
+            Agent::Kimi,
+        ] {
+            let cmd = launch(agent, Some("inspect the repository"), LaunchOptions::default());
+            assert!(
+                !cmd.contains("; exec bash"),
+                "{} must not fall through to bash: {cmd}",
+                agent.name()
+            );
+            assert!(
+                cmd.contains("exec "),
+                "{} pane must exec the agent: {cmd}",
+                agent.name()
+            );
+        }
+        let shell = launch(Agent::Shell, None, LaunchOptions::default());
+        assert_eq!(shell, "bash");
     }
 
     #[test]
@@ -1283,18 +1322,18 @@ mod tests {
         assert!(!cmd.contains("key with ' quote; $(touch nope)"), "{cmd}");
         assert!(!cmd.contains("export KIMI_API_KEY="), "{cmd}");
         assert!(cmd.contains("--prompt"), "{cmd}");
-        assert!(!cmd.contains("kimi --auto"), "{cmd}");
+        assert!(cmd.contains("--auto"), "{cmd}");
     }
 
     #[test]
     fn kimi_interactive_session_uses_auto_policy() {
         let cmd = launch(Agent::Kimi, None, LaunchOptions::default());
-        assert!(cmd.contains("kimi --auto"), "{cmd}");
+        assert!(cmd.contains("kimi --auto") || cmd.contains("kimi --auto") || cmd.contains("--auto"), "{cmd}");
         assert!(!cmd.contains("--prompt"), "{cmd}");
     }
 
     #[test]
-    fn hermes_prompt_uses_chat_query_subcommand() {
+    fn hermes_home_stays_a_tui_and_never_uses_query_lane() {
         let providers = ProvidersConfig {
             hermes: crate::providers::HermesConfig {
                 provider: "openrouter".to_string(),
@@ -1311,7 +1350,10 @@ mod tests {
             .unwrap();
         assert!(cmd.contains("hermes chat --provider"), "{cmd}");
         assert!(cmd.contains("openrouter"), "{cmd}");
-        assert!(cmd.contains(" -q "), "{cmd}");
+        assert!(cmd.contains("--yolo"), "{cmd}");
+        assert!(cmd.contains("HERMES_YOLO_MODE=1"), "{cmd}");
+        assert!(!cmd.contains(" -q "), "{cmd}");
+        assert!(!cmd.contains("; exec bash"), "{cmd}");
     }
 
     #[test]
@@ -1322,6 +1364,8 @@ mod tests {
             LaunchOptions::default(),
         );
         assert!(cmd.contains("--prompt-interactive"), "{cmd}");
+        assert!(cmd.contains("--yolo"), "{cmd}");
+        assert!(!cmd.contains("; exec bash"), "{cmd}");
     }
 
     #[test]
