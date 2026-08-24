@@ -2147,6 +2147,13 @@ Statut actuel: {status}.",
                 Some("Session name for new Gemini (Enter, Esc to cancel)".to_string());
             Action::None
         }
+        KeyCode::Char('a') => {
+            app.input_buffer = String::new();
+            app.input_mode = InputMode::NewNamedSession("antigravity".to_string());
+            app.status_message =
+                Some("Session name for new Antigravity (Enter, Esc to cancel)".to_string());
+            Action::None
+        }
         // Projects tab: 'p' runs the planner for the selected project
         // (the global 'p' = new Pi session applies on every other tab).
         KeyCode::Char('p') if app.tab == Tab::Projects => match app.selected_project() {
@@ -2170,6 +2177,13 @@ Statut actuel: {status}.",
             app.input_mode = InputMode::NewNamedSession("glm".to_string());
             app.status_message =
                 Some("Session name for new GLM (Enter, Esc to cancel)".to_string());
+            Action::None
+        }
+        KeyCode::Char('K') => {
+            app.input_buffer = String::new();
+            app.input_mode = InputMode::NewNamedSession("kimi".to_string());
+            app.status_message =
+                Some("Session name for new Kimi (Enter, Esc to cancel)".to_string());
             Action::None
         }
         KeyCode::Char('t') => {

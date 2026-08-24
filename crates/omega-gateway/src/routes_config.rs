@@ -31,10 +31,8 @@
 //! writable field here, and that WAS faithful — `set_config_value` had no
 //! `("openrouter", _)` arm either. It since grew one (model / api_key /
 //! base_url), which left the twin genuinely one-sided: the CLI could
-//! configure the provider and this API could not. The three arms below
-//! close that gap. `kimi.*` is the remaining asymmetry — the CLI writes
-//! four kimi fields, `ConfigResponse` has no kimi entry at all, so that one
-//! needs a protocol change rather than a match arm.
+//! configure the provider and this API could not. The provider response and
+//! write allowlist now stay symmetric, including Kimi and Antigravity.
 //!
 //! REVIEW-FIX ROUND (an independent adversarial reviewer found these before
 //! the branch shipped — see `.superpowers/sdd/progress.md`'s Task C+D+E
@@ -54,8 +52,9 @@
 //! errors as 500, matching `routes_telegram.rs::toggle`'s existing split.
 
 use crate::protocol::{
-    ClaudeConfigEntry, CodexConfigEntry, ConfigResponse, ConfigSetRequest, GeminiConfigEntry,
-    GlmConfigEntry, HermesConfigEntry, OpenRouterConfigEntry, PiConfigEntry,
+    AntigravityConfigEntry, ClaudeConfigEntry, CodexConfigEntry, ConfigResponse,
+    ConfigSetRequest, GeminiConfigEntry, GlmConfigEntry, HermesConfigEntry, KimiConfigEntry,
+    OpenRouterConfigEntry, PiConfigEntry,
 };
 use axum::http::StatusCode;
 use axum::Json;
@@ -94,6 +93,11 @@ fn to_response(cfg: &ProvidersConfig) -> ConfigResponse {
             model: cfg.gemini.model.clone(),
             api_key_set: !cfg.gemini.api_key.is_empty(),
         },
+        antigravity: AntigravityConfigEntry {
+            model: cfg.antigravity.model.clone(),
+            effort: cfg.antigravity.effort.clone(),
+            dangerously_skip_permissions: cfg.antigravity.dangerously_skip_permissions,
+        },
         glm: GlmConfigEntry {
             model: cfg.glm.model.clone(),
             api_key_set: !cfg.glm.api_key.is_empty(),
@@ -109,8 +113,15 @@ fn to_response(cfg: &ProvidersConfig) -> ConfigResponse {
             api_key_set: !cfg.pi.api_key.is_empty(),
         },
         hermes: HermesConfigEntry {
+            provider: cfg.hermes.provider.clone(),
             model: cfg.hermes.model.clone(),
             api_key_set: !cfg.hermes.api_key.is_empty(),
+        },
+        kimi: KimiConfigEntry {
+            model: cfg.kimi.model.clone(),
+            api_key_set: !cfg.kimi.api_key.is_empty(),
+            base_url: cfg.kimi.base_url.clone(),
+            provider_type: cfg.kimi.provider_type.clone(),
         },
     }
 }
@@ -201,6 +212,15 @@ fn apply_config_value(cfg: &mut ProvidersConfig, key: &str, value: &str) -> Resu
         ("codex", "base_url") => cfg.codex.base_url = value.to_string(),
         ("gemini", "model") => cfg.gemini.model = value.to_string(),
         ("gemini", "api_key") => cfg.gemini.api_key = value.to_string(),
+        ("antigravity", "model") => cfg.antigravity.model = value.to_string(),
+        ("antigravity", "effort") => cfg.antigravity.effort = value.to_string(),
+        ("antigravity", "dangerously_skip_permissions") => {
+            cfg.antigravity.dangerously_skip_permissions = value
+                .parse()
+                .map_err(|_| {
+                    "dangerously_skip_permissions must be 'true' or 'false'".to_string()
+                })?;
+        }
         ("openrouter", "model") => cfg.openrouter.model = value.to_string(),
         ("openrouter", "api_key") => cfg.openrouter.api_key = value.to_string(),
         ("openrouter", "base_url") => cfg.openrouter.base_url = value.to_string(),
@@ -209,8 +229,13 @@ fn apply_config_value(cfg: &mut ProvidersConfig, key: &str, value: &str) -> Resu
         ("pi", "api_key") => cfg.pi.api_key = value.to_string(),
         ("glm", "model") => cfg.glm.model = value.to_string(),
         ("glm", "api_key") => cfg.glm.api_key = value.to_string(),
+        ("hermes", "provider") => cfg.hermes.provider = value.to_string(),
         ("hermes", "model") => cfg.hermes.model = value.to_string(),
         ("hermes", "api_key") => cfg.hermes.api_key = value.to_string(),
+        ("kimi", "model") => cfg.kimi.model = value.to_string(),
+        ("kimi", "api_key") => cfg.kimi.api_key = value.to_string(),
+        ("kimi", "base_url") => cfg.kimi.base_url = value.to_string(),
+        ("kimi", "provider_type") => cfg.kimi.provider_type = value.to_string(),
         _ => return Err(format!("unknown key: {key}")),
     }
     Ok(())

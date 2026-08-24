@@ -4952,6 +4952,11 @@ fn get_config_value(cfg: &omega_core::providers::ProvidersConfig, key: &str) -> 
         ("codex", "base_url") => cfg.codex.base_url.clone(),
         ("gemini", "model") => cfg.gemini.model.clone(),
         ("gemini", "api_key") => redacted_secret(&cfg.gemini.api_key),
+        ("antigravity", "model") => cfg.antigravity.model.clone(),
+        ("antigravity", "effort") => cfg.antigravity.effort.clone(),
+        ("antigravity", "dangerously_skip_permissions") => {
+            cfg.antigravity.dangerously_skip_permissions.to_string()
+        }
         ("pi", "provider") => cfg.pi.provider.clone(),
         ("pi", "model") => cfg.pi.model.clone(),
         ("pi", "api_key") => redacted_secret(&cfg.pi.api_key),
@@ -4960,6 +4965,7 @@ fn get_config_value(cfg: &omega_core::providers::ProvidersConfig, key: &str) -> 
         ("openrouter", "model") => cfg.openrouter.model.clone(),
         ("openrouter", "api_key") => redacted_secret(&cfg.openrouter.api_key),
         ("openrouter", "base_url") => cfg.openrouter.base_url.clone(),
+        ("hermes", "provider") => cfg.hermes.provider.clone(),
         ("hermes", "model") => cfg.hermes.model.clone(),
         ("hermes", "api_key") => redacted_secret(&cfg.hermes.api_key),
         ("kimi", "model") => cfg.kimi.model.clone(),
@@ -4993,6 +4999,13 @@ fn set_config_value(
         ("codex", "base_url") => cfg.codex.base_url = value.to_string(),
         ("gemini", "model") => cfg.gemini.model = value.to_string(),
         ("gemini", "api_key") => cfg.gemini.api_key = value.to_string(),
+        ("antigravity", "model") => cfg.antigravity.model = value.to_string(),
+        ("antigravity", "effort") => cfg.antigravity.effort = value.to_string(),
+        ("antigravity", "dangerously_skip_permissions") => {
+            cfg.antigravity.dangerously_skip_permissions = value
+                .parse::<bool>()
+                .with_context(|| format!("invalid boolean {value:?}; expected true or false"))?;
+        }
         ("pi", "provider") => cfg.pi.provider = value.to_string(),
         ("pi", "model") => cfg.pi.model = value.to_string(),
         ("pi", "api_key") => cfg.pi.api_key = value.to_string(),
@@ -5001,6 +5014,7 @@ fn set_config_value(
         ("openrouter", "model") => cfg.openrouter.model = value.to_string(),
         ("openrouter", "api_key") => cfg.openrouter.api_key = value.to_string(),
         ("openrouter", "base_url") => cfg.openrouter.base_url = value.to_string(),
+        ("hermes", "provider") => cfg.hermes.provider = value.to_string(),
         ("hermes", "model") => cfg.hermes.model = value.to_string(),
         ("hermes", "api_key") => cfg.hermes.api_key = value.to_string(),
         ("kimi", "model") => cfg.kimi.model = value.to_string(),

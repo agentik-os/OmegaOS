@@ -1957,9 +1957,11 @@ fn menu_group(action: &MenuAction) -> &'static str {
         MenuAction::NewClaude
         | MenuAction::NewCodex
         | MenuAction::NewGemini
+        | MenuAction::NewAntigravity
         | MenuAction::NewPi
         | MenuAction::NewHermes
-        | MenuAction::NewGlm => "New agent sessions",
+        | MenuAction::NewGlm
+        | MenuAction::NewKimi => "New agent sessions",
         MenuAction::NewTerminal => "Terminal",
         MenuAction::NewProject | MenuAction::DispatchOracle => "Orchestration",
         MenuAction::Refresh | MenuAction::ToggleProtection | MenuAction::KillSelected => {

@@ -57,7 +57,7 @@ pub struct LaunchOptions {
     pub resume_conversation: bool,
 
     // ── Claude-only smart features (2026-w20+) ────────────────────────
-    // Other providers (Gemini, Codex, GLM, Pi, Hermes) ignore these
+    // Other providers (Gemini, Antigravity, Codex, GLM, Pi, Hermes) ignore these
     // fields silently because their CLIs don't have equivalents. We
     // pass them only when Agent::Claude.
     /// `/goal` condition (v2.1.139+) — Claude auto-loops until this
@@ -135,6 +135,7 @@ pub enum Agent {
     Claude,
     Codex,
     Gemini,
+    Antigravity,
     Pi,
     Hermes,
     Glm,
@@ -148,6 +149,7 @@ impl Agent {
             Agent::Claude,
             Agent::Codex,
             Agent::Gemini,
+            Agent::Antigravity,
             Agent::Pi,
             Agent::Hermes,
             Agent::Glm,
@@ -161,6 +163,7 @@ impl Agent {
             Agent::Claude => "claude",
             Agent::Codex => "codex",
             Agent::Gemini => "gemini",
+            Agent::Antigravity => "antigravity",
             Agent::Pi => "pi",
             Agent::Hermes => "hermes",
             Agent::Glm => "glm",
@@ -174,6 +177,7 @@ impl Agent {
             Agent::Claude => "Claude Code (Anthropic)",
             Agent::Codex => "Codex (OpenAI)",
             Agent::Gemini => "Gemini (Google)",
+            Agent::Antigravity => "Antigravity (Google)",
             Agent::Pi => "Pi (earendil-works)",
             Agent::Hermes => "Hermes (Nous Research)",
             Agent::Glm => "GLM (Z.AI / Zhipu)",
@@ -182,11 +186,27 @@ impl Agent {
         }
     }
 
+    /// Executable used by this adapter. GLM intentionally shares Claude Code;
+    /// Antigravity's product/provider name differs from its `agy` binary.
+    pub fn binary_name(&self) -> &'static str {
+        match self {
+            Agent::Claude | Agent::Glm => "claude",
+            Agent::Codex => "codex",
+            Agent::Gemini => "gemini",
+            Agent::Antigravity => "agy",
+            Agent::Pi => "pi",
+            Agent::Hermes => "hermes",
+            Agent::Kimi => "kimi",
+            Agent::Shell => "bash",
+        }
+    }
+
     pub fn from_name(s: &str) -> Option<Self> {
         match s.to_lowercase().as_str() {
             "claude" => Some(Agent::Claude),
             "codex" => Some(Agent::Codex),
             "gemini" => Some(Agent::Gemini),
+            "antigravity" | "agy" => Some(Agent::Antigravity),
             "pi" => Some(Agent::Pi),
             "hermes" => Some(Agent::Hermes),
             "glm" => Some(Agent::Glm),
@@ -213,17 +233,20 @@ impl Agent {
                 "if command -v npm >/dev/null 2>&1; then mkdir -p \"$HOME/.npm-global\" && npm install -g --prefix \"$HOME/.npm-global\" @anthropic-ai/claude-code; elif [ -x \"$HOME/.bun/bin/bun\" ]; then \"$HOME/.bun/bin/bun\" add -g @anthropic-ai/claude-code; else echo 'Need Node.js or bun first (run: curl -fsSL https://bun.sh/install | bash)'; exit 1; fi",
             ),
             Agent::Claude => Some(
-                "T=$(mktemp) && curl -fsSL https://claude.ai/install.sh -o \"$T\" && bash \"$T\"; rm -f \"$T\"",
+                "T=$(mktemp) || exit $?; curl -fsSL https://claude.ai/install.sh -o \"$T\" && bash \"$T\"; R=$?; rm -f \"$T\"; exit $R",
             ),
             // Official standalone installer (same shape as Claude's above), NOT
             // `npm i -g @openai/codex`: the npm build lacks the managed standalone
             // package at ~/.codex/packages/standalone that `codex remote-control`
             // requires, so an npm-installed Codex cannot be driven from the phone.
             Agent::Codex => Some(
-                "T=$(mktemp) && curl -fsSL https://chatgpt.com/codex/install.sh -o \"$T\" && CODEX_NON_INTERACTIVE=1 sh \"$T\"; rm -f \"$T\"",
+                "T=$(mktemp) || exit $?; curl -fsSL https://chatgpt.com/codex/install.sh -o \"$T\" && CODEX_NON_INTERACTIVE=1 sh \"$T\"; R=$?; rm -f \"$T\"; exit $R",
             ),
             Agent::Gemini => Some(
                 "if command -v npm >/dev/null 2>&1; then mkdir -p \"$HOME/.npm-global\" && npm install -g --prefix \"$HOME/.npm-global\" @google/gemini-cli; elif [ -x \"$HOME/.bun/bin/bun\" ]; then \"$HOME/.bun/bin/bun\" add -g @google/gemini-cli; else echo 'Need Node.js or bun first (run: curl -fsSL https://bun.sh/install | bash)'; exit 1; fi",
+            ),
+            Agent::Antigravity => Some(
+                "T=$(mktemp) || exit $?; curl -fsSL https://antigravity.google/cli/install.sh -o \"$T\" && bash \"$T\"; R=$?; rm -f \"$T\"; exit $R",
             ),
             // Pi: install the npm package directly (the curl|sh installer runs a
             // TTY animation that fails in a non-interactive pane → `pi` never landed).
@@ -231,7 +254,7 @@ impl Agent {
                 "if command -v npm >/dev/null 2>&1; then mkdir -p \"$HOME/.npm-global\" && npm install -g --prefix \"$HOME/.npm-global\" @earendil-works/pi-coding-agent; elif [ -x \"$HOME/.bun/bin/bun\" ]; then \"$HOME/.bun/bin/bun\" add -g @earendil-works/pi-coding-agent; else echo 'Need Node.js or bun first (run: curl -fsSL https://bun.sh/install | bash)'; exit 1; fi",
             ),
             Agent::Hermes => Some(
-                "T=$(mktemp) && curl -fsSL https://hermes-agent.nousresearch.com/install.sh -o \"$T\" && bash \"$T\" && hermes setup; rm -f \"$T\"",
+                "T=$(mktemp) || exit $?; curl -fsSL https://hermes-agent.nousresearch.com/install.sh -o \"$T\" && bash \"$T\"; R=$?; rm -f \"$T\"; exit $R",
             ),
             Agent::Kimi => Some(
                 "T=$(mktemp) && curl -fsSL https://code.kimi.com/kimi-code/install.sh -o \"$T\" && bash \"$T\"; R=$?; rm -f \"$T\"; exit $R",
@@ -258,6 +281,8 @@ impl Agent {
             Agent::Gemini => {
                 Some("npm uninstall -g --prefix \"$HOME/.npm-global\" @google/gemini-cli")
             }
+            // Keep ~/.gemini/antigravity-cli and keyring credentials intact.
+            Agent::Antigravity => Some("rm -f \"$(command -v agy)\""),
             Agent::Pi => Some("rm -f $(which pi) && rm -rf ~/.pi"),
             Agent::Hermes => Some("rm -f $(which hermes) && rm -rf ~/.hermes"),
             // GLM shares the Claude Code binary — there is nothing GLM-specific to
@@ -274,6 +299,7 @@ impl Agent {
             Agent::Claude => Some("https://claude.ai/code"),
             Agent::Codex => Some("https://github.com/openai/codex"),
             Agent::Gemini => Some("https://github.com/google-gemini/gemini-cli"),
+            Agent::Antigravity => Some("https://antigravity.google/docs/cli/overview/"),
             Agent::Pi => Some("https://pi.dev/"),
             Agent::Hermes => Some("https://hermes-agent.nousresearch.com/"),
             Agent::Glm => Some("https://www.z.ai/"),
@@ -332,6 +358,9 @@ impl Agent {
                 }
             }
             Agent::Gemini => pick(&["GOOGLE_API_KEY", "GEMINI_API_KEY"]),
+            // Antigravity authenticates through its native keyring / Google
+            // sign-in flow. Never leak Gemini API-key state into that session.
+            Agent::Antigravity => Vec::new(),
             // GLM = Claude Code redirected to Z.AI. Supply the exact native
             // variable directly so no secret-bearing shell expansion is needed.
             Agent::Glm => {
@@ -588,9 +617,14 @@ impl Agent {
                 // dark rmux/omega TUI it blends in. Quoted so the ';' is one env
                 // value, not a shell separator.
                 let trust_prefix = "omega trust-dir \"$PWD\" >/dev/null 2>&1; ";
+                // Codex >=0.147 makes --approve-for-me a complete permission
+                // preset: it sets workspace-write + on-request itself and
+                // explicitly CONFLICTS with a separate --sandbox flag. Omega
+                // owns the hooks it installs, so detached panes also bypass the
+                // otherwise-blocking one-time hook review for this invocation.
                 let mut args = format!(
-                    "{}{}COLORFGBG='15;0' codex --strict-config --sandbox workspace-write \
-                     --approve-for-me --no-alt-screen",
+                    "{}{}COLORFGBG='15;0' codex --strict-config --approve-for-me \
+                     --dangerously-bypass-hook-trust --no-alt-screen",
                     env_prefix, trust_prefix
                 );
                 if let Some(model) = nonempty(&providers.codex.model) {
@@ -609,7 +643,7 @@ impl Agent {
                 match initial_prompt {
                     Some(p) => format!(
                         "bash -c {}",
-                        shell_quote(&format!("{} {}; exec bash", args, shell_quote(p)))
+                        shell_quote(&format!("{} -- {}; exec bash", args, shell_quote(p)))
                     ),
                     None => format!("bash -c {}", shell_quote(&format!("{}; exec bash", args))),
                 }
@@ -622,7 +656,7 @@ impl Agent {
                     Some(p) => format!(
                         "bash -c {}",
                         shell_quote(&format!(
-                            "{}gemini{} {}; exec bash",
+                            "{}gemini{} --prompt-interactive {}; exec bash",
                             env_prefix,
                             model_arg,
                             shell_quote(p)
@@ -632,6 +666,34 @@ impl Agent {
                         "bash -c {}",
                         shell_quote(&format!("{}gemini{}; exec bash", env_prefix, model_arg))
                     ),
+                }
+            }
+            Agent::Antigravity => {
+                let mut args = format!("{}agy", env_prefix);
+                if providers.antigravity.dangerously_skip_permissions {
+                    args.push_str(" --dangerously-skip-permissions");
+                }
+                if let Some(model) = nonempty(&providers.antigravity.model) {
+                    args.push_str(&format!(" --model {}", shell_quote(model)));
+                }
+                if let Some(effort) = nonempty(&providers.antigravity.effort) {
+                    args.push_str(&format!(" --effort {}", shell_quote(effort)));
+                }
+                if opts.resume_conversation {
+                    args.push_str(" --continue");
+                }
+                match initial_prompt {
+                    Some(prompt) => format!(
+                        "bash -c {}",
+                        shell_quote(&format!(
+                            "{} --prompt-interactive {}; exec bash",
+                            args,
+                            shell_quote(prompt)
+                        ))
+                    ),
+                    None => {
+                        format!("bash -c {}", shell_quote(&format!("{}; exec bash", args)))
+                    }
                 }
             }
             Agent::Pi => {
@@ -657,7 +719,7 @@ impl Agent {
                     Some(p) => format!(
                         "bash -c {}",
                         shell_quote(&format!(
-                            "{}pi {} {}; exec bash",
+                            "{}pi {} -- {}; exec bash",
                             env_prefix,
                             pi_args,
                             shell_quote(p)
@@ -670,7 +732,23 @@ impl Agent {
                 }
             }
             Agent::Hermes => {
-                // (c) Pass --model when hermes.model is configured (was ignored).
+                // Hermes has required an explicit `chat` subcommand for
+                // one-shot prompts since before v0.20. A bare positional prompt
+                // is parsed as an invalid subcommand. Keep no-prompt sessions
+                // interactive and use the documented query lane for dispatch.
+                let hermes_provider = if !providers.hermes.provider.trim().is_empty() {
+                    Some(providers.hermes.provider.trim())
+                } else if !providers.hermes.api_key.is_empty()
+                    || !providers.openrouter.api_key.is_empty()
+                    || !providers.openrouter.base_url.is_empty()
+                {
+                    Some("openrouter")
+                } else {
+                    None
+                };
+                let provider_arg = hermes_provider
+                    .map(|provider| format!(" --provider {}", shell_quote(provider)))
+                    .unwrap_or_default();
                 let hermes_args = if providers.hermes.model.is_empty() {
                     String::new()
                 } else {
@@ -680,15 +758,19 @@ impl Agent {
                     Some(p) => format!(
                         "bash -c {}",
                         shell_quote(&format!(
-                            "{}hermes{} {}; exec bash",
+                            "{}hermes chat{}{} -q {}; exec bash",
                             env_prefix,
+                            provider_arg,
                             hermes_args,
                             shell_quote(p)
                         ))
                     ),
                     None => format!(
                         "bash -c {}",
-                        shell_quote(&format!("{}hermes{}; exec bash", env_prefix, hermes_args))
+                        shell_quote(&format!(
+                            "{}hermes chat{}{}; exec bash",
+                            env_prefix, provider_arg, hermes_args
+                        ))
                     ),
                 }
             }
@@ -755,7 +837,7 @@ impl Agent {
                     Some(p) => format!(
                         "bash -c {}",
                         shell_quote(&format!(
-                            "{}kimi --auto{}{} --prompt {}; exec bash",
+                            "{}kimi{}{} --prompt {}; exec bash",
                             env_prefix,
                             model_arg,
                             resume_arg,
@@ -801,12 +883,25 @@ impl Agent {
                 has_cmd("gemini")
                     || std::path::Path::new(&format!("{}/.npm-global/bin/gemini", home)).exists()
             }
+            Agent::Antigravity => {
+                has_cmd("agy")
+                    || std::path::Path::new(&format!("{}/.local/bin/agy", home)).exists()
+                    || std::path::Path::new(&format!(
+                        "{}/.gemini/antigravity-cli/bin/agy",
+                        home
+                    ))
+                    .exists()
+            }
             Agent::Pi => {
                 has_cmd("pi")
                     || std::path::Path::new(&format!("{}/.local/bin/pi", home)).exists()
                     || std::path::Path::new(&format!("{}/.npm-global/bin/pi", home)).exists()
             }
-            Agent::Hermes => has_cmd("hermes"),
+            Agent::Hermes => {
+                has_cmd("hermes")
+                    || std::path::Path::new(&format!("{}/.local/bin/hermes", home)).exists()
+                    || std::path::Path::new(&format!("{}/.hermes/bin/hermes", home)).exists()
+            }
             Agent::Kimi => {
                 has_cmd("kimi")
                     || std::path::Path::new(&format!("{}/.local/bin/kimi", home)).exists()
@@ -967,10 +1062,11 @@ mod tests {
             !cmd.contains("NO_COLOR")
                 && cmd.contains("COLORFGBG=")
                 && cmd.contains("15;0")
-                && cmd.contains("codex --strict-config --sandbox workspace-write")
+                && cmd.contains("codex --strict-config --approve-for-me")
                 && cmd.contains("--approve-for-me")
+                && !cmd.contains("--sandbox")
                 && cmd.contains("--add-dir")
-                && !cmd.contains("dangerously-bypass")
+                && cmd.contains("--dangerously-bypass-hook-trust")
                 && cmd.contains("--no-alt-screen"),
             "Codex launch must keep color and stay terminal-safe: {cmd}"
         );
@@ -1018,7 +1114,7 @@ mod tests {
     }
 
     #[test]
-    fn kimi_uses_current_auto_prompt_and_model_override_contract() {
+    fn kimi_prompt_uses_implicit_auto_policy_and_model_override_contract() {
         let providers = ProvidersConfig {
             kimi: crate::providers::KimiConfig {
                 model: "kimi-for-coding".to_string(),
@@ -1048,8 +1144,53 @@ mod tests {
         assert!(!cmd.contains("KIMI_MODEL_API_KEY"), "{cmd}");
         assert!(!cmd.contains("key with ' quote; $(touch nope)"), "{cmd}");
         assert!(!cmd.contains("export KIMI_API_KEY="), "{cmd}");
-        assert!(cmd.contains("kimi --auto"), "{cmd}");
         assert!(cmd.contains("--prompt"), "{cmd}");
+        assert!(!cmd.contains("kimi --auto"), "{cmd}");
+    }
+
+    #[test]
+    fn kimi_interactive_session_uses_auto_policy() {
+        let cmd = launch(Agent::Kimi, None, LaunchOptions::default());
+        assert!(cmd.contains("kimi --auto"), "{cmd}");
+        assert!(!cmd.contains("--prompt"), "{cmd}");
+    }
+
+    #[test]
+    fn hermes_prompt_uses_chat_query_subcommand() {
+        let providers = ProvidersConfig {
+            hermes: crate::providers::HermesConfig {
+                provider: "openrouter".to_string(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let cmd = Agent::Hermes
+            .launch_command_with_providers(
+                Some("inspect the repository"),
+                LaunchOptions::default(),
+                &providers,
+            )
+            .unwrap();
+        assert!(cmd.contains("hermes chat --provider openrouter"), "{cmd}");
+        assert!(cmd.contains(" -q "), "{cmd}");
+    }
+
+    #[test]
+    fn gemini_prompt_stays_in_an_interactive_session() {
+        let cmd = launch(Agent::Gemini, Some("inspect the repository"), LaunchOptions::default());
+        assert!(cmd.contains("--prompt-interactive"), "{cmd}");
+    }
+
+    #[test]
+    fn antigravity_prompt_stays_interactive_and_autonomous() {
+        let cmd = launch(
+            Agent::Antigravity,
+            Some("inspect the repository"),
+            LaunchOptions::default(),
+        );
+        assert!(cmd.contains("agy --dangerously-skip-permissions"), "{cmd}");
+        assert!(cmd.contains("--prompt-interactive"), "{cmd}");
+        assert!(!cmd.contains(" -p "), "{cmd}");
     }
 
     #[test]

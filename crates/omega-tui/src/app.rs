@@ -328,9 +328,11 @@ pub enum MenuAction {
     NewClaude,
     NewCodex,
     NewGemini,
+    NewAntigravity,
     NewPi,
     NewHermes,
     NewGlm,
+    NewKimi,
     NewTerminal,
     NewProject,
     DispatchOracle,
@@ -349,9 +351,11 @@ impl MenuAction {
             MenuAction::NewClaude,
             MenuAction::NewCodex,
             MenuAction::NewGemini,
+            MenuAction::NewAntigravity,
             MenuAction::NewPi,
             MenuAction::NewHermes,
             MenuAction::NewGlm,
+            MenuAction::NewKimi,
             MenuAction::NewTerminal,
             MenuAction::NewProject,
             MenuAction::DispatchOracle,
@@ -370,9 +374,11 @@ impl MenuAction {
             MenuAction::NewClaude => "New Claude session",
             MenuAction::NewCodex => "New Codex session",
             MenuAction::NewGemini => "New Gemini session",
+            MenuAction::NewAntigravity => "New Antigravity session",
             MenuAction::NewPi => "New Pi session (earendil-works)",
             MenuAction::NewHermes => "New Hermes session (Nous Research)",
             MenuAction::NewGlm => "New GLM session",
+            MenuAction::NewKimi => "New Kimi session (Moonshot AI)",
             MenuAction::NewTerminal => "New Terminal (plain shell)",
             MenuAction::NewProject => {
                 "New project  →  pick stack + auto-provision (Convex/Vercel/Clerk/Stripe)"
@@ -395,9 +401,11 @@ impl MenuAction {
             MenuAction::NewClaude => "c",
             MenuAction::NewCodex => "o",
             MenuAction::NewGemini => "g",
+            MenuAction::NewAntigravity => "a",
             MenuAction::NewPi => "p",
             MenuAction::NewHermes => "h",
             MenuAction::NewGlm => "G",
+            MenuAction::NewKimi => "K",
             MenuAction::NewTerminal => "t",
             MenuAction::NewProject => "N",
             MenuAction::DispatchOracle => "d",
@@ -416,9 +424,11 @@ impl MenuAction {
             MenuAction::NewClaude => Some(omega_core::agents::Agent::Claude),
             MenuAction::NewCodex => Some(omega_core::agents::Agent::Codex),
             MenuAction::NewGemini => Some(omega_core::agents::Agent::Gemini),
+            MenuAction::NewAntigravity => Some(omega_core::agents::Agent::Antigravity),
             MenuAction::NewPi => Some(omega_core::agents::Agent::Pi),
             MenuAction::NewHermes => Some(omega_core::agents::Agent::Hermes),
             MenuAction::NewGlm => Some(omega_core::agents::Agent::Glm),
+            MenuAction::NewKimi => Some(omega_core::agents::Agent::Kimi),
             MenuAction::NewTerminal => Some(omega_core::agents::Agent::Shell),
             _ => None,
         }
@@ -699,7 +709,11 @@ pub fn fields_for_section(
             SettingsSection::Claude => Some(Agent::Claude),
             SettingsSection::Codex => Some(Agent::Codex),
             SettingsSection::Gemini => Some(Agent::Gemini),
+            SettingsSection::Antigravity => Some(Agent::Antigravity),
+            SettingsSection::Pi => Some(Agent::Pi),
+            SettingsSection::Hermes => Some(Agent::Hermes),
             SettingsSection::Glm => Some(Agent::Glm),
+            SettingsSection::Kimi => Some(Agent::Kimi),
             _ => None,
         }
     };
@@ -860,6 +874,39 @@ pub fn fields_for_section(
             });
             out.extend(install_actions_for(Agent::Gemini));
         }
+        SettingsSection::Antigravity => {
+            let c = &providers.antigravity;
+            out.push(model_field(
+                "antigravity",
+                "antigravity.model",
+                &c.model,
+            ));
+            let mut effort_options = vec![
+                "low".to_string(),
+                "medium".to_string(),
+                "high".to_string(),
+            ];
+            let effort_index = match effort_options.iter().position(|e| e == &c.effort) {
+                Some(index) => index,
+                None if c.effort.is_empty() => 1,
+                None => {
+                    effort_options.insert(0, c.effort.clone());
+                    0
+                }
+            };
+            out.push(SettingsField::Select {
+                label: "Effort".to_string(),
+                config_key: "antigravity.effort".to_string(),
+                options: effort_options,
+                current_index: effort_index,
+            });
+            out.push(SettingsField::Toggle {
+                label: "Dangerously skip permissions".to_string(),
+                config_key: "antigravity.dangerously_skip_permissions".to_string(),
+                current: c.dangerously_skip_permissions,
+            });
+            out.extend(install_actions_for(Agent::Antigravity));
+        }
         SettingsSection::Glm => {
             let c = &providers.glm;
             out.push(model_field("glm", "glm.model", &c.model));
@@ -890,6 +937,12 @@ pub fn fields_for_section(
         }
         SettingsSection::Hermes => {
             let c = &providers.hermes;
+            out.push(SettingsField::EditText {
+                label: "Provider (empty = native; key = openrouter)".to_string(),
+                config_key: "hermes.provider".to_string(),
+                current_value: c.provider.clone(),
+                masked: false,
+            });
             out.push(model_field("hermes", "hermes.model", &c.model));
             out.push(SettingsField::EditText {
                 label: "Hermes API key".to_string(),
@@ -898,6 +951,29 @@ pub fn fields_for_section(
                 masked: true,
             });
             out.extend(install_actions_for(Agent::Hermes));
+        }
+        SettingsSection::Kimi => {
+            let c = &providers.kimi;
+            out.push(model_field("kimi", "kimi.model", &c.model));
+            out.push(SettingsField::EditText {
+                label: "Kimi API key".to_string(),
+                config_key: "kimi.api_key".to_string(),
+                current_value: c.api_key.clone(),
+                masked: true,
+            });
+            out.push(SettingsField::EditText {
+                label: "Base URL".to_string(),
+                config_key: "kimi.base_url".to_string(),
+                current_value: c.base_url.clone(),
+                masked: false,
+            });
+            out.push(SettingsField::EditText {
+                label: "Provider type (kimi/anthropic/openai)".to_string(),
+                config_key: "kimi.provider_type".to_string(),
+                current_value: c.provider_type.clone(),
+                masked: false,
+            });
+            out.extend(install_actions_for(Agent::Kimi));
         }
         SettingsSection::Aisb => {
             out.push(SettingsField::Info(format!(
@@ -1013,9 +1089,11 @@ pub enum SettingsSection {
     Claude,
     Codex,
     Gemini,
+    Antigravity,
     Pi,
     Hermes,
     Glm,
+    Kimi,
     Aisb,
     Telegram,
 }
@@ -1029,9 +1107,11 @@ impl SettingsSection {
             SettingsSection::Claude,
             SettingsSection::Codex,
             SettingsSection::Gemini,
+            SettingsSection::Antigravity,
             SettingsSection::Pi,
             SettingsSection::Hermes,
             SettingsSection::Glm,
+            SettingsSection::Kimi,
             SettingsSection::Aisb,
             SettingsSection::Telegram,
         ]
@@ -1044,9 +1124,11 @@ impl SettingsSection {
             SettingsSection::Claude => "Claude (Anthropic)",
             SettingsSection::Codex => "Codex (OpenAI)",
             SettingsSection::Gemini => "Gemini (Google)",
+            SettingsSection::Antigravity => "Antigravity (Google)",
             SettingsSection::Pi => "Pi (earendil-works)",
             SettingsSection::Hermes => "Hermes (Nous Research)",
             SettingsSection::Glm => "GLM (Z.AI)",
+            SettingsSection::Kimi => "Kimi (Moonshot AI)",
             SettingsSection::Aisb => "AISB viewer (legacy)",
             SettingsSection::Telegram => "Telegram",
         }
