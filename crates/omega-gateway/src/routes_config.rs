@@ -149,33 +149,13 @@ pub async fn get() -> Result<Json<ConfigResponse>, ApiError> {
     Ok(Json(to_response(&cfg)))
 }
 
-/// Loads `providers.toml`, refusing (rather than silently defaulting, the
-/// way `ProvidersConfig::load()` itself does) when the file EXISTS but
-/// fails to parse — see this module's review-fix doc comment for the exact
-/// data-loss scenario this closes on the write side, and [`get`]'s doc
-/// comment for why the read side uses it too. A missing file is still a
-/// normal, expected "nothing configured yet" case (`Ok(default)`), matching
-/// `ProvidersConfig::load()`'s own posture for that case.
-///
-/// Re-derives `ProvidersConfig::path()` (`crate::config::omega_dir().join(
-/// "providers.toml")` in `omega-core/src/providers.rs`) rather than calling
-/// it: that method is private to its own module, not `pub`, so this is
-/// necessarily a duplicated join of two already-`pub` primitives
-/// (`omega_core::config::omega_dir()` + the literal filename), not a
-/// reimplementation of any real logic.
+/// Strictly loads `providers.toml` through the same authority path as the CLI.
+/// `try_load` rejects corrupt content and captures the current private-file
+/// revision, so a second gateway PUT can save without being mistaken for a
+/// stale writer. The old hand-written TOML parse lost that revision and every
+/// PUT after the first returned 500.
 fn load_config_or_refuse() -> Result<ProvidersConfig, String> {
-    let path = omega_core::config::omega_dir().join("providers.toml");
-    if !path.exists() {
-        return Ok(ProvidersConfig::default());
-    }
-    let content = std::fs::read_to_string(&path)
-        .map_err(|e| format!("providers.toml exists but could not be read: {e}"))?;
-    toml::from_str(&content).map_err(|e| {
-        format!(
-            "providers.toml exists but failed to parse ({e}) -- refusing to write and silently \
-             drop its other fields; fix or remove the file first"
-        )
-    })
+    ProvidersConfig::try_load().map_err(|error| format!("{error:#}"))
 }
 
 /// The exact `(provider, field)` allowlist `omega-cli::set_config_value`
