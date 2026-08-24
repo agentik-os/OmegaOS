@@ -54,6 +54,24 @@ impl FailoverReason {
             Self::Unknown => NextAction::Retry,
         }
     }
+
+    /// Secret-safe message suitable for a remote client. Raw provider errors
+    /// stay in local logs because they may echo credentials, prompts, or file
+    /// content.
+    pub fn user_message(&self) -> &'static str {
+        match self {
+            Self::RateLimit => "provider rate limit reached; retry after backoff",
+            Self::Auth => "provider authentication failed; re-authenticate this agent",
+            Self::UpstreamError => "provider service is unavailable; retry or switch provider",
+            Self::Network => "provider network request failed; check connectivity and retry",
+            Self::ContextOverflow => "agent context is full; compact or start a new session",
+            Self::ModelUnavailable => "selected model is unavailable; choose a current model",
+            Self::InvalidToolCall => "provider rejected an agent tool call; inspect local logs",
+            Self::ContentRefused => "provider refused the request under its content policy",
+            Self::BudgetExhausted => "provider budget is exhausted",
+            Self::Unknown => "agent turn failed; inspect local gateway logs",
+        }
+    }
 }
 
 /// What the orchestrator should do based on a classified failure.
@@ -198,5 +216,6 @@ mod tests {
             FailoverReason::BudgetExhausted.next_action(),
             NextAction::Stop
         );
+        assert!(FailoverReason::Auth.user_message().contains("re-authenticate"));
     }
 }

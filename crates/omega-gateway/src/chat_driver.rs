@@ -1,65 +1,78 @@
-//! Chat process driver — spawns a headless CLI agent (`claude -p`) and parses
-//! its NDJSON stdout stream into typed [`ChatStreamServerMsg`] frames.
+//! Chat process driver — spawns Claude (`-p --output-format stream-json`) or
+//! Codex (`exec --json`) and parses either NDJSON stream into typed
+//! [`ChatStreamServerMsg`] frames.
 //!
 //! Three pure/composable pieces:
 //! - [`agent_command`] builds the child-process invocation (no I/O, unit-testable).
 //! - [`parse_line`] parses one NDJSON stdout line into a [`ParsedLine`] (no I/O).
 //! - [`run_turn`] spawns the process, drives the read loop, and forwards frames.
 //!
-//! KNOWN LIMIT: `ChatAgent::Codex` streaming JSON support is not implemented —
-//! [`run_turn`] intercepts it before ever building or spawning a process, so a
-//! Codex chat never spawns `claude`.
-
 use crate::protocol::{ChatAgent, ChatMeta, ChatStreamServerMsg};
 use serde_json::Value;
 use std::path::Path;
 use std::process::Stdio;
 use std::time::Duration;
-use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::mpsc::Sender;
 
-/// Builds the child-process command for a Claude chat turn.
-///
-/// Only meaningful for `ChatAgent::Claude` — [`run_turn`] intercepts
-/// `ChatAgent::Codex` before ever calling this. The precondition is
-/// enforced with a real (non-debug-only) `assert!` so misuse is caught in
-/// every build, not just debug ones, rather than silently spawning `claude`
-/// for a Codex chat.
-///
-/// Program is `$OMEGA_CHAT_BIN` when set, else `claude`. Args:
-/// `-p <user_text> --output-format stream-json --verbose`, plus
-/// `--resume <provider_session_id>` when `meta.provider_session_id` is
-/// `Some`, plus `--model <m>` when `model` is `Some`. `current_dir` is
-/// `meta.cwd`; when `account_dir` is `Some`, `CLAUDE_CONFIG_DIR` is set.
+/// Builds the provider-specific headless command for one chat turn.
 pub fn agent_command(
     meta: &ChatMeta,
     user_text: &str,
     model: Option<&str>,
     account_dir: Option<&Path>,
 ) -> Command {
-    assert!(
-        meta.agent == ChatAgent::Claude,
-        "agent_command is Claude-only; Codex is handled in run_turn"
-    );
-
-    let program = std::env::var("OMEGA_CHAT_BIN").unwrap_or_else(|_| "claude".to_string());
-    let mut cmd = Command::new(program);
-    cmd.arg("-p")
-        .arg(user_text)
-        .arg("--output-format")
-        .arg("stream-json")
-        .arg("--verbose");
-    if let Some(session_id) = &meta.provider_session_id {
-        cmd.arg("--resume").arg(session_id);
-    }
-    if let Some(model) = model {
-        cmd.arg("--model").arg(model);
-    }
+    let mut cmd = match meta.agent {
+        ChatAgent::Claude => {
+            let program =
+                std::env::var("OMEGA_CHAT_BIN").unwrap_or_else(|_| "claude".to_string());
+            let mut command = Command::new(program);
+            command
+                .arg("-p")
+                .arg(user_text)
+                .arg("--output-format")
+                .arg("stream-json")
+                .arg("--verbose");
+            if let Some(session_id) = &meta.provider_session_id {
+                command.arg("--resume").arg(session_id);
+            }
+            if let Some(model) = model {
+                command.arg("--model").arg(model);
+            }
+            if let Some(dir) = account_dir {
+                command.env("CLAUDE_CONFIG_DIR", dir);
+            }
+            command
+        }
+        ChatAgent::Codex => {
+            let program = std::env::var("OMEGA_CODEX_CHAT_BIN")
+                .or_else(|_| std::env::var("OMEGA_CHAT_BIN"))
+                .unwrap_or_else(|_| "codex".to_string());
+            let mut command = Command::new(program);
+            command.args([
+                "exec",
+                "--skip-git-repo-check",
+                "--approve-for-me",
+                "--dangerously-bypass-hook-trust",
+                "--json",
+            ]);
+            if let Some(model) = model {
+                command.arg("--model").arg(model);
+            }
+            if let Some(session_id) = &meta.provider_session_id {
+                command.arg("resume").arg(session_id);
+            }
+            // Prompt is written to stdin after spawn so it never appears in
+            // process listings and cannot be parsed as an option.
+            command.arg("-");
+            if let Some(dir) = account_dir {
+                command.env("CODEX_HOME", dir);
+            }
+            command
+        }
+    };
     cmd.current_dir(&meta.cwd);
-    if let Some(dir) = account_dir {
-        cmd.env("CLAUDE_CONFIG_DIR", dir);
-    }
     cmd
 }
 
@@ -73,6 +86,19 @@ pub enum ParsedLine {
     Frame(ChatStreamServerMsg),
     /// The provider's session id, discovered from an `init` line.
     Session(String),
+}
+
+fn classified_error(diagnostic: &str) -> ParsedLine {
+    let reason = omega_core::failover::classify(None, diagnostic);
+    tracing::warn!(
+        ?reason,
+        action = ?reason.next_action(),
+        provider_error = %diagnostic,
+        "provider returned an error result"
+    );
+    ParsedLine::Frame(ChatStreamServerMsg::Error {
+        message: reason.user_message().to_string(),
+    })
 }
 
 /// Parses one NDJSON stdout line from `claude -p --output-format stream-json`.
@@ -155,17 +181,96 @@ pub fn parse_line(line: &str) -> Vec<ParsedLine> {
         Some("result") => {
             let is_error = v.get("is_error").and_then(Value::as_bool).unwrap_or(false);
             if is_error {
-                let message = v
+                let diagnostic = v
                     .get("result")
                     .and_then(Value::as_str)
                     .unwrap_or("agent turn failed")
                     .to_string();
-                vec![ParsedLine::Frame(ChatStreamServerMsg::Error { message })]
+                vec![classified_error(&diagnostic)]
             } else {
                 vec![ParsedLine::Frame(ChatStreamServerMsg::TurnDone)]
             }
         }
         _ => Vec::new(),
+    }
+}
+
+/// Parse one `codex exec --json` JSONL event.
+pub fn parse_codex_line(line: &str) -> Vec<ParsedLine> {
+    let Ok(value) = serde_json::from_str::<Value>(line.trim()) else {
+        return Vec::new();
+    };
+    match value.get("type").and_then(Value::as_str) {
+        Some("thread.started") => value
+            .get("thread_id")
+            .and_then(Value::as_str)
+            .map(|id| vec![ParsedLine::Session(id.to_string())])
+            .unwrap_or_default(),
+        Some("item.started") | Some("item.completed") => {
+            let Some(item) = value.get("item") else {
+                return Vec::new();
+            };
+            let item_type = item.get("type").and_then(Value::as_str).unwrap_or("tool");
+            if value.get("type").and_then(Value::as_str) == Some("item.completed")
+                && item_type == "agent_message"
+            {
+                return item
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .map(|text| {
+                        vec![ParsedLine::Frame(
+                            ChatStreamServerMsg::AssistantMessage {
+                                text: text.to_string(),
+                            },
+                        )]
+                    })
+                    .unwrap_or_default();
+            }
+            if item_type == "error" {
+                let diagnostic = item
+                    .get("message")
+                    .or_else(|| item.get("text"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("Codex item failed");
+                return vec![classified_error(diagnostic)];
+            }
+            if matches!(
+                item_type,
+                "command_execution"
+                    | "file_change"
+                    | "mcp_tool_call"
+                    | "collab_tool_call"
+                    | "web_search"
+                    | "todo_list"
+            ) {
+                return vec![ParsedLine::Frame(ChatStreamServerMsg::ToolEvent {
+                    name: item_type.to_string(),
+                    detail: Some(compact_json(item)),
+                })];
+            }
+            Vec::new()
+        }
+        Some("turn.completed") => vec![ParsedLine::Frame(ChatStreamServerMsg::TurnDone)],
+        Some("turn.failed") | Some("error") => {
+            let diagnostic = value
+                .get("error")
+                .and_then(|error| {
+                    error
+                        .as_str()
+                        .or_else(|| error.get("message").and_then(Value::as_str))
+                })
+                .or_else(|| value.get("message").and_then(Value::as_str))
+                .unwrap_or("Codex turn failed");
+            vec![classified_error(diagnostic)]
+        }
+        _ => Vec::new(),
+    }
+}
+
+fn parse_agent_line(agent: ChatAgent, line: &str) -> Vec<ParsedLine> {
+    match agent {
+        ChatAgent::Claude => parse_line(line),
+        ChatAgent::Codex => parse_codex_line(line),
     }
 }
 
@@ -194,8 +299,6 @@ async fn kill_process_group(pid: u32) {
 /// timeout, and (via `kill_on_drop`) if this future is itself dropped/cancelled.
 /// A final `TurnDone` is always sent if the stream didn't already carry one.
 ///
-/// KNOWN LIMIT: `ChatAgent::Codex` never spawns a process — it sends an
-/// `Error` then `TurnDone` and returns `None` immediately.
 pub async fn run_turn(
     meta: &ChatMeta,
     user_text: &str,
@@ -204,20 +307,14 @@ pub async fn run_turn(
     timeout: Duration,
     tx: Sender<ChatStreamServerMsg>,
 ) -> Option<String> {
-    if meta.agent == ChatAgent::Codex {
-        let _ = tx
-            .send(ChatStreamServerMsg::Error {
-                message: "codex chat not yet supported".to_string(),
-            })
-            .await;
-        let _ = tx.send(ChatStreamServerMsg::TurnDone).await;
-        return None;
-    }
-
     let mut cmd = agent_command(meta, user_text, model, account_dir);
-    cmd.stdin(Stdio::null());
+    if meta.agent == ChatAgent::Codex {
+        cmd.stdin(Stdio::piped());
+    } else {
+        cmd.stdin(Stdio::null());
+    }
     cmd.stdout(Stdio::piped());
-    cmd.stderr(Stdio::null());
+    cmd.stderr(Stdio::piped());
     cmd.kill_on_drop(true);
     // I-3: place the child in its own process group so a nested process it
     // spawns (Claude may spawn nested tool processes) stays reachable by a
@@ -243,22 +340,47 @@ pub async fn run_turn(
     // used to reach a nested process via the whole-group kill on every kill
     // path below.
     let child_pid = child.id();
+    if meta.agent == ChatAgent::Codex {
+        let mut stdin = child.stdin.take().expect("Codex stdin was piped");
+        if stdin.write_all(user_text.as_bytes()).await.is_err()
+            || stdin.shutdown().await.is_err()
+        {
+            let _ = child.kill().await;
+            let _ = tx
+                .send(ChatStreamServerMsg::Error {
+                    message: "failed to send the turn to Codex".to_string(),
+                })
+                .await;
+            let _ = tx.send(ChatStreamServerMsg::TurnDone).await;
+            return None;
+        }
+    }
 
     let stdout = child.stdout.take().expect("stdout was piped");
+    let mut stderr = child.stderr.take().expect("stderr was piped");
+    let stderr_task = tokio::spawn(async move {
+        let mut captured = String::new();
+        let _ = stderr.read_to_string(&mut captured).await;
+        captured
+    });
     let mut lines = BufReader::new(stdout).lines();
     let mut session_id: Option<String> = None;
     let mut sent_turn_done = false;
+    let mut sent_error = false;
 
     let read_loop = async {
         loop {
             match lines.next_line().await {
                 Ok(Some(line)) => {
-                    for parsed in parse_line(&line) {
+                    for parsed in parse_agent_line(meta.agent, &line) {
                         match parsed {
                             ParsedLine::Session(id) => session_id = Some(id),
                             ParsedLine::Frame(frame) => {
                                 if matches!(frame, ChatStreamServerMsg::TurnDone) {
                                     sent_turn_done = true;
+                                }
+                                if matches!(frame, ChatStreamServerMsg::Error { .. }) {
+                                    sent_error = true;
                                 }
                                 if tx.send(frame).await.is_err() {
                                     // Receiver dropped: the caller no longer
@@ -299,7 +421,36 @@ pub async fn run_turn(
         return session_id;
     }
 
-    let _ = child.wait().await;
+    let status = child.wait().await.ok();
+    let stderr = stderr_task.await.unwrap_or_default();
+    if status.as_ref().is_some_and(|status| !status.success()) && !sent_error {
+        let detail = stderr.trim();
+        let diagnostic = if detail.is_empty() {
+            format!(
+                "agent process exited with status {}",
+                status
+                    .as_ref()
+                    .and_then(std::process::ExitStatus::code)
+                    .unwrap_or(-1)
+            )
+        } else {
+            // Provider CLIs can emit very large diagnostics. Keep the client
+            // log bounded while retaining the actionable beginning.
+            detail.chars().take(2_000).collect()
+        };
+        let reason = omega_core::failover::classify(None, &diagnostic);
+        tracing::warn!(
+            ?reason,
+            action = ?reason.next_action(),
+            provider_error = %diagnostic,
+            "headless provider turn failed"
+        );
+        let _ = tx
+            .send(ChatStreamServerMsg::Error {
+                message: reason.user_message().to_string(),
+            })
+            .await;
+    }
     if !sent_turn_done {
         let _ = tx.send(ChatStreamServerMsg::TurnDone).await;
     }
@@ -381,15 +532,55 @@ mod tests {
         assert!(args.windows(2).any(|w| w == ["--model", "claude-fable-5"]));
     }
 
-    #[test]
-    #[should_panic(expected = "agent_command is Claude-only")]
-    fn agent_command_panics_for_codex_agent() {
-        // Real (non-debug-only) assert: this must fire in every build
-        // profile, not just debug, since run_turn's own short-circuit is
-        // the primary guard and this is the belt-and-suspenders backstop.
+    #[tokio::test]
+    async fn agent_command_builds_codex_exec_json_with_stdin_prompt() {
+        let _g = LOCK.lock().await;
+        std::env::set_var("OMEGA_CODEX_CHAT_BIN", "/usr/bin/fake-codex");
         let mut meta = test_meta(None);
         meta.agent = ChatAgent::Codex;
-        let _ = agent_command(&meta, "hi", None, None);
+        let dir = std::path::PathBuf::from("/tmp/codex-account");
+        let cmd = agent_command(&meta, "secret prompt", Some("gpt-5.6-sol"), Some(&dir));
+        std::env::remove_var("OMEGA_CODEX_CHAT_BIN");
+
+        let std_cmd = cmd.as_std();
+        assert_eq!(
+            std_cmd.get_program().to_str().unwrap(),
+            "/usr/bin/fake-codex"
+        );
+        let args: Vec<&str> = std_cmd.get_args().map(|arg| arg.to_str().unwrap()).collect();
+        assert!(args.starts_with(&[
+            "exec",
+            "--skip-git-repo-check",
+            "--approve-for-me",
+            "--dangerously-bypass-hook-trust",
+            "--json",
+        ]));
+        assert!(args.windows(2).any(|pair| pair == ["--model", "gpt-5.6-sol"]));
+        assert_eq!(args.last(), Some(&"-"));
+        assert!(!args.contains(&"secret prompt"));
+        let (_, value) = std_cmd
+            .get_envs()
+            .find(|(key, _)| *key == std::ffi::OsStr::new("CODEX_HOME"))
+            .expect("CODEX_HOME should be set");
+        assert_eq!(value.unwrap().to_str(), Some("/tmp/codex-account"));
+    }
+
+    #[tokio::test]
+    async fn agent_command_resumes_codex_provider_session() {
+        let _g = LOCK.lock().await;
+        std::env::set_var("OMEGA_CODEX_CHAT_BIN", "/usr/bin/fake-codex");
+        let mut meta = test_meta(Some("0199a213-81c0-7800-8aa1-bbab2a035a53"));
+        meta.agent = ChatAgent::Codex;
+        let cmd = agent_command(&meta, "continue", None, None);
+        std::env::remove_var("OMEGA_CODEX_CHAT_BIN");
+        let args: Vec<&str> = cmd
+            .as_std()
+            .get_args()
+            .map(|arg| arg.to_str().unwrap())
+            .collect();
+        assert!(args.windows(2).any(|pair| {
+            pair == ["resume", "0199a213-81c0-7800-8aa1-bbab2a035a53"]
+        }));
     }
 
     #[tokio::test]
@@ -528,7 +719,7 @@ mod tests {
         assert_eq!(out.len(), 1);
         match out.remove(0) {
             ParsedLine::Frame(ChatStreamServerMsg::Error { message }) => {
-                assert_eq!(message, "boom");
+                assert_eq!(message, "agent turn failed; inspect local gateway logs");
             }
             _ => panic!("expected Error frame"),
         }
@@ -554,5 +745,40 @@ mod tests {
     #[test]
     fn parse_line_empty_is_ignored() {
         assert!(parse_line("").is_empty());
+    }
+
+    #[test]
+    fn parse_codex_thread_and_agent_message() {
+        let mut session = parse_codex_line(
+            r#"{"type":"thread.started","thread_id":"0199a213-81c0-7800-8aa1-bbab2a035a53"}"#,
+        );
+        assert!(matches!(
+            session.remove(0),
+            ParsedLine::Session(ref id) if id == "0199a213-81c0-7800-8aa1-bbab2a035a53"
+        ));
+
+        let mut message = parse_codex_line(
+            r#"{"type":"item.completed","item":{"id":"item_3","type":"agent_message","text":"PONG"}}"#,
+        );
+        assert!(matches!(
+            message.remove(0),
+            ParsedLine::Frame(ChatStreamServerMsg::AssistantMessage { ref text }) if text == "PONG"
+        ));
+    }
+
+    #[test]
+    fn parse_codex_tool_and_turn_completion() {
+        let tool = parse_codex_line(
+            r#"{"type":"item.completed","item":{"id":"item_1","type":"command_execution","command":"cargo test","status":"completed"}}"#,
+        );
+        assert!(matches!(
+            &tool[0],
+            ParsedLine::Frame(ChatStreamServerMsg::ToolEvent { name, detail })
+                if name == "command_execution" && detail.as_deref().is_some_and(|value| value.contains("cargo test"))
+        ));
+        assert!(matches!(
+            &parse_codex_line(r#"{"type":"turn.completed","usage":{}}"#)[0],
+            ParsedLine::Frame(ChatStreamServerMsg::TurnDone)
+        ));
     }
 }
