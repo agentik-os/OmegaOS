@@ -2117,9 +2117,11 @@ mod tests {
         // review, 2026-08-14).
         // 253 = 249 + the four that landed without bumping this constant:
         // seductive-os (985cf1e), intuitive-os (8af1ff7), identity-shift-os
-        // (242fed7) and cookbook (5cfb8a0). The count is the point — a skill
-        // that ships without appearing here is a skill nobody counted.
-        assert_eq!(catalog.skills.len(), 253);
+        // (242fed7) and cookbook (5cfb8a0).
+        // 254 = 253 + agentic-engineering-lab (this branch). The count is the
+        // point — a skill that ships without appearing here is a skill nobody
+        // counted.
+        assert_eq!(catalog.skills.len(), 254);
         let names: BTreeSet<_> = catalog
             .skills
             .iter()
@@ -2148,6 +2150,7 @@ mod tests {
         assert!(names.contains("identity-shift-os"));
         assert!(names.contains("journal-os"));
         assert!(names.contains("ai-logic-os"));
+        assert!(names.contains("agentic-engineering-lab"));
         assert!(catalog
             .skills
             .iter()

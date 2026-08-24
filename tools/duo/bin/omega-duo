@@ -688,10 +688,9 @@ function codexArgv(mode: string, degraded = false, preflight = false): string[] 
     // single file. Bypassing matches how Claude already runs here
     // (--dangerously-skip-permissions): same trust boundary, same box, the
     // operator owns it. The legacy env name is retained for compatibility;
-    // Codex >=0.147 removed --full-auto, and --approve-for-me now supplies the
-    // workspace-write + automatic-review preset by itself.
+    // Codex >=0.147: never pair --sandbox with --approve-for-me (0.149 dies).
     if (process.env.DUO_CODEX_FULL_AUTO === "1") {
-      return [...base, "--approve-for-me", "--dangerously-bypass-hook-trust", "-"];
+      return [...base, "--sandbox", "workspace-write", "--ask-for-approval", "never", "--dangerously-bypass-hook-trust", "-"];
     }
     return [...base, "--dangerously-bypass-approvals-and-sandbox", "-"];
   }

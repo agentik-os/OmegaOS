@@ -225,6 +225,36 @@ fn apply_config_value(cfg: &mut ProvidersConfig, key: &str, value: &str) -> Resu
         ("pi", "api_key") => cfg.pi.api_key = value.to_string(),
         ("glm", "model") => cfg.glm.model = value.to_string(),
         ("glm", "api_key") => cfg.glm.api_key = value.to_string(),
+        ("glm", "dangerously_skip_permissions") => {
+            cfg.glm.dangerously_skip_permissions = value.parse().map_err(|_| {
+                "dangerously_skip_permissions must be 'true' or 'false'".to_string()
+            })?;
+        }
+        ("codex", "ask_for_approval_never") | ("codex", "yolo") => {
+            cfg.codex.ask_for_approval_never = value
+                .parse()
+                .map_err(|_| "ask_for_approval_never must be 'true' or 'false'".to_string())?;
+        }
+        ("hermes", "yolo") => {
+            cfg.hermes.yolo = value
+                .parse()
+                .map_err(|_| "yolo must be 'true' or 'false'".to_string())?;
+        }
+        ("gemini", "yolo") => {
+            cfg.gemini.yolo = value
+                .parse()
+                .map_err(|_| "yolo must be 'true' or 'false'".to_string())?;
+        }
+        ("kimi", "auto") | ("kimi", "yolo") => {
+            cfg.kimi.auto = value
+                .parse()
+                .map_err(|_| "auto must be 'true' or 'false'".to_string())?;
+        }
+        ("pi", "approve") | ("pi", "yolo") => {
+            cfg.pi.approve = value
+                .parse()
+                .map_err(|_| "approve must be 'true' or 'false'".to_string())?;
+        }
         ("hermes", "provider") => cfg.hermes.provider = value.to_string(),
         ("hermes", "model") => cfg.hermes.model = value.to_string(),
         ("hermes", "api_key") => cfg.hermes.api_key = value.to_string(),

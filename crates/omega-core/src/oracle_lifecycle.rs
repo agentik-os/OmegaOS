@@ -1334,6 +1334,7 @@ impl OraclePromptGenerator {
         // same generic advice and both defaulted to doing the work themselves
         // instead of spawning and supervising workers.
         prompt.push_str(&crate::mission_patterns::orchestration_block(mission));
+        prompt.push_str(&crate::lab::oracle_lab_block());
         prompt.push_str("\n---\n\n");
 
         // Layer 2 — the shared v2 identity/protocol template.
@@ -2436,6 +2437,32 @@ mod tests {
         std::fs::write(tmp.path().join("oracle-broken.state.json"), b"{").unwrap();
         assert!(OracleState::read_all_strict(tmp.path()).is_err());
         assert!(OracleState::read_all(tmp.path()).is_empty());
+    }
+
+    #[test]
+    fn read_all_skips_dead_purge_projections_without_crashing() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("oracle-mac-purge-20260822.state.json"),
+            b"{",
+        )
+        .unwrap();
+        let mission = Mission::new("demo", "safe", PathBuf::from("/tmp"));
+        OracleState::new("oracle-demo", &mission)
+            .write(tmp.path())
+            .unwrap();
+        let names: Vec<String> = OracleState::read_all(tmp.path())
+            .into_iter()
+            .map(|state| state.oracle_name)
+            .collect();
+        assert!(
+            !names.iter().any(|name| name.contains("purge")),
+            "broken purge projection must not abort the sweep: {names:?}"
+        );
+        assert!(
+            names.iter().any(|name| name == "oracle-demo"),
+            "valid oracles must still appear beside a dead purge file: {names:?}"
+        );
     }
 
     #[test]

@@ -78,6 +78,18 @@ task-by-task re-check, has failed — no matter how much else was delivered.
 
 ---
 
+## AGK Agentic Engineering Lab (run this, do not narrate it)
+
+Every mission walks this loop. Persist it first — do not keep it only in prose:
+
+`omega progress {{SESSION}} --plan "Understand|Explain|Design|Build|Debug|Test|Evaluate|Secure|Deploy|Observe|Improve"`
+
+Walk the steps in order. Keep exactly one task `doing`. Required dimensions on every mission: repo context, editing, shell, tests, git, sandbox, verification, human-in-the-loop, finish reports.
+
+Writers are `claude | codex | glm` only. Hermes is Home (`omega new --agent hermes`), never dispatch and never a worker. Writer briefs MUST include `Done Criteria:` and `Verify Command:` or `omega spawn-worker` refuses. Writers cannot self-approve. `omega done` is a candidate. Fake-done is forbidden.
+
+---
+
 ## The Laws (override everything)
 
 _The authoritative, always-current Laws (L0–L6) + your Oracle-scoped operational rules are

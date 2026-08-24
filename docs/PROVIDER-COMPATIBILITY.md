@@ -12,12 +12,12 @@ omega install <provider> --force
 | Provider | Minimum tested CLI | Omega launch contract |
 |---|---:|---|
 | Claude Code | 2.1.219 | interactive TTY, `--permission-mode auto` |
-| Codex | 0.147.0 | `--approve-for-me`, hook-trust bypass, no conflicting `--sandbox` |
-| Gemini CLI | 0.31.0 | `--prompt-interactive`, Enterprise/API-key accounts |
+| Codex | 0.147.0 | `--sandbox workspace-write --ask-for-approval never` (never pair `--sandbox` with `--approve-for-me`) |
+| Gemini CLI | 0.31.0 | `--prompt-interactive --yolo`, Enterprise/API-key accounts |
 | Antigravity (`agy`) | 1.1.8 | native Google auth, prompt-interactive |
-| Pi / OpenRouter | 0.84.3 | explicit provider/model and `--` prompt delimiter |
-| Hermes | 0.20.0 | `hermes chat`; `-q` for a dispatched one-shot |
-| Kimi Code | 0.38.0 | `--prompt` without the incompatible `--auto` flag |
+| Pi / OpenRouter | 0.84.3 | explicit provider/model, `--approve` (no tool-yolo on official CLI) |
+| Hermes | 0.20.0 | Home TUI: `hermes chat --yolo`. Never `-q` in a pane. Never `dispatch --agent hermes`. |
+| Kimi Code | 0.38.0 | `--auto` on interactive and `--prompt` launches |
 | GLM | Claude Code 2.1.219 | Claude adapter pointed at Z.AI Anthropic endpoint |
 
 Current catalog defaults are `gpt-5.6` for Codex, `auto` for Gemini CLI,
@@ -53,8 +53,13 @@ or symlink those credentials.
 omega config activate codex gpt-5.6
 omega config activate claude opus
 omega config activate antigravity       # native account default
-omega dispatch MyProject "mission" --agent hermes
+omega new home --agent hermes
+omega dispatch MyProject "mission" --agent codex
 ```
+
+Hermes is Home. Cloud (Cursor Cloud Agent) is the Cursor-side writer for
+OmegaOS itself — it is not `omega dispatch`. See
+`docs/ADR-lab-three-backends.md`.
 
 The active global selection is mirrored in
 `~/.omega/state/active-model.json`. A mission-level `--agent` override takes

@@ -172,6 +172,41 @@ fn session_authority_lock(state_dir: &Path, session: &str) -> Result<std::fs::Fi
     crate::scope::lock_private_state_file(state_dir, &format!(".session-authority-{session}.lock"))
 }
 
+/// Expand `~` / `~/…` the way the operator typed `--dir ~/Desktop`.
+///
+/// A literal `~/Desktop` cwd is not a real folder. Codex then splash-exits
+/// and the pane looks like bash. TUI New Codex never passed a raw tilde.
+/// Codex itself is fine when launched from the Omega menu.
+pub fn expand_user_path(raw: &str) -> PathBuf {
+    let trimmed = raw.trim();
+    if trimmed == "~" {
+        return dirs::home_dir().unwrap_or_else(|| PathBuf::from(trimmed));
+    }
+    if let Some(rest) = trimmed.strip_prefix("~/") {
+        if let Some(home) = dirs::home_dir() {
+            return home.join(rest);
+        }
+    }
+    PathBuf::from(trimmed)
+}
+
+/// Resolve `--dir` for `omega new`: omit (`None` = same as TUI, rmux cwd),
+/// expand `~`, and refuse a path that is not an existing directory.
+pub fn resolve_session_working_dir(raw: Option<&str>) -> Result<Option<PathBuf>> {
+    let Some(raw) = raw else {
+        return Ok(None);
+    };
+    let expanded = expand_user_path(raw);
+    if !expanded.is_dir() {
+        anyhow::bail!(
+            "--dir '{}' does not exist (expanded: {}). Create it or pass a real directory.",
+            raw,
+            expanded.display()
+        );
+    }
+    Ok(Some(expanded))
+}
+
 /// Slugify an arbitrary string into a safe rmux session name.
 ///
 /// rmux keys kill/rename/capture on the session name; spaces, non-ASCII, and
@@ -365,10 +400,18 @@ fn record_session_provider(name: &str, agent: Agent) -> Result<()> {
     });
     let bytes = serde_json::to_vec_pretty(&payload).context("serializing session provider")?;
     crate::config::atomic_write_private(&path, &bytes)
-        .with_context(|| format!("recording provider for session {name}"))
+        .with_context(|| format!("recording provider for session {name}"))?;
+    // Same chokepoint as provider provenance: TUI New Codex and `omega new
+    // --agent` both land here. Launch starts `running`; observe marks `failed`
+    // if the agent dies to bash or the pane disappears.
+    let state_dir = crate::config::omega_dir().join("state");
+    if let Err(error) = crate::session_health::record_launch(&state_dir, name, agent.name()) {
+        tracing::warn!(session = %name, error = %error, "failed to record session launch health");
+    }
+    Ok(())
 }
 
-pub(crate) fn read_session_provider(name: &str) -> Option<String> {
+pub fn read_session_provider(name: &str) -> Option<String> {
     let payload: serde_json::Value =
         serde_json::from_slice(&std::fs::read(session_provider_path(name)).ok()?).ok()?;
     let recorded_session = payload.get("session")?.as_str()?;
@@ -542,10 +585,13 @@ impl SessionManager {
 
         if let Some(cmd) = command {
             let mut process = ProcessSpec::shell(cmd);
-            if !environment.is_empty() {
+            let mut env = environment.to_vec();
+            if !env.iter().any(|(key, _)| key == "OMEGA_SESSION") {
+                env.push(("OMEGA_SESSION".to_string(), safe.clone()));
+            }
+            if !env.is_empty() {
                 process.environment = Some(
-                    environment
-                        .iter()
+                    env.iter()
                         .map(|(key, value)| format!("{key}={value}"))
                         .collect(),
                 );
@@ -889,23 +935,24 @@ impl SessionManager {
     }
 
     pub async fn send_text(&self, session_name: &str, text: &str) -> Result<()> {
-        // Two hot RPCs (send_text + send_key Enter). Use the cached pane and
-        // a single retry on stale-cache errors so a kill+recreate of the
-        // same name self-heals on the next send.
+        // Type, then SUBMIT. Codex/Claude/Hermes composers often absorb a
+        // lone Enter as a newline; C-m is the CR the TUI treats as send.
+        // Cached pane + one stale-cache retry so kill+recreate self-heals.
         let pane = self.pane_for(session_name).await?;
         match pane.send_text(text).await {
-            Ok(()) => {}
+            Ok(()) => {
+                submit_composer(&pane).await?;
+                Ok(())
+            }
             Err(e) if is_pane_stale(&e) => {
                 self.invalidate_pane(session_name).await;
                 let pane = self.pane_for(session_name).await?;
                 pane.send_text(text).await?;
-                pane.send_key("Enter").await?;
-                return Ok(());
+                submit_composer(&pane).await?;
+                Ok(())
             }
-            Err(e) => return Err(e.into()),
+            Err(e) => Err(e.into()),
         }
-        pane.send_key("Enter").await?;
-        Ok(())
     }
 
     /// Raw text send — no auto-Enter. Used by the TUI interactive preview
@@ -1010,12 +1057,12 @@ impl SessionManager {
     pub async fn send_paste_then_submit(&self, session_name: &str, text: &str) -> Result<()> {
         self.send_paste_block(session_name, text).await?;
         let pane = self.pane_for(session_name).await?;
-        match pane.send_key("Enter").await {
+        match submit_composer(&pane).await {
             Ok(()) => Ok(()),
             Err(e) if is_pane_stale(&e) => {
                 self.invalidate_pane(session_name).await;
                 let pane = self.pane_for(session_name).await?;
-                pane.send_key("Enter").await?;
+                submit_composer(&pane).await?;
                 Ok(())
             }
             Err(e) => Err(e.into()),
@@ -1072,15 +1119,24 @@ impl SessionManager {
     /// (the snapshot itself), not three.
     pub async fn capture_pane(&self, session_name: &str) -> Result<String> {
         let pane = self.pane_for(session_name).await?;
-        match pane.snapshot().await {
-            Ok(snapshot) => Ok(snapshot.visible_text()),
+        let visible = match pane.snapshot().await {
+            Ok(snapshot) => snapshot.visible_text(),
             Err(e) if is_pane_stale(&e) => {
                 self.invalidate_pane(session_name).await;
                 let pane = self.pane_for(session_name).await?;
-                let snapshot = pane.snapshot().await?;
-                Ok(snapshot.visible_text())
+                pane.snapshot().await?.visible_text()
             }
-            Err(e) => Err(e.into()),
+            Err(e) => return Err(e.into()),
+        };
+        if !visible.trim().is_empty() {
+            return Ok(visible);
+        }
+        // Alt-screen / splash frames can snapshot empty while the agent is
+        // live. Scrollback still has the TUI — prefer that over a blank
+        // `omega capture` while Codex/Claude/Hermes are running.
+        match self.capture_pane_history(session_name, 200).await {
+            Ok(history) if !history.trim().is_empty() => Ok(history),
+            _ => Ok(visible),
         }
     }
 
@@ -1449,6 +1505,14 @@ fn is_pane_stale(err: &rmux_sdk::RmuxError) -> bool {
     )
 }
 
+/// Submit a typed composer: Enter, then C-m. Codex/Claude/Hermes often treat
+/// a lone Enter as a newline; the CR is what actually sends.
+async fn submit_composer(pane: &Pane) -> std::result::Result<(), rmux_sdk::RmuxError> {
+    pane.send_key("Enter").await?;
+    pane.send_key("C-m").await?;
+    Ok(())
+}
+
 /// Parse `capture-pane -e` output into styled rows PLUS the stripped plain
 /// text, in one pass.
 ///
@@ -1644,6 +1708,49 @@ mod sanitize_tests {
     use super::{resolve_agent_command, sanitize_session_name as s};
     use super::{EnsureSessionPolicy, MAX_SESSION_NAME_LEN, TYPED_AGENT_SESSION_POLICY};
     use crate::agents::Agent;
+    use std::path::PathBuf;
+
+    #[test]
+    fn expand_user_path_resolves_tilde_home() {
+        let home = dirs::home_dir().expect("home");
+        assert_eq!(crate::session::expand_user_path("~"), home);
+        assert_eq!(
+            crate::session::expand_user_path("~/Desktop"),
+            home.join("Desktop")
+        );
+        assert_eq!(
+            crate::session::expand_user_path("/abs/project"),
+            PathBuf::from("/abs/project")
+        );
+        assert_ne!(
+            crate::session::expand_user_path("~/Desktop").as_os_str(),
+            std::ffi::OsStr::new("~/Desktop"),
+            "omega new --dir ~/Desktop must not chdir into a literal tilde path"
+        );
+    }
+
+    #[test]
+    fn resolve_session_working_dir_matches_tui_when_omitted() {
+        assert!(crate::session::resolve_session_working_dir(None)
+            .unwrap()
+            .is_none());
+        let tmp = tempfile::TempDir::new().unwrap();
+        let got = crate::session::resolve_session_working_dir(tmp.path().to_str()).unwrap();
+        assert_eq!(got.as_deref(), Some(tmp.path()));
+        let missing = tmp.path().join("not-a-dir");
+        let err = crate::session::resolve_session_working_dir(missing.to_str())
+            .expect_err("missing --dir must fail before spawn");
+        assert!(
+            err.to_string().contains("does not exist"),
+            "missing dir error: {err}"
+        );
+        let home = dirs::home_dir().expect("home");
+        assert_eq!(
+            crate::session::resolve_session_working_dir(Some("~")).unwrap(),
+            Some(home),
+            "`--dir ~` must expand to $HOME, not a literal tilde"
+        );
+    }
 
     #[test]
     fn clean_names_unchanged() {

@@ -454,7 +454,8 @@ enum Commands {
         /// Files owned by this worker (scope-claim)
         #[arg(long, value_delimiter = ',')]
         files: Option<Vec<String>>,
-        /// Bypass the prompt-completeness gate (downgrade reject to a warning)
+        /// Accepted for compatibility. Does not skip R-RUBRIC (Done Criteria +
+        /// Verify Command must still be present).
         #[arg(long)]
         force: bool,
         /// Isolate the worker in its own git worktree (independent HEAD/working-tree
@@ -3303,6 +3304,43 @@ async fn run_tui_loop(
     Ok(())
 }
 
+/// After `omega new --agent`, fail JSON if the pane is already bash / gone.
+/// Same launcher as TUI New Codex/Claude/Hermes (`try_launch`).
+async fn observe_new_agent_session(
+    mgr: &SessionManager,
+    state_dir: &std::path::Path,
+    name: &str,
+    provider: &str,
+) -> Result<()> {
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    let live = mgr
+        .list_sessions()
+        .await
+        .ok()
+        .is_some_and(|sessions| sessions.iter().any(|session| session.name == name));
+    let pane = if live {
+        mgr.capture_pane(name).await.ok()
+    } else {
+        None
+    };
+    let health =
+        omega_core::session_health::observe(state_dir, name, provider, live, pane.as_deref())?;
+    if health.is_failed() {
+        println!("{}", serde_json::to_string_pretty(&health)?);
+        anyhow::bail!(
+            "{}",
+            serde_json::json!({
+                "error": "agent_exited",
+                "session": name,
+                "provider": provider,
+                "reason": health.reason,
+                "message": "agent pane died; session is failed, not a silent bash"
+            })
+        );
+    }
+    Ok(())
+}
+
 async fn cmd_new(
     name: &str,
     dir: Option<&str>,
@@ -3314,8 +3352,16 @@ async fn cmd_new(
     let config = OmegaConfig::load().context("cannot load OmegaOS config for session creation")?;
     config.ensure_dirs()?;
 
-    let workspace = match dir {
-        Some(dir) => std::path::PathBuf::from(dir),
+    // Same cwd contract as TUI New Codex/Claude: omit --dir → None (rmux
+    // inherits the process cwd). `--dir ~/Desktop` must expand; a literal
+    // tilde path is how Codex splash-exits into bash. Codex itself is not
+    // broken — Gareth's menu launch stays in the TUI.
+    let working_dir = omega_core::session::resolve_session_working_dir(dir)?;
+    let dir_arg = working_dir
+        .as_ref()
+        .map(|path| path.to_string_lossy().into_owned());
+    let workspace = match working_dir {
+        Some(path) => path,
         None => std::env::current_dir().context("resolving session workspace")?,
     };
     let scope_claim = match &files {
@@ -3327,21 +3373,29 @@ async fn cmd_new(
         )?),
         None => None,
     };
-    let dispatch_authority = omega_core::session::SessionDispatchAuthority::generate(
-        name,
-        scope_claim
-            .as_ref()
-            .and_then(|claim| claim.claim_id.as_deref()),
-    );
-    let dispatch_authority = match dispatch_authority {
-        Ok(authority) => authority,
-        Err(error) => {
-            if let Some(claim) = &scope_claim {
-                omega_core::scope::ScopeClaim::release_exact(&config.state_dir, claim)
-                    .context("rolling back scope after dispatch authority preparation failed")?;
+    // Dispatch-authority env is for `--cmd` (and worker/oracle spawn). The
+    // TUI New-agent path never injects it; Home `--agent` must match that.
+    let dispatch_authority = if cmd.is_some() {
+        let prepared = omega_core::session::SessionDispatchAuthority::generate(
+            name,
+            scope_claim
+                .as_ref()
+                .and_then(|claim| claim.claim_id.as_deref()),
+        );
+        match prepared {
+            Ok(authority) => Some(authority),
+            Err(error) => {
+                if let Some(claim) = &scope_claim {
+                    omega_core::scope::ScopeClaim::release_exact(&config.state_dir, claim)
+                        .context(
+                            "rolling back scope after dispatch authority preparation failed",
+                        )?;
+                }
+                return Err(error).context("preparing immutable session dispatch authority");
             }
-            return Err(error).context("preparing immutable session dispatch authority");
         }
+    } else {
+        None
     };
 
     let creation: Result<()> = async {
@@ -3349,13 +3403,16 @@ async fn cmd_new(
 
         // Priority: explicit --cmd overrides --agent
         if let Some(explicit_cmd) = cmd {
+            let authority = dispatch_authority.as_ref().ok_or_else(|| {
+                anyhow::anyhow!("explicit --cmd always prepares session dispatch authority")
+            })?;
             let _session = mgr
                 .create_command_session_create_only_with_authority(
                     &config.state_dir,
                     name,
-                    dir,
+                    dir_arg.as_deref(),
                     explicit_cmd,
-                    &dispatch_authority,
+                    authority,
                 )
                 .await?;
         } else if let Some(agent_name) = agent {
@@ -3371,18 +3428,12 @@ async fn cmd_new(
                     agent_enum.display_name()
                 );
             }
-            let launch = agent_enum.try_launch(prompt)?;
+            // Same entry as TUI `Action::CreateSessionAutoName`.
             let _session = mgr
-                .create_agent_session_create_only_with_authority(
-                    &config.state_dir,
-                    name,
-                    dir,
-                    agent_enum,
-                    launch,
-                    &dispatch_authority,
-                )
+                .create_session_with_agent(name, dir_arg.as_deref(), agent_enum, prompt)
                 .await?;
             println!("Agent: {}", agent_enum.display_name());
+            observe_new_agent_session(&mgr, &config.state_dir, name, agent_enum.name()).await?;
         } else {
             let default_agent = omega_core::agents::Agent::from_name(&config.agent_command)
                 .ok_or_else(|| {
@@ -3391,18 +3442,17 @@ async fn cmd_new(
                         config.agent_command
                     )
                 })?;
-            let launch = default_agent.try_launch(prompt)?;
+            if !default_agent.is_available() {
+                eprintln!(
+                    "Warning: {} not detected on this system. Session will be created anyway.",
+                    default_agent.display_name()
+                );
+            }
             let _session = mgr
-                .create_agent_session_create_only_with_authority(
-                    &config.state_dir,
-                    name,
-                    dir,
-                    default_agent,
-                    launch,
-                    &dispatch_authority,
-                )
+                .create_session_with_agent(name, dir_arg.as_deref(), default_agent, prompt)
                 .await?;
             println!("Agent: {} (OmegaOS default)", default_agent.display_name());
+            observe_new_agent_session(&mgr, &config.state_dir, name, default_agent.name()).await?;
         }
         Ok(())
     }
@@ -4994,8 +5044,12 @@ fn get_config_value(cfg: &omega_core::providers::ProvidersConfig, key: &str) -> 
         ("codex", "api_key") => redacted_secret(&cfg.codex.api_key),
         ("codex", "base_url") => cfg.codex.base_url.clone(),
         ("codex", "bypass_hook_trust") => cfg.codex.bypass_hook_trust.to_string(),
+        ("codex", "ask_for_approval_never") | ("codex", "yolo") => {
+            cfg.codex.ask_for_approval_never.to_string()
+        }
         ("gemini", "model") => cfg.gemini.model.clone(),
         ("gemini", "api_key") => redacted_secret(&cfg.gemini.api_key),
+        ("gemini", "yolo") => cfg.gemini.yolo.to_string(),
         ("antigravity", "model") => cfg.antigravity.model.clone(),
         ("antigravity", "effort") => cfg.antigravity.effort.clone(),
         ("antigravity", "dangerously_skip_permissions") => {
@@ -5004,18 +5058,22 @@ fn get_config_value(cfg: &omega_core::providers::ProvidersConfig, key: &str) -> 
         ("pi", "provider") => cfg.pi.provider.clone(),
         ("pi", "model") => cfg.pi.model.clone(),
         ("pi", "api_key") => redacted_secret(&cfg.pi.api_key),
+        ("pi", "approve") | ("pi", "yolo") => cfg.pi.approve.to_string(),
         ("glm", "model") => cfg.glm.model.clone(),
         ("glm", "api_key") => redacted_secret(&cfg.glm.api_key),
+        ("glm", "dangerously_skip_permissions") => cfg.glm.dangerously_skip_permissions.to_string(),
         ("openrouter", "model") => cfg.openrouter.model.clone(),
         ("openrouter", "api_key") => redacted_secret(&cfg.openrouter.api_key),
         ("openrouter", "base_url") => cfg.openrouter.base_url.clone(),
         ("hermes", "provider") => cfg.hermes.provider.clone(),
         ("hermes", "model") => cfg.hermes.model.clone(),
         ("hermes", "api_key") => redacted_secret(&cfg.hermes.api_key),
+        ("hermes", "yolo") => cfg.hermes.yolo.to_string(),
         ("kimi", "model") => cfg.kimi.model.clone(),
         ("kimi", "api_key") => redacted_secret(&cfg.kimi.api_key),
         ("kimi", "base_url") => cfg.kimi.base_url.clone(),
         ("kimi", "provider_type") => cfg.kimi.provider_type.clone(),
+        ("kimi", "auto") | ("kimi", "yolo") => cfg.kimi.auto.to_string(),
         _ => anyhow::bail!("Unknown key: {}", key),
     };
     Ok(s)
@@ -5046,8 +5104,18 @@ fn set_config_value(
                 .parse::<bool>()
                 .with_context(|| format!("invalid boolean {value:?}; expected true or false"))?;
         }
+        ("codex", "ask_for_approval_never") | ("codex", "yolo") => {
+            cfg.codex.ask_for_approval_never = value
+                .parse::<bool>()
+                .with_context(|| format!("invalid boolean {value:?}; expected true or false"))?;
+        }
         ("gemini", "model") => cfg.gemini.model = value.to_string(),
         ("gemini", "api_key") => cfg.gemini.api_key = value.to_string(),
+        ("gemini", "yolo") => {
+            cfg.gemini.yolo = value
+                .parse::<bool>()
+                .with_context(|| format!("invalid boolean {value:?}; expected true or false"))?;
+        }
         ("antigravity", "model") => cfg.antigravity.model = value.to_string(),
         ("antigravity", "effort") => cfg.antigravity.effort = value.to_string(),
         ("antigravity", "dangerously_skip_permissions") => {
@@ -5058,18 +5126,38 @@ fn set_config_value(
         ("pi", "provider") => cfg.pi.provider = value.to_string(),
         ("pi", "model") => cfg.pi.model = value.to_string(),
         ("pi", "api_key") => cfg.pi.api_key = value.to_string(),
+        ("pi", "approve") | ("pi", "yolo") => {
+            cfg.pi.approve = value
+                .parse::<bool>()
+                .with_context(|| format!("invalid boolean {value:?}; expected true or false"))?;
+        }
         ("glm", "model") => cfg.glm.model = value.to_string(),
         ("glm", "api_key") => cfg.glm.api_key = value.to_string(),
+        ("glm", "dangerously_skip_permissions") => {
+            cfg.glm.dangerously_skip_permissions = value
+                .parse::<bool>()
+                .with_context(|| format!("invalid boolean {value:?}; expected true or false"))?;
+        }
         ("openrouter", "model") => cfg.openrouter.model = value.to_string(),
         ("openrouter", "api_key") => cfg.openrouter.api_key = value.to_string(),
         ("openrouter", "base_url") => cfg.openrouter.base_url = value.to_string(),
         ("hermes", "provider") => cfg.hermes.provider = value.to_string(),
         ("hermes", "model") => cfg.hermes.model = value.to_string(),
         ("hermes", "api_key") => cfg.hermes.api_key = value.to_string(),
+        ("hermes", "yolo") => {
+            cfg.hermes.yolo = value
+                .parse::<bool>()
+                .with_context(|| format!("invalid boolean {value:?}; expected true or false"))?;
+        }
         ("kimi", "model") => cfg.kimi.model = value.to_string(),
         ("kimi", "api_key") => cfg.kimi.api_key = value.to_string(),
         ("kimi", "base_url") => cfg.kimi.base_url = value.to_string(),
         ("kimi", "provider_type") => cfg.kimi.provider_type = value.to_string(),
+        ("kimi", "auto") | ("kimi", "yolo") => {
+            cfg.kimi.auto = value
+                .parse::<bool>()
+                .with_context(|| format!("invalid boolean {value:?}; expected true or false"))?;
+        }
         _ => anyhow::bail!("Unknown key: {}", key),
     }
     Ok(())
@@ -7763,43 +7851,12 @@ struct V3WorkerAttempt {
     plan_revision: u64,
 }
 
+#[cfg(test)]
 fn declared_verify_command(prompt: &str) -> Option<Vec<String>> {
-    let lines: Vec<&str> = prompt.lines().collect();
-    for (index, line) in lines.iter().enumerate() {
-        let lower = line.to_lowercase();
-        let marker = lower
-            .find("verify command:")
-            .or_else(|| lower.find("verify-command:"));
-        let Some(marker) = marker else {
-            continue;
-        };
-        let colon = line[marker..].find(':').map(|offset| marker + offset)?;
-        let mut command = line[colon + 1..].trim();
-        if command.is_empty() {
-            command = lines
-                .iter()
-                .skip(index + 1)
-                .map(|candidate| candidate.trim())
-                .find(|candidate| !candidate.is_empty() && !candidate.starts_with("```"))?;
-        }
-        command = command
-            .trim_start_matches("- ")
-            .trim()
-            .trim_matches('`')
-            .trim();
-        if command.is_empty()
-            || command
-                .chars()
-                .any(|ch| matches!(ch, ';' | '&' | '|' | '<' | '>' | '`' | '$' | '\n' | '\r'))
-        {
-            return None;
-        }
-        let argv = shlex::split(command)?;
-        if !argv.is_empty() {
-            return Some(argv);
-        }
+    match omega_core::worker_spawn::parse_verify_contract(prompt)? {
+        omega_core::worker_spawn::VerifySpec::Command { argv } => Some(argv),
+        omega_core::worker_spawn::VerifySpec::FileExists { path } => Some(vec![path]),
     }
-    None
 }
 
 fn declared_done_criteria(prompt: &str) -> Vec<String> {
@@ -7849,28 +7906,44 @@ fn prepare_v3_worker_attempt(
     }
     let ledger = omega_core::mission_ledger::MissionLedger::open(&ledger_path)?;
     let mut projection = state.require_ledger_authority(&ledger)?;
-    let argv = declared_verify_command(prompt).ok_or_else(|| {
+    // Record the oracle-authored Verify Command. Do NOT execute it here —
+    // the file does not exist yet (Gareth: `(eval):1: no such file or
+    // directory: CLAUDE_OK.txt` at spawn).
+    let spec = omega_core::worker_spawn::parse_verify_contract(prompt).ok_or_else(|| {
         anyhow::anyhow!(
-            "worker brief has no safe, directly executable `Verify Command:`; \
-             shell operators are not accepted in immutable verifier contracts"
+            "worker brief has no safe `Verify Command:` (shell operators are not accepted). \
+             The oracle must fill R-RUBRIC when it writes the prompt; do not ask a human for --force."
         )
     })?;
+    let verifier_check = match spec {
+        omega_core::worker_spawn::VerifySpec::FileExists { path } => {
+            omega_core::mission::VerifierCheck {
+                schema_version: omega_core::mission::CONTRACT_SCHEMA_VERSION,
+                check_id: format!("verify-{task}"),
+                kind: omega_core::mission::VerifierCheckKind::FileExists { path },
+                timeout_secs: 120,
+            }
+        }
+        omega_core::worker_spawn::VerifySpec::Command { argv } => {
+            omega_core::mission::VerifierCheck {
+                schema_version: omega_core::mission::CONTRACT_SCHEMA_VERSION,
+                check_id: format!("verify-{task}"),
+                kind: omega_core::mission::VerifierCheckKind::Command {
+                    argv,
+                    cwd: Some(work_dir.to_string()),
+                    expected_exit_code: 0,
+                },
+                timeout_secs: 120,
+            }
+        }
+    };
     let task_contract = omega_core::mission::TaskContract {
         schema_version: omega_core::mission::CONTRACT_SCHEMA_VERSION,
         task_id: omega_core::mission::TaskId::new(task),
         name: task.to_string(),
         prompt: prompt.to_string(),
         acceptance_criteria: declared_done_criteria(prompt),
-        verifier_checks: vec![omega_core::mission::VerifierCheck {
-            schema_version: omega_core::mission::CONTRACT_SCHEMA_VERSION,
-            check_id: format!("verify-{task}"),
-            kind: omega_core::mission::VerifierCheckKind::Command {
-                argv,
-                cwd: None,
-                expected_exit_code: 0,
-            },
-            timeout_secs: 120,
-        }],
+        verifier_checks: vec![verifier_check],
         required_capabilities: vec!["code_editing".to_string(), "tool_calling".to_string()],
         scope: files.to_vec(),
         risk: omega_core::routing::classify_mission(prompt).risk,
@@ -8315,6 +8388,36 @@ fn worker_authority_rollback_error(
     )
 }
 
+/// Same project-path SSOT `dispatch_oracle_with_agent` uses: config, then
+/// `~/.omega/projects.json`, then `$HOME` discovery. A worker named
+/// `<project>-worker-<task>` must start in that project even when the parent
+/// pane's cwd is `$HOME`.
+fn registered_project_working_dir(
+    config: &OmegaConfig,
+    project: &str,
+) -> Option<std::path::PathBuf> {
+    let lower = project.to_lowercase();
+    if let Some(path) = config.find_project(project).map(|pc| pc.path.clone()) {
+        if path.is_dir() {
+            return Some(path);
+        }
+    }
+    let from_registry = omega_core::project_manager::ProjectRegistry::load()
+        .projects
+        .into_iter()
+        .find(|item| item.name.to_lowercase() == lower)
+        .map(|item| item.path);
+    if let Some(path) = from_registry.filter(|path| path.is_dir()) {
+        return Some(path);
+    }
+    let home = dirs::home_dir()?;
+    omega_core::projects::discover(&home)
+        .into_iter()
+        .find(|item| item.name.to_lowercase() == lower)
+        .map(|item| item.path)
+        .filter(|path| path.is_dir())
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn cmd_spawn_worker(
     task: &str,
@@ -8340,6 +8443,12 @@ async fn cmd_spawn_worker(
     // oracle. Resolve the real name by asking rmux to expand #{session_name} for
     // our pane ($RMUX_PANE).
     let oracle_session = current_session_name().filter(|s| s.starts_with("oracle-"));
+    let prompt_owned = if oracle_session.is_some() {
+        omega_core::lab::ensure_oracle_worker_rubric(prompt, task)
+    } else {
+        prompt.to_string()
+    };
+    let prompt = prompt_owned.as_str();
 
     let project_name = match project {
         Some(p) => Some(p.to_string()),
@@ -8348,7 +8457,27 @@ async fn cmd_spawn_worker(
             .and_then(|s| omega_core::session::OmegaSession::classify(s).project),
     };
 
-    let mut work_dir = dir.unwrap_or(".").to_string();
+    // Never pass `.` to rmux — the daemon cwd is often $HOME, which is how
+    // CLAUDE_OK.txt landed in /Users/hacker instead of the project.
+    let oracle_working_dir = oracle_session.as_deref().and_then(|name| {
+        omega_core::oracle_lifecycle::OracleState::read(&config.state_dir, name)
+            .ok()
+            .flatten()
+            .map(|state| state.working_dir)
+    });
+    let process_cwd = std::env::current_dir().context("resolving spawn-worker process cwd")?;
+    let registered_project_dir = project_name
+        .as_deref()
+        .and_then(|name| registered_project_working_dir(&config, name));
+    let home_dir = dirs::home_dir();
+    let resolved_work_dir = omega_core::worker_spawn::resolve_worker_working_dir(
+        dir,
+        oracle_working_dir.as_deref(),
+        registered_project_dir.as_deref(),
+        &process_cwd,
+        home_dir.as_deref(),
+    )?;
+    let mut work_dir = resolved_work_dir.to_string_lossy().into_owned();
     let source_work_dir = std::path::PathBuf::from(&work_dir);
     let mut created_worktree = None;
     let worker_name = omega_core::session::sanitize_session_name(&match &project_name {
@@ -8371,21 +8500,11 @@ async fn cmd_spawn_worker(
             (true, false) => "Verify Command",
             (true, true) => unreachable!(),
         };
-        if force {
-            tracing::warn!(
-                "worker prompt missing {} — --force set, dispatching anyway (quality gate may fail)",
-                missing
-            );
-            eprintln!(
-                "[!] worker prompt missing {} — --force set, dispatching anyway (quality gate may fail)",
-                missing
-            );
-        } else {
-            anyhow::bail!(
-                "worker prompt missing {missing}. Add explicit \"Done Criteria:\" and a \"Verify Command:\" \
-                 to the prompt so the worker has measurable success criteria (rule R-RUBRIC), or pass --force to override."
-            );
-        }
+        anyhow::bail!(
+            "worker prompt missing {missing}. Add explicit \"Done Criteria:\" and a \"Verify Command:\" \
+             when you write the prompt (rule R-RUBRIC). --force does not skip this{}.",
+            if force { " (ignored)" } else { "" }
+        );
     }
 
     let agent = match agent_override {
@@ -8406,12 +8525,24 @@ async fn cmd_spawn_worker(
             }
             resolved
         }
-        None => omega_core::agents::Agent::from_name(&config.agent_command).ok_or_else(|| {
-            anyhow::anyhow!(
-                "configured worker agent {:?} is unknown; set an explicit supported provider",
-                config.agent_command
-            )
-        })?,
+        None => {
+            let configured = omega_core::agents::Agent::from_name(&config.agent_command)
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "configured worker agent {:?} is unknown; set an explicit supported provider",
+                        config.agent_command
+                    )
+                })?;
+            let writer = configured.writer_or_codex();
+            if !writer.is_writer() {
+                anyhow::bail!(
+                    "worker agent '{}' is not allowed: only claude, codex and glm carry \
+                     the finish-guard hooks a detached worker needs",
+                    writer.name()
+                );
+            }
+            writer
+        }
     };
     omega_core::providers::ProvidersConfig::try_load()
         .context("cannot load provider config for worker dispatch")?;
@@ -8832,6 +8963,7 @@ async fn cmd_spawn_worker(
     }
 
     println!("● Worker spawned: {}", worker_name);
+    println!("  cwd: {}", work_dir);
     if let Some(p) = &project_name {
         println!("  Under project: {}", p);
     }
@@ -9642,6 +9774,29 @@ fn l4_refusal_reasons(todo: &omega_core::oracle_todo::OracleTodo) -> Vec<String>
 /// agent cannot see. Worse, the silent rewrite restamped `ts` on every look,
 /// which is precisely the field patrol's stall detector reads: merely LOOKING
 /// at a stalled mission made it look alive.
+fn worker_finish_reports(state_dir: &std::path::Path, session: &str) -> Vec<serde_json::Value> {
+    let Some(state) = omega_core::oracle_lifecycle::OracleState::read(state_dir, session)
+        .ok()
+        .flatten()
+    else {
+        return Vec::new();
+    };
+    state
+        .workers
+        .iter()
+        .filter_map(|worker| {
+            let done =
+                omega_core::done::DoneSignal::read(state_dir, &worker.session_name).ok()??;
+            Some(serde_json::json!({
+                "session": worker.session_name,
+                "status": done.status,
+                "summary": done.summary,
+                "evidence": done.artifacts,
+            }))
+        })
+        .collect()
+}
+
 fn cmd_progress_readback(state_dir: &std::path::Path, session: &str, json: bool) -> Result<()> {
     let key = session.strip_prefix("oracle-").unwrap_or(session);
     let path = state_dir.join(format!("oracle-{}.progress.json", key));
@@ -9652,6 +9807,7 @@ fn cmd_progress_readback(state_dir: &std::path::Path, session: &str, json: bool)
     let tasks = parse_plan_tasks(&doc);
     if json {
         let done = tasks.iter().filter(|t| t.status == "done").count();
+        let reports = worker_finish_reports(state_dir, session);
         println!(
             "{}",
             serde_json::json!({
@@ -9665,6 +9821,7 @@ fn cmd_progress_readback(state_dir: &std::path::Path, session: &str, json: bool)
                     .iter()
                     .map(|t| serde_json::json!({ "t": t.title, "s": t.status }))
                     .collect::<Vec<_>>(),
+                "worker_reports": reports,
             })
         );
     } else if !path.exists() {
@@ -11175,6 +11332,12 @@ async fn cmd_gate(
             .map(|session| session.name)
             .collect();
         let oracle = resolve_oracle_alias(oracle, &live, &config.state_dir);
+        let caller = std::env::var("OMEGA_SESSION").ok();
+        omega_core::gate::refuse_writer_self_approval(
+            &oracle,
+            approver.unwrap_or(""),
+            caller.as_deref(),
+        )?;
         let result = omega_core::gate::GateResult::human_acceptance(
             &oracle,
             approver.unwrap_or_default(),
@@ -11466,6 +11629,11 @@ struct OracleRow {
     escalation: Option<String>,
 }
 
+fn is_stale_purge_oracle(name: &str) -> bool {
+    let n = name.to_ascii_lowercase();
+    n.contains("mac-purge") || n.contains("-purge-")
+}
+
 fn oracle_row(
     state_dir: &std::path::Path,
     name: &str,
@@ -11556,7 +11724,12 @@ async fn cmd_oracles(all: bool) -> Result<()> {
         .map(|s| s.name.clone())
         .collect();
     if all {
-        for st in omega_core::oracle_lifecycle::OracleState::read_all_strict(&config.state_dir)? {
+        // Diagnostic roster: tolerant sweep. A leftover `oracle-mac-purge-*`
+        // projection must not take `oracles --all` down (Gareth 2026-08-24).
+        for st in omega_core::oracle_lifecycle::OracleState::read_all(&config.state_dir) {
+            if is_stale_purge_oracle(&st.oracle_name) {
+                continue;
+            }
             names.push(st.oracle_name);
         }
         // The GHOST MISSIONS, and they are the whole reason `--all` exists: a
@@ -11581,16 +11754,22 @@ async fn cmd_oracles(all: bool) -> Result<()> {
     }
     names.sort();
     names.dedup();
+    names.retain(|n| !is_stale_purge_oracle(n));
 
     if names.is_empty() {
         println!("No oracle {}.", if all { "on record" } else { "live" });
         return Ok(());
     }
 
-    let rows: Vec<OracleRow> = names
-        .iter()
-        .map(|n| oracle_row(&config.state_dir, n, &live_sessions))
-        .collect::<Result<Vec<_>>>()?;
+    let mut rows: Vec<OracleRow> = Vec::new();
+    for n in &names {
+        match oracle_row(&config.state_dir, n, &live_sessions) {
+            Ok(row) => rows.push(row),
+            Err(error) => {
+                eprintln!("[!] skipping stale oracle {n}: {error}");
+            }
+        }
+    }
 
     // Fixed columns, hard-truncated: a session name can be 50 chars and one long
     // row that wraps costs more than the characters it saves.
@@ -11711,16 +11890,68 @@ async fn cmd_workers(oracle: Option<&str>) -> Result<()> {
     Ok(())
 }
 
+/// Lifecycle JSON for `omega status --json`. Never includes pane text —
+/// Grok observes without attaching.
+struct OracleStatusJson<'a> {
+    name: &'a str,
+    session_id: Option<&'a str>,
+    live: bool,
+    phase: &'a str,
+    project: Option<&'a str>,
+    done: usize,
+    total: usize,
+    doing: Option<&'a str>,
+    running: &'a [String],
+    terminal: &'a [String],
+    reports: &'a [serde_json::Value],
+    gate_passed: bool,
+    closeable: bool,
+    refused_because: &'a [String],
+    delivery: Option<&'a serde_json::Value>,
+    health: Option<&'a serde_json::Value>,
+}
+
+fn build_oracle_status_json(view: OracleStatusJson<'_>) -> serde_json::Value {
+    serde_json::json!({
+        "session": view.name,
+        "session_id": view.session_id,
+        "live": view.live,
+        "phase": view.phase,
+        "project": view.project,
+        "plan": { "done": view.done, "total": view.total },
+        "doing": view.doing,
+        "workers": {
+            "running": view.running,
+            "terminal": view.terminal,
+            "reports": view.reports,
+        },
+        "gate_passed": view.gate_passed,
+        "closeable": view.closeable,
+        "refused_because": view.refused_because,
+        "delivery": view.delivery,
+        "health": view.health,
+    })
+}
+
+fn build_session_status_json(
+    name: &str,
+    live: bool,
+    provider: Option<&str>,
+    health: Option<&serde_json::Value>,
+) -> serde_json::Value {
+    serde_json::json!({
+        "session": name,
+        "live": live,
+        "provider": provider,
+        "health": health,
+    })
+}
+
 /// `omega status <session> [--json]`.
 ///
-/// A NON-oracle session keeps the original behaviour byte for byte (the last
-/// 30 lines of its pane), because that is what every prompt template and the
-/// `/omega-status` command tell an agent to read.
-///
-/// An ORACLE gets the lifecycle block FIRST, then the same pane tail. The old
-/// output answered "what is it printing right now" but never "is this mission
-/// closeable", so the operator had to reconstruct the close-gate by hand from
-/// three state files, and usually reconstructed it wrong.
+/// `--json` is lifecycle only (no pane dump) so an external orchestrator can
+/// observe without attaching. A NON-oracle human print still dumps the last
+/// 30 pane lines. An ORACLE human print is the lifecycle block then the pane.
 async fn cmd_status(name: &str, json: bool) -> Result<()> {
     // Resolve the mission-key spelling BEFORE classifying: `dentistrygpt-3`
     // classifies as a plain session, so it took the pane-capture branch and died
@@ -11740,6 +11971,26 @@ async fn cmd_status(name: &str, json: bool) -> Result<()> {
     let is_oracle = omega_core::session::OmegaSession::classify(name).role
         == omega_core::session::SessionRole::Oracle;
     if !is_oracle {
+        if json {
+            let session_live = live.iter().any(|s| s.name == name);
+            let provider = omega_core::session::read_session_provider(name);
+            if !session_live {
+                let _ = omega_core::session_health::observe(
+                    &config.state_dir,
+                    name,
+                    provider.as_deref().unwrap_or("unknown"),
+                    false,
+                    None,
+                );
+            }
+            let health = omega_core::session_health::read(&config.state_dir, name)?
+                .map(|h| serde_json::to_value(h).unwrap_or(serde_json::Value::Null));
+            println!(
+                "{}",
+                build_session_status_json(name, session_live, provider.as_deref(), health.as_ref(),)
+            );
+            return Ok(());
+        }
         let content = mgr.capture_pane(name).await?;
         let lines: Vec<&str> = content.lines().collect();
         let start = lines.len().saturating_sub(30);
@@ -11819,19 +12070,57 @@ async fn cmd_status(name: &str, json: bool) -> Result<()> {
         .unwrap_or_else(|| "(no lifecycle state)".to_string());
 
     if json {
+        if !session_live {
+            let provider = omega_core::session::read_session_provider(name)
+                .unwrap_or_else(|| "unknown".to_string());
+            let _ = omega_core::session_health::observe(
+                &config.state_dir,
+                name,
+                &provider,
+                false,
+                None,
+            );
+        }
+        let mut reports = Vec::new();
+        for worker_name in workers.running.iter().chain(workers.terminal.iter()) {
+            if let Ok(Some(done)) =
+                omega_core::done::DoneSignal::read(&config.state_dir, worker_name)
+            {
+                reports.push(serde_json::json!({
+                    "session": worker_name,
+                    "status": done.status,
+                    "summary": done.summary,
+                    "evidence": done.artifacts,
+                }));
+            }
+        }
+        let delivery = omega_core::dispatch::read_last_delivery(&config.state_dir, name)
+            .ok()
+            .flatten()
+            .and_then(|d| serde_json::to_value(d).ok());
+        let health = omega_core::session_health::read(&config.state_dir, name)
+            .ok()
+            .flatten()
+            .and_then(|h| serde_json::to_value(h).ok());
         println!(
             "{}",
-            serde_json::json!({
-                "session": name,
-                "live": session_live,
-                "phase": phase,
-                "project": state.as_ref().map(|s| s.project.clone()),
-                "plan": { "done": done, "total": total },
-                "doing": doing.map(|t| t.title.clone()),
-                "workers": { "running": workers.running, "terminal": workers.terminal },
-                "gate_passed": gate_passed,
-                "closeable": !verdict.refused,
-                "refused_because": verdict.reasons,
+            build_oracle_status_json(OracleStatusJson {
+                name,
+                session_id: state.as_ref().and_then(|s| s.session_id.as_deref()),
+                live: session_live,
+                phase: &phase,
+                project: state.as_ref().map(|s| s.project.as_str()),
+                done,
+                total,
+                doing: doing.map(|t| t.title.as_str()),
+                running: &workers.running,
+                terminal: &workers.terminal,
+                reports: &reports,
+                gate_passed,
+                closeable: !verdict.refused,
+                refused_because: &verdict.reasons,
+                delivery: delivery.as_ref(),
+                health: health.as_ref(),
             })
         );
         return Ok(());
@@ -16710,6 +16999,39 @@ fn resolve_omega_src() -> Option<std::path::PathBuf> {
 /// whose target is INSIDE ~/.omega — user-managed links are never touched.
 /// `symlink_metadata` succeeding while `exists()` (which follows the link)
 /// fails is the dangling test.
+fn prune_unlisted_omega_skill_links(
+    dir: &std::path::Path,
+    omega_dir: &std::path::Path,
+    keep: &[&str],
+) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let skills_root = omega_dir.join("skills");
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Ok(meta) = std::fs::symlink_metadata(&path) else {
+            continue;
+        };
+        if !meta.file_type().is_symlink() {
+            continue;
+        }
+        let Ok(target) = std::fs::read_link(&path) else {
+            continue;
+        };
+        if !target.starts_with(&skills_root) && !target.starts_with(omega_dir) {
+            continue;
+        }
+        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        if keep.contains(&name) {
+            continue;
+        }
+        if std::fs::remove_file(&path).is_ok() {
+            println!("  [-] pruned extra Codex skill link: {}", path.display());
+        }
+    }
+}
+
 fn prune_dangling_omega_links(dir: &std::path::Path, omega_dir: &std::path::Path) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
@@ -17006,33 +17328,38 @@ fn cmd_sync() -> Result<()> {
         }
     }
 
-    // Codex activates reusable skills from the provider-neutral
-    // ~/.agents/skills directory. Link every skill the canonical registry can
-    // parse, including categorized/nested entries. Mentioning a slash command
-    // in AGENTS.md alone does not make a skill discoverable by Codex.
+    // Codex SessionStart injects every skill under ~/.agents/skills.
+    // Dumping the full catalog (90+) exceeds the skills context budget
+    // (live: 49 skills dropped). Link only the Lab loop skill Omega oracles
+    // actually run; prune leftover omega-owned links that are not allowlisted.
+    const CODEX_SESSIONSTART_SKILLS: &[&str] = &["agentic-engineering-lab"];
     let codex_skills = home.join(".agents").join("skills");
     std::fs::create_dir_all(&codex_skills)?;
     prune_dangling_omega_links(&codex_skills, &omega_dir);
+    prune_unlisted_omega_skill_links(&codex_skills, &omega_dir, CODEX_SESSIONSTART_SKILLS);
     let skills_dir = omega_dir.join("skills");
     if skills_dir.exists() {
         use omega_core::skill_registry::{OwnedSkillRoot, SkillCatalogV1, SkillRegistry};
         let catalog = SkillCatalogV1::compile(&[OwnedSkillRoot::new("installed", &skills_dir)])?;
         let registry = SkillRegistry::from_catalog(&catalog, &skills_dir);
+        let mut linked = 0usize;
         for skill in registry.list() {
+            if !CODEX_SESSIONSTART_SKILLS.contains(&skill.name.as_str()) {
+                continue;
+            }
             let Some(skill_dir) = skill.path.parent() else {
                 continue;
             };
             let link = codex_skills.join(&skill.name);
-            if link.exists() {
-                continue;
+            if !link.exists() {
+                #[cfg(unix)]
+                std::os::unix::fs::symlink(skill_dir, &link)?;
+                println!("  [+] Codex SessionStart skill: ${}", skill.name);
             }
-            #[cfg(unix)]
-            std::os::unix::fs::symlink(skill_dir, &link)?;
-            println!("  [+] Codex skill: ${}", skill.name);
+            linked += 1;
         }
         println!(
-            "[+] Codex skills synced: {} canonical entries → {}",
-            registry.count(),
+            "[+] Codex SessionStart skills synced: {linked} allowlisted entries → {}",
             codex_skills.display()
         );
     }
@@ -17157,6 +17484,82 @@ mod phase1_tests {
         assert!(!cfg.claude.dangerously_skip_permissions);
         set_config_value(&mut cfg, "claude.dangerously_skip_permissions", "true").unwrap();
         assert!(cfg.claude.dangerously_skip_permissions);
+        set_config_value(&mut cfg, "glm.dangerously_skip_permissions", "true").unwrap();
+        assert!(cfg.glm.dangerously_skip_permissions);
+        assert_eq!(
+            get_config_value(&cfg, "glm.dangerously_skip_permissions").unwrap(),
+            "true"
+        );
+    }
+
+    #[test]
+    fn oracles_all_ignores_stale_mac_purge_names() {
+        assert!(is_stale_purge_oracle("oracle-mac-purge-20260822"));
+        assert!(is_stale_purge_oracle("oracle-mac-purge-20260822-2"));
+        assert!(!is_stale_purge_oracle("oracle-omega-orch-audit"));
+        assert!(!is_stale_purge_oracle("oracle-OmegaOS"));
+    }
+
+    #[test]
+    fn status_json_payload_never_includes_pane_dump() {
+        let reports = vec![serde_json::json!({
+            "session": "OmegaOS-worker-a",
+            "status": "done_clean",
+            "summary": "wrote the file",
+            "evidence": []
+        })];
+        let delivery = serde_json::json!({
+            "tag": "followup",
+            "at": "2026-08-24T00:00:00Z",
+            "preview": "also check capture"
+        });
+        let health = serde_json::json!({
+            "session": "oracle-OmegaOS",
+            "provider": "codex",
+            "status": "running"
+        });
+        let json = build_oracle_status_json(OracleStatusJson {
+            name: "oracle-OmegaOS",
+            session_id: Some("sess-1"),
+            live: true,
+            phase: "ANALYSE",
+            project: Some("OmegaOS"),
+            done: 0,
+            total: 11,
+            doing: Some("Understand"),
+            running: &[],
+            terminal: &["OmegaOS-worker-a".to_string()],
+            reports: &reports,
+            gate_passed: false,
+            closeable: false,
+            refused_because: &["plan 0/11 — pas 100% (L4)".to_string()],
+            delivery: Some(&delivery),
+            health: Some(&health),
+        });
+        let rendered = serde_json::to_string(&json).unwrap();
+        assert!(json.get("pane").is_none(), "{rendered}");
+        assert!(!rendered.contains("─── pane"));
+        assert!(!rendered.contains("bash-5.3"));
+        assert_eq!(json["session"], "oracle-OmegaOS");
+        assert_eq!(json["session_id"], "sess-1");
+        assert_eq!(json["delivery"]["tag"], "followup");
+        assert_eq!(json["health"]["status"], "running");
+        assert_eq!(json["plan"]["total"], 11);
+        assert_eq!(json["workers"]["reports"][0]["status"], "done_clean");
+        let home = build_session_status_json(
+            "t-codex",
+            false,
+            Some("codex"),
+            Some(&serde_json::json!({
+                "session": "t-codex",
+                "provider": "codex",
+                "status": "failed",
+                "reason": "agent_exited: pane fell through to bash"
+            })),
+        );
+        let home_rendered = serde_json::to_string(&home).unwrap();
+        assert!(home.get("pane").is_none(), "{home_rendered}");
+        assert_eq!(home["health"]["status"], "failed");
     }
 
     #[test]
@@ -19191,6 +19594,81 @@ mod phase1_tests {
             "Done Criteria: green\nVerify Command: cargo test && curl example.test"
         )
         .is_none());
+        assert_eq!(
+            declared_verify_command("Done Criteria: file exists\nVerify Command: CLAUDE_OK.txt"),
+            Some(vec!["CLAUDE_OK.txt".to_string()]),
+            "a bare artifact is recorded, not eval'd"
+        );
+    }
+
+    #[test]
+    fn spawn_records_bare_verify_file_without_evaling_it() {
+        let state_dir = std::env::temp_dir().join(format!(
+            "omega-v3-no-eval-verify-{}-{}",
+            std::process::id(),
+            chrono::Utc::now().timestamp_micros()
+        ));
+        std::fs::create_dir_all(&state_dir).unwrap();
+        let config = OmegaConfig {
+            state_dir: state_dir.clone(),
+            ..OmegaConfig::default()
+        };
+        let mission =
+            omega_core::mission::Mission::new("OmegaOS", "write marker", state_dir.clone());
+        let ledger = omega_core::mission_ledger::MissionLedger::open(
+            state_dir.join("mission-engine-v3.sqlite3"),
+        )
+        .unwrap();
+        let created = ledger
+            .create_mission(&mission, "test-create", "test")
+            .unwrap();
+        let mut classified = omega_core::mission_ledger::AppendEvent::new(
+            mission.id.clone(),
+            1,
+            "test-classified",
+            "test",
+            "mission_classified",
+        );
+        classified.next_mission_state = Some(omega_core::mission::MissionState::Classified);
+        ledger.append(classified).unwrap();
+        let oracle_name = "oracle-OmegaOS-test";
+        omega_core::oracle_lifecycle::OracleState::from_ledger(oracle_name, &mission, &created)
+            .unwrap()
+            .write(&state_dir)
+            .unwrap();
+
+        let marker = state_dir.join("CLAUDE_OK.txt");
+        assert!(!marker.exists(), "precondition: file must not exist yet");
+        prepare_v3_worker_attempt(
+            &config,
+            Some(oracle_name),
+            "OmegaOS-worker-claude-ok",
+            "claude-ok",
+            "Write CLAUDE_OK.txt\nDone Criteria: file exists\nVerify Command: CLAUDE_OK.txt",
+            state_dir.to_str().unwrap(),
+            &["CLAUDE_OK.txt".to_string()],
+            omega_core::agents::Agent::Claude,
+        )
+        .unwrap();
+        assert!(
+            !marker.exists(),
+            "Verify Command must not be eval'd at spawn before the worker writes the file"
+        );
+        let plan = ledger.active_plan(&mission.id).unwrap().unwrap();
+        let task = plan
+            .tasks
+            .iter()
+            .find(|task| task.task_id.as_str() == "claude-ok")
+            .unwrap();
+        assert!(
+            matches!(
+                task.verifier_checks[0].kind,
+                omega_core::mission::VerifierCheckKind::FileExists { ref path } if path == "CLAUDE_OK.txt"
+            ),
+            "bare artifact verify is FileExists, not a shell command: {:?}",
+            task.verifier_checks[0].kind
+        );
+        let _ = std::fs::remove_dir_all(&state_dir);
     }
 
     #[test]

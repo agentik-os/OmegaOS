@@ -52,7 +52,10 @@ pub fn agent_command(
             command.args([
                 "exec",
                 "--skip-git-repo-check",
-                "--approve-for-me",
+                "--sandbox",
+                "workspace-write",
+                "--ask-for-approval",
+                "never",
                 "--dangerously-bypass-hook-trust",
                 "--json",
             ]);
@@ -563,10 +566,14 @@ mod tests {
         assert!(args.starts_with(&[
             "exec",
             "--skip-git-repo-check",
-            "--approve-for-me",
+            "--sandbox",
+            "workspace-write",
+            "--ask-for-approval",
+            "never",
             "--dangerously-bypass-hook-trust",
             "--json",
         ]));
+        assert!(!args.contains(&"--approve-for-me"));
         assert!(args
             .windows(2)
             .any(|pair| pair == ["--model", "gpt-5.6-sol"]));

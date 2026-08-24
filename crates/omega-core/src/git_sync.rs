@@ -36,6 +36,8 @@ pub enum GitSyncOutcome {
     PullFailed(u64),
     /// `git fetch` itself failed (offline, auth) — drift unknown.
     FetchFailed,
+    /// A git repo with no `origin` remote (local-only). Not a fetch failure.
+    LocalOnly,
 }
 
 impl GitSyncOutcome {
@@ -57,6 +59,7 @@ impl GitSyncOutcome {
             Self::FetchFailed => {
                 "git fetch failed — origin drift UNKNOWN; verify before pushing".into()
             }
+            Self::LocalOnly => "local-only git repo — no origin remote; skipping fetch".into(),
         }
     }
 
@@ -64,7 +67,11 @@ impl GitSyncOutcome {
     /// known-current. `None` means safe to proceed silently.
     pub fn warning(&self) -> Option<String> {
         match self {
-            Self::NotARepo | Self::NoUpstream | Self::UpToDate | Self::Pulled(_) => None,
+            Self::NotARepo
+            | Self::NoUpstream
+            | Self::UpToDate
+            | Self::Pulled(_)
+            | Self::LocalOnly => None,
             other => Some(format!("⚠ GIT SYNC: {}", other.describe())),
         }
     }
@@ -107,6 +114,12 @@ fn fetch_bounded(dir: &Path) -> bool {
 pub fn pull_preflight(dir: &Path) -> GitSyncOutcome {
     if git(dir, &["rev-parse", "--is-inside-work-tree"]).as_deref() != Some("true") {
         return GitSyncOutcome::NotARepo;
+    }
+    // Probe origin BEFORE fetch. A local-only repo has no remotes; `git fetch
+    // origin` fails and used to paint every `omega dispatch` with
+    // "origin drift UNKNOWN" on Mac scratch projects.
+    if git(dir, &["remote", "get-url", "origin"]).is_none() {
+        return GitSyncOutcome::LocalOnly;
     }
     if !fetch_bounded(dir) {
         return GitSyncOutcome::FetchFailed;
@@ -162,10 +175,10 @@ mod tests {
                 .success());
         };
         run(&["init", "-q"]);
-        // No origin remote: fetch fails → drift unknown (warned), never a pull.
+        // No origin remote: local-only, silent, never a blocking warning.
         let out = pull_preflight(tmp.path());
-        assert!(matches!(out, GitSyncOutcome::FetchFailed));
-        assert!(out.warning().is_some());
+        assert!(matches!(out, GitSyncOutcome::LocalOnly));
+        assert!(out.warning().is_none());
     }
 
     #[test]
