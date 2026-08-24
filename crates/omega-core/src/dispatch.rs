@@ -1500,9 +1500,10 @@ impl Dispatcher {
             // an interactive pane waiting for the operator to accept the plan, the exact
             // friction the operator rejects). The "plan" is a working method enforced by
             // the oracle doctrine (build the todo list, finish 100%), NOT a permission
-            // gate. Leave permission_mode unset → the base command keeps
-            // --dangerously-skip-permissions, so the oracle plans-and-proceeds fully
-            // autonomously across every complexity tier.
+            // gate. Leave permission_mode unset → the base command selects
+            // Claude Code's native `auto` mode, which reviews actions without
+            // waiting for a human. Full bypass remains an explicit provider
+            // opt-in only.
             opts.permission_mode = None;
             // --brief enables the SendUserMessage agent→user tool so the oracle can
             // push a structured note to the human (oracle-only; workers stay silent).
@@ -1702,13 +1703,16 @@ impl Dispatcher {
             &state.project,
         );
 
-        let agent =
-            crate::agents::Agent::from_name(&self.config.agent_command).ok_or_else(|| {
-                anyhow::anyhow!(
-                    "configured agent `{}` is unknown; refusing to resurrect on an implicit provider",
-                    self.config.agent_command
-                )
-            })?;
+        let recorded_provider = crate::session::read_session_provider(oracle_name);
+        let provider = recorded_provider
+            .as_deref()
+            .unwrap_or(self.config.agent_command.as_str());
+        let agent = crate::agents::Agent::from_name(provider).ok_or_else(|| {
+            anyhow::anyhow!(
+                "configured agent `{}` is unknown; refusing to resurrect on an implicit provider",
+                provider
+            )
+        })?;
         let mut prompt = build_resume_prompt(&state, &self.config.state_dir);
         // THE FUNNEL — a resurrected oracle gets its Oracle-scoped doctrine too.
         // Narrowed to THIS mission (rules::agent_context_block_for_mission):
@@ -1756,10 +1760,10 @@ impl Dispatcher {
             // passing it alongside a fresh --session-id was a silent no-op. The
             // crashed oracle's context is rebuilt from the mission brief +
             // on-disk state instead.
-            // A resurrected oracle is AUTONOMOUS exactly like a fresh dispatch
-            // (None → --dangerously-skip-permissions): never gate on the operator.
-            // ("auto" used to prompt on risky ops — the exact friction the operator
-            // rejects: every OmegaOS session must run fully bypass-permissions.)
+            // A resurrected oracle uses the same non-blocking native `auto`
+            // policy as a fresh dispatch. Full permission bypass remains an
+            // explicit provider setting, never an implicit resurrection side
+            // effect.
             opts.permission_mode = None;
             opts.exclude_dynamic_prompt_sections = true;
             opts.session_id = Some(resolve_session_id(
@@ -1794,12 +1798,7 @@ impl Dispatcher {
                 .await?;
         } else {
             self.session_mgr
-                .create_agent_session(
-                    oracle_name,
-                    &work_dir,
-                    &self.config.agent_command,
-                    Some(&prompt),
-                )
+                .create_agent_session(oracle_name, &work_dir, agent.name(), Some(&prompt))
                 .await?;
         }
         Ok(ResurrectOutcome::Resurrected)

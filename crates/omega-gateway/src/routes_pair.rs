@@ -9,9 +9,15 @@ pub async fn pair(
     Json(req): Json<PairRequest>,
 ) -> Result<Json<PairResponse>, (StatusCode, Json<serde_json::Value>)> {
     if !PairingCode::consume(&state.dir, &req.code) {
-        return Err((StatusCode::FORBIDDEN, Json(json!({ "error": "invalid or expired code" }))));
+        return Err((
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "invalid or expired code" })),
+        ));
     }
     let mut store = DeviceStore::open(&state.dir);
     let (device, token) = store.issue(&req.device_name);
-    Ok(Json(PairResponse { device_id: device.id, token }))
+    Ok(Json(PairResponse {
+        device_id: device.id,
+        token,
+    }))
 }

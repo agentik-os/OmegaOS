@@ -149,7 +149,10 @@ async fn forward_lines<R: AsyncRead + Unpin>(
     loop {
         match lines.next_line().await {
             Ok(Some(text)) => {
-                let frame = AgentInstallStreamMsg::Line { stream: stream_name.to_string(), text };
+                let frame = AgentInstallStreamMsg::Line {
+                    stream: stream_name.to_string(),
+                    text,
+                };
                 if tx.send(frame).await.is_err() {
                     return;
                 }
@@ -180,7 +183,10 @@ async fn forward_lines<R: AsyncRead + Unpin>(
 /// uses for any blocking subprocess call.
 async fn kill_process_group(pid: u32) {
     let _ = tokio::task::spawn_blocking(move || {
-        std::process::Command::new("kill").arg("--").arg(format!("-{pid}")).status()
+        std::process::Command::new("kill")
+            .arg("--")
+            .arg(format!("-{pid}"))
+            .status()
     })
     .await;
 }
@@ -265,7 +271,9 @@ async fn install_stream_loop(mut socket: WebSocket, agent: Agent) {
         Err(e) => {
             let _ = send_install_frame(
                 &mut socket,
-                &AgentInstallStreamMsg::Error { message: format!("failed to spawn omega: {e}") },
+                &AgentInstallStreamMsg::Error {
+                    message: format!("failed to spawn omega: {e}"),
+                },
             )
             .await;
             let _ = socket.send(Message::Close(None)).await;
@@ -374,8 +382,13 @@ async fn install_stream_loop(mut socket: WebSocket, agent: Agent) {
     let _ = stderr_task.await;
 
     let exit_frame = match child.wait().await {
-        Ok(status) => AgentInstallStreamMsg::Exit { success: status.success(), code: status.code() },
-        Err(e) => AgentInstallStreamMsg::Error { message: format!("failed to wait on child: {e}") },
+        Ok(status) => AgentInstallStreamMsg::Exit {
+            success: status.success(),
+            code: status.code(),
+        },
+        Err(e) => AgentInstallStreamMsg::Error {
+            message: format!("failed to wait on child: {e}"),
+        },
     };
     let _ = send_install_frame(&mut socket, &exit_frame).await;
     let _ = socket.send(Message::Close(None)).await;
@@ -410,6 +423,10 @@ mod resolve_installable_agent_tests {
     fn rejects_shell_with_a_clear_message() {
         let err = resolve_installable_agent("shell").unwrap_err();
         assert_eq!(err.0, axum::http::StatusCode::BAD_REQUEST);
-        assert!(err.1.contains("shell"), "message should name the agent: {}", err.1);
+        assert!(
+            err.1.contains("shell"),
+            "message should name the agent: {}",
+            err.1
+        );
     }
 }

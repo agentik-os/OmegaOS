@@ -145,6 +145,9 @@ enum Commands {
         /// Don't actually run the installer — just print the command
         #[arg(long)]
         dry_run: bool,
+        /// Run the upstream installer even when the binary already exists
+        #[arg(long, visible_alias = "upgrade")]
+        force: bool,
     },
 
     /// Open the read-only AISB Telegram conversation viewer.
@@ -927,10 +930,12 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     let filter = || -> Result<tracing_subscriber::EnvFilter> {
-        Ok(tracing_subscriber::EnvFilter::from_default_env()
-            .add_directive("omega=info".parse()?))
+        Ok(tracing_subscriber::EnvFilter::from_default_env().add_directive("omega=info".parse()?))
     };
-    match command_renders_tui(&cli.command).then(tui_log_writer).flatten() {
+    match command_renders_tui(&cli.command)
+        .then(tui_log_writer)
+        .flatten()
+    {
         Some(file) => tracing_subscriber::fmt()
             .with_env_filter(filter()?)
             .with_target(false)
@@ -1035,7 +1040,11 @@ async fn main() -> Result<()> {
         Some(Commands::Projects { json }) => cmd_projects(json),
         Some(Commands::Marketing(action)) => cmd_marketing(action),
         Some(Commands::TrustDir { dir }) => cmd_trust_dir(dir.as_deref()),
-        Some(Commands::Install { agent, dry_run }) => cmd_install(&agent, dry_run),
+        Some(Commands::Install {
+            agent,
+            dry_run,
+            force,
+        }) => cmd_install(&agent, dry_run, force),
         Some(Commands::AisbView) => cmd_aisb_view().await,
         Some(Commands::Config { action }) => cmd_config(action),
         // Two features, one command word. A bare `omega monitor` is the
@@ -2125,9 +2134,9 @@ async fn run_tui_loop(
                                     continue;
                                 }
                             }
-                            // The optional viewer auto-respawns. The Telegram bridge is unaffected
-                            // (its persistent claude_stream subprocess handles
-                            // chat independently of the rmux session).
+                            // The optional viewer auto-respawns. The standalone
+                            // Bun Telegram service handles chat independently
+                            // of this rmux session.
                             if is_master && cfg.auto_spawn_master {
                                 let cwd = std::env::current_dir()
                                     .ok()
@@ -3818,7 +3827,7 @@ bind-key z display-popup -E -w 100% -h 100% "omega menu"
     Ok(())
 }
 
-fn cmd_install(agent_name: &str, dry_run: bool) -> Result<()> {
+fn cmd_install(agent_name: &str, dry_run: bool, force: bool) -> Result<()> {
     let agent = omega_core::agents::Agent::from_name(agent_name)
         .ok_or_else(|| anyhow::anyhow!("Unknown agent: {}", agent_name))?;
 
@@ -3829,9 +3838,11 @@ fn cmd_install(agent_name: &str, dry_run: bool) -> Result<()> {
         )
     })?;
 
-    if agent.is_available() && !dry_run {
+    if agent.is_available() && !dry_run && !force {
         println!("[+] {} is already installed.", agent.display_name());
-        println!("  Re-run with `--dry-run` to see the install command anyway.");
+        println!(
+            "  Re-run with `--force` to update/reinstall, or `--dry-run` to inspect the command."
+        );
         return Ok(());
     }
 
@@ -3868,11 +3879,11 @@ fn cmd_install(agent_name: &str, dry_run: bool) -> Result<()> {
             agent.display_name()
         );
     } else {
-        println!(
-            "\n[!] Installer reported success but `{}` is not on PATH yet.",
-            agent.name()
+        anyhow::bail!(
+            "installer exited successfully but `{}` is still unavailable; \
+             verify the installer output and expected binary locations, then retry",
+            agent.binary_name()
         );
-        println!("  You may need to restart your shell or add the binary directory to PATH.");
     }
 
     // Auto-sync: wire the new LLM into ~/.omega/ centralized config
@@ -4807,6 +4818,11 @@ enum ConfigAction {
     Set { key: String, value: String },
     /// Show all provider configs
     Show,
+    /// Make a provider (and optional model) the global default for new sessions
+    Activate {
+        provider: String,
+        model: Option<String>,
+    },
     /// List the canonical providers (no arg) or a provider's known models (one per
     /// line). SSOT for any UI building a model picker (TUI, Telegram) so the curated
     /// lists live ONLY in providers.rs::models_for / all_providers.
@@ -4886,6 +4902,33 @@ fn cmd_config(action: ConfigAction) -> Result<()> {
             println!("[+] Set {} = {}", key, displayed);
             println!("Applies to all newly spawned sessions.");
         }
+        ConfigAction::Activate { provider, model } => {
+            let agent = omega_core::agents::Agent::from_name(&provider)
+                .ok_or_else(|| anyhow::anyhow!("provider {provider:?} has no launch adapter"))?;
+            let provider = agent.name();
+
+            if provider != "shell" {
+                let mut cfg = ProvidersConfig::try_load()
+                    .context("cannot load provider config for activation")?;
+                set_config_value(
+                    &mut cfg,
+                    &format!("{provider}.model"),
+                    model.as_deref().unwrap_or(""),
+                )?;
+                cfg.save()?;
+            }
+
+            let mut runtime = omega_core::config::OmegaConfig::load()
+                .context("cannot load OmegaOS runtime config for activation")?;
+            runtime.agent_command = provider.to_string();
+            runtime.save()?;
+            let active = omega_core::providers::ActiveModel::set(provider, model.as_deref())?;
+            println!(
+                "[+] Active provider = {} / {}",
+                active.active_provider, active.active_model
+            );
+            println!("Applies globally to newly spawned sessions.");
+        }
         ConfigAction::Models { provider } => match provider {
             // No provider → the canonical provider list. With one → its known models.
             // Empty list (unknown provider) prints nothing and exits 0 so callers can
@@ -4950,8 +4993,14 @@ fn get_config_value(cfg: &omega_core::providers::ProvidersConfig, key: &str) -> 
         ("codex", "model") => cfg.codex.model.clone(),
         ("codex", "api_key") => redacted_secret(&cfg.codex.api_key),
         ("codex", "base_url") => cfg.codex.base_url.clone(),
+        ("codex", "bypass_hook_trust") => cfg.codex.bypass_hook_trust.to_string(),
         ("gemini", "model") => cfg.gemini.model.clone(),
         ("gemini", "api_key") => redacted_secret(&cfg.gemini.api_key),
+        ("antigravity", "model") => cfg.antigravity.model.clone(),
+        ("antigravity", "effort") => cfg.antigravity.effort.clone(),
+        ("antigravity", "dangerously_skip_permissions") => {
+            cfg.antigravity.dangerously_skip_permissions.to_string()
+        }
         ("pi", "provider") => cfg.pi.provider.clone(),
         ("pi", "model") => cfg.pi.model.clone(),
         ("pi", "api_key") => redacted_secret(&cfg.pi.api_key),
@@ -4960,6 +5009,7 @@ fn get_config_value(cfg: &omega_core::providers::ProvidersConfig, key: &str) -> 
         ("openrouter", "model") => cfg.openrouter.model.clone(),
         ("openrouter", "api_key") => redacted_secret(&cfg.openrouter.api_key),
         ("openrouter", "base_url") => cfg.openrouter.base_url.clone(),
+        ("hermes", "provider") => cfg.hermes.provider.clone(),
         ("hermes", "model") => cfg.hermes.model.clone(),
         ("hermes", "api_key") => redacted_secret(&cfg.hermes.api_key),
         ("kimi", "model") => cfg.kimi.model.clone(),
@@ -4991,8 +5041,20 @@ fn set_config_value(
         ("codex", "model") => cfg.codex.model = value.to_string(),
         ("codex", "api_key") => cfg.codex.api_key = value.to_string(),
         ("codex", "base_url") => cfg.codex.base_url = value.to_string(),
+        ("codex", "bypass_hook_trust") => {
+            cfg.codex.bypass_hook_trust = value
+                .parse::<bool>()
+                .with_context(|| format!("invalid boolean {value:?}; expected true or false"))?;
+        }
         ("gemini", "model") => cfg.gemini.model = value.to_string(),
         ("gemini", "api_key") => cfg.gemini.api_key = value.to_string(),
+        ("antigravity", "model") => cfg.antigravity.model = value.to_string(),
+        ("antigravity", "effort") => cfg.antigravity.effort = value.to_string(),
+        ("antigravity", "dangerously_skip_permissions") => {
+            cfg.antigravity.dangerously_skip_permissions = value
+                .parse::<bool>()
+                .with_context(|| format!("invalid boolean {value:?}; expected true or false"))?;
+        }
         ("pi", "provider") => cfg.pi.provider = value.to_string(),
         ("pi", "model") => cfg.pi.model = value.to_string(),
         ("pi", "api_key") => cfg.pi.api_key = value.to_string(),
@@ -5001,6 +5063,7 @@ fn set_config_value(
         ("openrouter", "model") => cfg.openrouter.model = value.to_string(),
         ("openrouter", "api_key") => cfg.openrouter.api_key = value.to_string(),
         ("openrouter", "base_url") => cfg.openrouter.base_url = value.to_string(),
+        ("hermes", "provider") => cfg.hermes.provider = value.to_string(),
         ("hermes", "model") => cfg.hermes.model = value.to_string(),
         ("hermes", "api_key") => cfg.hermes.api_key = value.to_string(),
         ("kimi", "model") => cfg.kimi.model = value.to_string(),
@@ -13026,7 +13089,12 @@ fn cmd_update(check: bool, dir: Option<&str>) -> Result<()> {
         .env("OMEGA_FROM_SOURCE", "1")
         .status()?;
     if !status.success() {
-        anyhow::bail!("install.sh failed — your previous install is untouched");
+        anyhow::bail!(
+            "install.sh failed after the checkout was updated; some idempotent install steps may \
+             already have run. Fix the reported error, then re-run `omega update` (or \
+             `cd {} && ./install.sh`) to converge the installation",
+            src.display()
+        );
     }
 
     println!("\n✓ OmegaOS updated. Restart a running TUI (Menu → R) to pick up the new binary.");
@@ -15995,7 +16063,8 @@ fn export_rules_to(rules_dir: &std::path::Path, verbose: bool) -> Result<usize> 
     Ok(all.len())
 }
 
-const DOCTRINE_BEGIN: &str = "<!-- OMEGA-DOCTRINE:BEGIN (generated by `omega rules export` — do not edit inside) -->";
+const DOCTRINE_BEGIN: &str =
+    "<!-- OMEGA-DOCTRINE:BEGIN (generated by `omega rules export` — do not edit inside) -->";
 const DOCTRINE_END: &str = "<!-- OMEGA-DOCTRINE:END -->";
 
 /// Replace (or append) the generated doctrine block in a single-file agent
@@ -16108,6 +16177,27 @@ async fn cmd_reconcile(report_only: bool) -> Result<()> {
         match export_rules_to(&rules_dir, false) {
             Ok(n) => println!("    [+] doctrine re-exported ({} rules)", n),
             Err(e) => needs_human.push(format!("could not re-export doctrine: {e}")),
+        }
+
+        // Provider CLIs may replace a credential symlink atomically during
+        // refresh. Reconcile through omega-core so the fresher valid Claude
+        // token wins; the retired shell migration always preferred canonical
+        // state and could restore a consumed refresh token.
+        match omega_core::credentials::CredentialStore::new()
+            .and_then(|store| store.ensure_legacy_symlink("claude"))
+        {
+            Ok(()) => println!("    [+] Claude credential topology reconciled"),
+            Err(e) => needs_human.push(format!("could not reconcile Claude credentials: {e}")),
+        }
+
+        match omega_core::codex_trust::migrate_retired_approval_policy() {
+            Ok(true) => {
+                println!("    [+] Codex retired approval_policy migrated to on-request")
+            }
+            Ok(false) => {}
+            Err(e) => needs_human.push(format!(
+                "could not migrate Codex approval_policy removed in 0.149: {e}"
+            )),
         }
 
         // Whatever installed this binary may not have recorded which commit it
@@ -17622,8 +17712,16 @@ mod phase1_tests {
     #[test]
     fn bounded_capture_kills_a_setsid_descendant_and_never_reports_success() {
         let token = new_graph_process_token().unwrap();
+        let dir = TestDir::new("setsid-descendant");
+        let marker = dir.path().join("started");
         let mut command = std::process::Command::new("bash");
-        command.arg("-c").arg("setsid sh -c 'sleep 2' & exit 0");
+        command
+            .env("OMEGA_TEST_DESCENDANT_MARKER", &marker)
+            .arg("-c")
+            .arg(
+                "setsid sh -c 'printf ready > \"$OMEGA_TEST_DESCENDANT_MARKER\"; sleep 2' & \
+                 while [ ! -s \"$OMEGA_TEST_DESCENDANT_MARKER\" ]; do sleep 0.01; done; exit 0",
+            );
         let started = std::time::Instant::now();
         let (result, _, _) = run_bounded_capture_with_token(
             &mut command,

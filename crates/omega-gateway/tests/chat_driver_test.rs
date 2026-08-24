@@ -56,7 +56,11 @@ printf '%s\n' '{"type":"result","is_error":false,"stop_reason":"end_turn","resul
     let session_id = driver.await.unwrap();
 
     assert_eq!(session_id.as_deref(), Some("fake-session-1"));
-    assert_eq!(frames.len(), 2, "expected an AssistantMessage then a TurnDone");
+    assert_eq!(
+        frames.len(),
+        2,
+        "expected an AssistantMessage then a TurnDone"
+    );
     assert!(matches!(
         &frames[0],
         ChatStreamServerMsg::AssistantMessage { text } if text == "PONG"
@@ -130,7 +134,10 @@ async fn run_turn_kills_child_and_reports_timeout() {
                     break pid;
                 }
             }
-            assert!(std::time::Instant::now() < deadline, "fake agent never wrote its pidfile");
+            assert!(
+                std::time::Instant::now() < deadline,
+                "fake agent never wrote its pidfile"
+            );
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
     };
@@ -178,18 +185,26 @@ async fn run_turn_kills_child_and_reports_timeout() {
 }
 
 #[tokio::test]
-async fn run_turn_intercepts_codex_without_spawning() {
+async fn run_turn_streams_codex_json_and_writes_prompt_to_stdin() {
     let _g = LOCK.lock().await;
     let dir = tempfile::tempdir().unwrap();
-    // Point OMEGA_CHAT_BIN at a script that would fail loudly (nonzero exit)
-    // if it were ever actually spawned, proving Codex never reaches it.
-    install_fake_agent(dir.path(), "echo 'should never run' >&2; exit 1");
+    install_fake_agent(
+        dir.path(),
+        r#"
+IFS= read -r prompt || true
+test "$prompt" = "hi" || { echo "wrong stdin prompt" >&2; exit 2; }
+printf '%s\n' '{"type":"thread.started","thread_id":"codex-thread-1"}'
+printf '%s\n' '{"type":"item.completed","item":{"id":"item_1","type":"agent_message","text":"CODEX PONG"}}'
+printf '%s\n' '{"type":"turn.completed","usage":{}}'
+"#,
+    );
 
     let mut meta = test_meta(dir.path());
     meta.agent = ChatAgent::Codex;
     let (tx, mut rx) = tokio::sync::mpsc::channel(16);
-    let driver =
-        tokio::spawn(async move { chat_driver::run_turn(&meta, "hi", None, None, Duration::from_secs(5), tx).await });
+    let driver = tokio::spawn(async move {
+        chat_driver::run_turn(&meta, "hi", None, None, Duration::from_secs(5), tx).await
+    });
 
     let mut frames = Vec::new();
     while let Some(frame) = rx.recv().await {
@@ -197,11 +212,11 @@ async fn run_turn_intercepts_codex_without_spawning() {
     }
     let session_id = driver.await.unwrap();
 
-    assert!(session_id.is_none());
+    assert_eq!(session_id.as_deref(), Some("codex-thread-1"));
     assert_eq!(frames.len(), 2);
     assert!(matches!(
         &frames[0],
-        ChatStreamServerMsg::Error { message } if message == "codex chat not yet supported"
+        ChatStreamServerMsg::AssistantMessage { text } if text == "CODEX PONG"
     ));
     assert!(matches!(&frames[1], ChatStreamServerMsg::TurnDone));
 }

@@ -109,17 +109,16 @@ while [ "$ITER" -lt "$MAX_ITER" ]; do
     fi
 
     # ─── Liveness gate ───
-    if [ -x "$HOME/.claude/lib/worker-alive-check.sh" ]; then
-        if ! "$HOME/.claude/lib/worker-alive-check.sh" "$SESSION" >/dev/null 2>&1; then
-            # Exit 0 = safe-to-kill = session idle/dead → liveness lost
-            write_halt "worker_died" "$ITER"
-            exit 4
-        fi
+    # OmegaOS is rmux-native; the old optional provider-specific helper and
+    # tmux fallback made fresh installs silently skip this gate.
+    if ! command -v omega >/dev/null 2>&1 \
+        || ! omega capture "$SESSION" >/dev/null 2>&1; then
+        write_halt "worker_died" "$ITER"
+        exit 4
     fi
 
     # ─── Re-dispatch fix instruction ───
-    # Use tmux send-keys directly; works whether or not omega-todo is set up.
-    if tmux has-session -t "$SESSION" 2>/dev/null; then
+    if omega capture "$SESSION" >/dev/null 2>&1; then
         local_diff_summary=$(git diff "$GIT_BASELINE"..HEAD --shortstat 2>/dev/null | head -1)
         FIX_MSG="Verify command failed: $VERIFY_CMD
 Current diff: $local_diff_summary
@@ -128,9 +127,7 @@ Iteration: $ITER of $MAX_ITER
 Fix the failing assertions ONLY. Don't expand scope. Don't rename files.
 Only modify files already in your brief.files_owned scope.
 Re-run verify before calling worker-mark-done.sh."
-        tmux send-keys -t "$SESSION" "$FIX_MSG" 2>/dev/null
-        sleep 0.3
-        tmux send-keys -t "$SESSION" Enter 2>/dev/null
+        omega send "$SESSION" "$FIX_MSG" >/dev/null 2>&1
     else
         write_halt "session_missing" "$ITER"
         exit 4

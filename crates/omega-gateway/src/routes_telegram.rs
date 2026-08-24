@@ -40,11 +40,17 @@ use omega_core::monitor::OmegaTelegramConfig;
 type ApiError = (StatusCode, Json<serde_json::Value>);
 
 fn not_found(msg: impl Into<String>) -> ApiError {
-    (StatusCode::NOT_FOUND, Json(serde_json::json!({ "error": msg.into() })))
+    (
+        StatusCode::NOT_FOUND,
+        Json(serde_json::json!({ "error": msg.into() })),
+    )
 }
 
 fn internal(msg: impl std::fmt::Display) -> ApiError {
-    (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "error": msg.to_string() })))
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        Json(serde_json::json!({ "error": msg.to_string() })),
+    )
 }
 
 fn to_status_response(cfg: Option<OmegaTelegramConfig>) -> TelegramStatusResponse {
@@ -75,7 +81,9 @@ fn to_status_response(cfg: Option<OmegaTelegramConfig>) -> TelegramStatusRespons
 /// is a NORMAL response, never an error — mirrors `TelegramAction::Status`'s
 /// own CLI arm, which renders "Not configured." rather than failing.
 pub async fn status() -> Json<TelegramStatusResponse> {
-    let cfg = tokio::task::spawn_blocking(OmegaTelegramConfig::read).await.unwrap_or(None);
+    let cfg = tokio::task::spawn_blocking(OmegaTelegramConfig::read)
+        .await
+        .unwrap_or(None);
     Json(to_status_response(cfg))
 }
 
@@ -86,7 +94,9 @@ pub async fn status() -> Json<TelegramStatusResponse> {
 /// setup …") rather than fabricating a config that was never set up.
 async fn toggle(target: bool) -> Result<Json<TelegramToggleResponse>, ApiError> {
     let result = tokio::task::spawn_blocking(move || -> Result<Option<bool>, String> {
-        let Some(mut cfg) = OmegaTelegramConfig::read() else { return Ok(None) };
+        let Some(mut cfg) = OmegaTelegramConfig::read() else {
+            return Ok(None);
+        };
         cfg.enabled = target;
         cfg.write().map_err(|e| e.to_string())?;
         Ok(Some(cfg.enabled))
@@ -96,7 +106,9 @@ async fn toggle(target: bool) -> Result<Json<TelegramToggleResponse>, ApiError> 
 
     match result {
         Ok(Some(enabled)) => Ok(Json(TelegramToggleResponse { enabled })),
-        Ok(None) => Err(not_found("telegram bridge is not configured (run: omega telegram setup …)")),
+        Ok(None) => Err(not_found(
+            "telegram bridge is not configured (run: omega telegram setup …)",
+        )),
         Err(msg) => Err(internal(msg)),
     }
 }

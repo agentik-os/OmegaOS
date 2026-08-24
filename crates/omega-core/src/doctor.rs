@@ -211,8 +211,8 @@ fn rmux_socket_path() -> Option<std::path::PathBuf> {
     None
 }
 
-/// Claude Code hooks: scripts present under `~/.omega/hooks` AND registered in
-/// `~/.claude/settings.json` (PostToolUse track-tool-use + Stop stop-verify).
+/// Claude/Codex hooks: scripts present under `~/.omega/hooks` and registered
+/// on both provider surfaces.
 fn check_hooks(config: &OmegaConfig) -> Check {
     let hooks_dir = config
         .state_dir
@@ -228,6 +228,7 @@ fn check_hooks(config: &OmegaConfig) -> Check {
         ("omega-session-contract.sh", "omega-session-contract"),
         ("omega-prompt-scan.sh", "omega-prompt-scan"),
         ("omega-plan-mirror.sh", "omega-plan-mirror"),
+        ("omega-audit-guard.sh", "omega-audit-guard"),
         ("omega_plan_state.py", ""), // shared parser, not registered anywhere
         ("track-tool-use.sh", "track-tool-use"),
     ];
@@ -236,14 +237,22 @@ fn check_hooks(config: &OmegaConfig) -> Check {
         .map(|h| h.join(".claude/settings.json"))
         .and_then(|p| std::fs::read_to_string(p).ok())
         .unwrap_or_default();
+    let codex_hooks = dirs::home_dir()
+        .map(|home| home.join(".codex/hooks.json"))
+        .and_then(|path| std::fs::read_to_string(path).ok())
+        .unwrap_or_default();
 
     let mut missing_files = Vec::new();
-    let mut unregistered = Vec::new();
+    let mut unregistered_claude = Vec::new();
+    let mut unregistered_codex = Vec::new();
     for (file, marker) in REQUIRED {
         if !hooks_dir.join(file).exists() {
             missing_files.push(*file);
         } else if !marker.is_empty() && !settings.contains(marker) {
-            unregistered.push(*file);
+            unregistered_claude.push(*file);
+        }
+        if !marker.is_empty() && hooks_dir.join(file).exists() && !codex_hooks.contains(marker) {
+            unregistered_codex.push(*file);
         }
     }
 
@@ -257,19 +266,20 @@ fn check_hooks(config: &OmegaConfig) -> Check {
             ),
         );
     }
-    if !unregistered.is_empty() {
+    if !unregistered_claude.is_empty() || !unregistered_codex.is_empty() {
         return Check::warn(
             "hooks",
             format!(
-                "present but NOT registered in settings.json: {} (re-run install.sh; needs jq)",
-                unregistered.join(", ")
+                "present but not registered (Claude: {}; Codex: {}) — re-run install.sh; needs jq",
+                unregistered_claude.join(", "),
+                unregistered_codex.join(", ")
             ),
         );
     }
     Check::ok(
         "hooks",
         format!(
-            "{} hooks present + registered (finish-guard armed)",
+            "{} hooks present + registered for Claude and Codex (finish-guard armed)",
             REQUIRED.len()
         ),
     )
@@ -303,12 +313,16 @@ fn effective_containment(
                 )
             }
         }
-        Agent::Codex => Check::ok(
+        Agent::Codex if providers.codex.bypass_hook_trust => Check::ok(
             "agent containment",
             format!(
-                "Codex: strict config, workspace-write sandbox, approve-for-me; state+locks and {} configured extra writable root(s)",
+                "Codex: strict config, approve-for-me preset (workspace-write + auto-review), hook-trust bypass; state+locks and {} configured extra writable root(s)",
                 providers.codex.additional_writable_dirs.len()
             ),
+        ),
+        Agent::Codex => Check::warn(
+            "agent containment",
+            "Codex hook-trust bypass disabled; a new/changed hook can block a detached pane",
         ),
         Agent::Glm => {
             if providers.glm.dangerously_skip_permissions {
@@ -331,7 +345,20 @@ fn effective_containment(
             "agent containment",
             "Gemini: provider-native policy applies; OmegaOS adds no separate filesystem sandbox",
         ),
-        Agent::Pi | Agent::Hermes => Check::warn(
+        Agent::Antigravity => {
+            if providers.antigravity.dangerously_skip_permissions {
+                Check::warn(
+                    "agent containment",
+                    "Antigravity: explicit HIGH-RISK permission bypass enabled for detached Omega sessions",
+                )
+            } else {
+                Check::warn(
+                    "agent containment",
+                    "Antigravity: provider-native approval policy may block a detached session",
+                )
+            }
+        }
+        Agent::Pi | Agent::OpenRouter | Agent::Hermes => Check::warn(
             "agent containment",
             format!(
                 "{}: provider-native tool policy applies; OmegaOS adds no separate filesystem sandbox",
@@ -342,6 +369,92 @@ fn effective_containment(
             "agent containment",
             "shell: unrestricted local shell selected; no model/tool sandbox applies",
         ),
+    }
+}
+
+fn minimum_agent_version(agent: crate::agents::Agent) -> Option<semver::Version> {
+    use crate::agents::Agent;
+    let raw = match agent {
+        // Opus 5 support starts here.
+        Agent::Claude | Agent::Glm => "2.1.219",
+        // --approve-for-me is stable from 0.147 onward.
+        Agent::Codex => "0.147.0",
+        // First stable Gemini 3.1 model support.
+        Agent::Gemini => "0.31.0",
+        // Stable structured/headless and prompt-interactive contract.
+        Agent::Antigravity => "1.1.8",
+        // `--` end-of-options support used by the launch adapter.
+        Agent::Pi | Agent::OpenRouter => "0.84.3",
+        Agent::Hermes => "0.20.0",
+        Agent::Kimi => "0.38.0",
+        Agent::Shell => return None,
+    };
+    semver::Version::parse(raw).ok()
+}
+
+fn parse_cli_version(raw: &str) -> Option<semver::Version> {
+    raw.split_whitespace().find_map(|token| {
+        let candidate = token
+            .trim_matches(|character: char| {
+                !character.is_ascii_alphanumeric()
+                    && character != '.'
+                    && character != '-'
+                    && character != '+'
+            })
+            .trim_start_matches('v');
+        semver::Version::parse(candidate).ok()
+    })
+}
+
+fn agent_version_check(agent: crate::agents::Agent) -> Check {
+    let name = format!("{} version", agent.name());
+    let Some(minimum) = minimum_agent_version(agent) else {
+        return Check::ok(&name, "local shell");
+    };
+    let output = std::process::Command::new(agent.binary_name())
+        .arg("--version")
+        .output();
+    let Ok(output) = output else {
+        return Check::warn(
+            &name,
+            format!("could not execute {} --version", agent.binary_name()),
+        );
+    };
+    let combined = format!(
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let Some(version) = parse_cli_version(&combined) else {
+        return Check::warn(
+            &name,
+            format!(
+                "unrecognized version output from {}: {}",
+                agent.binary_name(),
+                combined.trim()
+            ),
+        );
+    };
+    if !output.status.success() {
+        return Check::warn(
+            &name,
+            format!(
+                "{} --version exited {:?} (reported {version})",
+                agent.binary_name(),
+                output.status.code()
+            ),
+        );
+    }
+    if version < minimum {
+        Check::fail(
+            &name,
+            format!(
+                "{version} is older than supported minimum {minimum}; run: omega install {} --force",
+                agent.name()
+            ),
+        )
+    } else {
+        Check::ok(&name, format!("{version} (minimum {minimum})"))
     }
 }
 
@@ -594,6 +707,20 @@ pub async fn run_all(config: &OmegaConfig) -> Vec<Check> {
                 config.agent_command
             ),
         )),
+    }
+
+    // 4a. Validate every installed provider CLI against the oldest version
+    // whose flags Omega emits. Presence alone previously let an old binary
+    // fail later with an opaque "unknown option" inside a detached pane.
+    let mut checked_binaries = std::collections::BTreeSet::new();
+    for agent in crate::agents::Agent::all().iter().copied() {
+        if matches!(agent, crate::agents::Agent::Shell)
+            || !agent.is_available()
+            || !checked_binaries.insert(agent.binary_name())
+        {
+            continue;
+        }
+        checks.push(agent_version_check(agent));
     }
 
     // 4b. Codex topology. A real native file beside a canonical credential is
@@ -1424,6 +1551,22 @@ pub fn overall(checks: &[Check]) -> Health {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_current_provider_version_output_shapes() {
+        assert_eq!(
+            parse_cli_version("codex-cli 0.149.1"),
+            semver::Version::parse("0.149.1").ok()
+        );
+        assert_eq!(
+            parse_cli_version("Hermes Agent v0.20.5 (2026.8.19)"),
+            semver::Version::parse("0.20.5").ok()
+        );
+        assert_eq!(
+            parse_cli_version("2.1.241 (Claude Code)"),
+            semver::Version::parse("2.1.241").ok()
+        );
+    }
 
     #[test]
     fn agents_override_detection_is_layered_and_read_only() {

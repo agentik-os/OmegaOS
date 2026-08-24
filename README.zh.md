@@ -8,7 +8,7 @@
 
 [![CI](https://github.com/agentik-os/OmegaOS/actions/workflows/ci.yml/badge.svg)](https://github.com/agentik-os/OmegaOS/actions/workflows/ci.yml) ![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg) ![Built with Rust](https://img.shields.io/badge/built%20with-Rust-orange.svg)
 
-OmegaOS 不是一个供你 import 的库。你把它装在一台 Linux 机器上，得到的是 `omega` 命令、一个用来盯着会话并随手 kill 掉它们的 TUI，以及一层把活儿派给 agent 的编排逻辑。还附带一个 Telegram 桥接，方便你用手机来驱动它。新会话默认使用 OpenAI Codex。Claude Code、Gemini、Pi、Hermes 和 GLM 仍可显式选择。每个 agent 都会收到由同一 doctrine 编译出的紧凑、类型化、按角色裁剪的策略上下文。
+OmegaOS 不是一个供你 import 的库。你把它装在一台 Linux 机器上，得到的是 `omega` 命令、一个用来盯着会话并随手 kill 掉它们的 TUI，以及一层把活儿派给 agent 的编排逻辑。还附带一个 Telegram 桥接，方便你用手机来驱动它。新会话默认使用 OpenAI Codex。Claude Code、Google Antigravity、面向 Enterprise/API 的 Gemini CLI、OpenRouter/Pi、Hermes、GLM 和 Kimi 仍可显式选择。每个 agent 都会收到由同一 doctrine 编译出的紧凑、类型化、按角色裁剪的策略上下文。
 
 当前版本见 [CHANGELOG.md](CHANGELOG.md)（在已安装的机器上运行 `omega -V`）。我每天都在用它，粗糙的地方在所难免。
 
@@ -28,7 +28,7 @@ cd OmegaOS
 ./install.sh
 ```
 
-只要已经发布了对应版本，安装器就会下载适配你所在平台的预编译 `rmux` + `omega` 二进制（用 checksum 校验），否则就退回到从源码构建——所以一次全新的 clone 总能复现出这套系统，只是有二进制的时候会更快。想强制从源码构建就用 `OMEGA_FROM_SOURCE=1 ./install.sh`。
+只要已经发布了对应版本，安装器就会下载适配你所在平台的预编译 `rmux` + `omega` + `omega-gatewayd` 二进制（用 checksum 校验），否则就退回到从源码构建——所以一次全新的 clone 总能复现出这套系统，只是有二进制的时候会更快。想强制从源码构建就用 `OMEGA_FROM_SOURCE=1 ./install.sh`。
 
 ## 更新
 
@@ -62,7 +62,7 @@ omega config set auto_update off     # 什么都不做
 会打印完整的分步指引**（同时保存在 `~/.omega/GETTING-STARTED.md`，
 安装结束时也会显示一遍）。简而言之：
 
-1. **接上 Codex** *（默认运行时必需）*：跑 `codex login`，然后用 `codex login status` 确认。Claude 仍然是可选的，走 `claude` 和 `/login`。
+1. **接上 Codex** *（默认运行时必需）*：跑 `omega codex-login`，然后用 `omega codex-login-status` 确认。Claude 仍然是可选的，使用 `claude auth login`。
 2. **Telegram 远程控制** *（推荐）*——token 从 [@BotFather](https://t.me/BotFather) 拿，你的 id 从 [@userinfobot](https://t.me/userinfobot) 拿，然后 `OMEGA_TG_TOKEN=<TOKEN> omega telegram setup <ID> --user-id <ID>`（用环境变量的写法能让 token 不出现在进程列表里）。想要一个项目一个话题：建群 + 打开 Topics + 把机器人设为管理员 → `/setupgroup` → `/sync`。
 3. **服务密钥** *（可选）*——`~/.omega/provisioning/services.env`（Vercel / GitHub / Convex / Stripe / 给语音用的 OpenAI）驱动新 app 的自动 provisioning。
 4. **加一个项目**——`omega` → **[N] New Project**，Telegram → *Import from GitHub*，或者干脆把一个仓库丢到 `~/Station/<Category>/` 下面。

@@ -157,14 +157,20 @@ pub enum AccountLoginServerMsg {
 #[derive(Serialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ChatStreamServerMsg {
-    Delta { text: String },
-    AssistantMessage { text: String },
+    Delta {
+        text: String,
+    },
+    AssistantMessage {
+        text: String,
+    },
     ToolEvent {
         name: String,
         detail: Option<String>,
     },
     TurnDone,
-    Error { message: String },
+    Error {
+        message: String,
+    },
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -1144,6 +1150,7 @@ pub struct CodexConfigEntry {
     pub model: String,
     pub api_key_set: bool,
     pub base_url: String,
+    pub bypass_hook_trust: bool,
 }
 
 /// Mirrors `omega_core::providers::GeminiConfig`, `api_key` redacted.
@@ -1151,6 +1158,14 @@ pub struct CodexConfigEntry {
 pub struct GeminiConfigEntry {
     pub model: String,
     pub api_key_set: bool,
+}
+
+/// Mirrors `omega_core::providers::AntigravityConfig`.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct AntigravityConfigEntry {
+    pub model: String,
+    pub effort: String,
+    pub dangerously_skip_permissions: bool,
 }
 
 /// Mirrors `omega_core::providers::GlmConfig`, `api_key` redacted.
@@ -1179,8 +1194,18 @@ pub struct PiConfigEntry {
 /// Mirrors `omega_core::providers::HermesConfig`, `api_key` redacted.
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct HermesConfigEntry {
+    pub provider: String,
     pub model: String,
     pub api_key_set: bool,
+}
+
+/// Mirrors `omega_core::providers::KimiConfig`, `api_key` redacted.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct KimiConfigEntry {
+    pub model: String,
+    pub api_key_set: bool,
+    pub base_url: String,
+    pub provider_type: String,
 }
 
 /// `GET /v1/config` and `PUT /v1/config` response body — the full
@@ -1192,10 +1217,12 @@ pub struct ConfigResponse {
     pub claude: ClaudeConfigEntry,
     pub codex: CodexConfigEntry,
     pub gemini: GeminiConfigEntry,
+    pub antigravity: AntigravityConfigEntry,
     pub glm: GlmConfigEntry,
     pub openrouter: OpenRouterConfigEntry,
     pub pi: PiConfigEntry,
     pub hermes: HermesConfigEntry,
+    pub kimi: KimiConfigEntry,
 }
 
 /// Body of `PUT /v1/config` — one `provider.field` key/value pair, matching
@@ -1456,10 +1483,12 @@ pub struct Protocol {
     pub claude_config_entry: ClaudeConfigEntry,
     pub codex_config_entry: CodexConfigEntry,
     pub gemini_config_entry: GeminiConfigEntry,
+    pub antigravity_config_entry: AntigravityConfigEntry,
     pub glm_config_entry: GlmConfigEntry,
     pub openrouter_config_entry: OpenRouterConfigEntry,
     pub pi_config_entry: PiConfigEntry,
     pub hermes_config_entry: HermesConfigEntry,
+    pub kimi_config_entry: KimiConfigEntry,
     pub config_response: ConfigResponse,
     pub config_set_request: ConfigSetRequest,
     pub telegram_status_response: TelegramStatusResponse,

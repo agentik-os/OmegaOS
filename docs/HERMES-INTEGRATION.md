@@ -1,7 +1,13 @@
 # Hermes Agent → OmegaOS Integration Report
 
+> **Historical research, not runtime documentation.** This May 2026 document
+> proposes mechanisms that were not necessarily implemented. The current CLI
+> adapter lives in `crates/omega-core/src/agents.rs`; supported versions and
+> commands are documented in
+> [PROVIDER-COMPATIBILITY.md](PROVIDER-COMPATIBILITY.md).
+
 **Source**: https://github.com/nousresearch/hermes-agent
-**Target**: OmegaOS at `/home/hacker/VibeCoding/work/OmegaOS` (Rust + Bun)
+**Target**: OmegaOS (Rust + Bun)
 **Date**: 2026-05-28
 **Author**: research worker
 

@@ -62,7 +62,10 @@ exit 1"#,
     .unwrap();
 
     let (_, token) = DeviceStore::open(gateway_dir.path()).issue("t");
-    let app = build_router(AppState::new(gateway_dir.path().to_path_buf(), GatewayConfig::default()));
+    let app = build_router(AppState::new(
+        gateway_dir.path().to_path_buf(),
+        GatewayConfig::default(),
+    ));
     let base = spawn(app).await;
 
     let res = reqwest::Client::new()
@@ -98,9 +101,16 @@ exit 1"#,
 #[tokio::test]
 async fn get_oracles_requires_auth() {
     let gateway_dir = tempfile::tempdir().unwrap();
-    let app = build_router(AppState::new(gateway_dir.path().to_path_buf(), GatewayConfig::default()));
+    let app = build_router(AppState::new(
+        gateway_dir.path().to_path_buf(),
+        GatewayConfig::default(),
+    ));
     let base = spawn(app).await;
 
-    let res = reqwest::Client::new().get(format!("{base}/v1/oracles")).send().await.unwrap();
+    let res = reqwest::Client::new()
+        .get(format!("{base}/v1/oracles"))
+        .send()
+        .await
+        .unwrap();
     assert_eq!(res.status(), 401);
 }

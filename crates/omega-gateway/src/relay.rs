@@ -1234,7 +1234,10 @@ mod tests {
             .unwrap();
         let forwarded_text = String::from_utf8(forwarded).unwrap();
         assert!(forwarded_text.starts_with("HTTP/1.1 200 OK\r\n"));
-        assert!(forwarded_text.contains(r#"{"ok":true,"version":"0.1.0"}"#));
+        assert!(forwarded_text.contains(&format!(
+            r#"{{"ok":true,"version":"{}"}}"#,
+            env!("CARGO_PKG_VERSION")
+        )));
         gateway_task.abort();
     }
 }

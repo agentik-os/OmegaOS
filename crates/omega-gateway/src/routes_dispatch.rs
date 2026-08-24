@@ -60,15 +60,24 @@ type ApiError = (StatusCode, Json<serde_json::Value>);
 const MAX_MISSION_LEN: usize = 8000;
 
 fn bad_request(msg: impl Into<String>) -> ApiError {
-    (StatusCode::BAD_REQUEST, Json(json!({ "error": msg.into() })))
+    (
+        StatusCode::BAD_REQUEST,
+        Json(json!({ "error": msg.into() })),
+    )
 }
 
 fn too_many_requests(msg: impl Into<String>) -> ApiError {
-    (StatusCode::TOO_MANY_REQUESTS, Json(json!({ "error": msg.into() })))
+    (
+        StatusCode::TOO_MANY_REQUESTS,
+        Json(json!({ "error": msg.into() })),
+    )
 }
 
 fn gateway_timeout(msg: impl Into<String>) -> ApiError {
-    (StatusCode::GATEWAY_TIMEOUT, Json(json!({ "error": msg.into() })))
+    (
+        StatusCode::GATEWAY_TIMEOUT,
+        Json(json!({ "error": msg.into() })),
+    )
 }
 
 /// Parses `omega dispatch`'s stdout into a `DispatchResponse`, per the
@@ -117,7 +126,9 @@ pub async fn create(
     // just a local variable here: it releases automatically when `create`
     // returns.
     let Ok(_permit) = state.dispatch_permits.clone().try_acquire_owned() else {
-        return Err(too_many_requests("too many concurrent dispatches, try again shortly"));
+        return Err(too_many_requests(
+            "too many concurrent dispatches, try again shortly",
+        ));
     };
 
     // Step 1: reject empty/whitespace-only project/mission BEFORE any other
@@ -146,7 +157,9 @@ pub async fn create(
     // project name that isn't a real, short, on-disk directory name is
     // rejected there regardless of its length).
     if req.mission.len() > MAX_MISSION_LEN {
-        return Err(bad_request(format!("mission too long (max {MAX_MISSION_LEN} bytes)")));
+        return Err(bad_request(format!(
+            "mission too long (max {MAX_MISSION_LEN} bytes)"
+        )));
     }
 
     // Step 2: validate `agent`, when given, against the real roster BEFORE
@@ -154,12 +167,17 @@ pub async fn create(
     // from the CLI's own rejection of a garbage `--agent` value.
     if let Some(name) = req.agent.clone() {
         let is_known = tokio::task::spawn_blocking(move || {
-            omega_core::agents::Agent::all().iter().any(|a| a.name() == name)
+            omega_core::agents::Agent::all()
+                .iter()
+                .any(|a| a.name() == name)
         })
         .await
         .unwrap_or(false);
         if !is_known {
-            return Err(bad_request(format!("unknown agent: {}", req.agent.unwrap())));
+            return Err(bad_request(format!(
+                "unknown agent: {}",
+                req.agent.unwrap()
+            )));
         }
     }
 
@@ -169,7 +187,9 @@ pub async fn create(
     let project = req.project.clone();
     let known = tokio::task::spawn_blocking(move || {
         let home = crate::config::home_dir();
-        omega_core::projects::discover(&home).into_iter().any(|p| p.name == project)
+        omega_core::projects::discover(&home)
+            .into_iter()
+            .any(|p| p.name == project)
     })
     .await
     .unwrap_or(false);
@@ -249,7 +269,9 @@ pub async fn create(
         );
         return Err((
             StatusCode::BAD_GATEWAY,
-            Json(json!({ "error": "omega dispatch produced unparseable output (see gateway logs)" })),
+            Json(
+                json!({ "error": "omega dispatch produced unparseable output (see gateway logs)" }),
+            ),
         ));
     };
 

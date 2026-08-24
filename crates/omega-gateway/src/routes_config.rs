@@ -31,10 +31,8 @@
 //! writable field here, and that WAS faithful — `set_config_value` had no
 //! `("openrouter", _)` arm either. It since grew one (model / api_key /
 //! base_url), which left the twin genuinely one-sided: the CLI could
-//! configure the provider and this API could not. The three arms below
-//! close that gap. `kimi.*` is the remaining asymmetry — the CLI writes
-//! four kimi fields, `ConfigResponse` has no kimi entry at all, so that one
-//! needs a protocol change rather than a match arm.
+//! configure the provider and this API could not. The provider response and
+//! write allowlist now stay symmetric, including Kimi and Antigravity.
 //!
 //! REVIEW-FIX ROUND (an independent adversarial reviewer found these before
 //! the branch shipped — see `.superpowers/sdd/progress.md`'s Task C+D+E
@@ -54,8 +52,9 @@
 //! errors as 500, matching `routes_telegram.rs::toggle`'s existing split.
 
 use crate::protocol::{
-    ClaudeConfigEntry, CodexConfigEntry, ConfigResponse, ConfigSetRequest, GeminiConfigEntry,
-    GlmConfigEntry, HermesConfigEntry, OpenRouterConfigEntry, PiConfigEntry,
+    AntigravityConfigEntry, ClaudeConfigEntry, CodexConfigEntry, ConfigResponse, ConfigSetRequest,
+    GeminiConfigEntry, GlmConfigEntry, HermesConfigEntry, KimiConfigEntry, OpenRouterConfigEntry,
+    PiConfigEntry,
 };
 use axum::http::StatusCode;
 use axum::Json;
@@ -64,11 +63,17 @@ use omega_core::providers::ProvidersConfig;
 type ApiError = (StatusCode, Json<serde_json::Value>);
 
 fn bad_request(msg: impl Into<String>) -> ApiError {
-    (StatusCode::BAD_REQUEST, Json(serde_json::json!({ "error": msg.into() })))
+    (
+        StatusCode::BAD_REQUEST,
+        Json(serde_json::json!({ "error": msg.into() })),
+    )
 }
 
 fn internal(msg: impl std::fmt::Display) -> ApiError {
-    (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "error": msg.to_string() })))
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        Json(serde_json::json!({ "error": msg.to_string() })),
+    )
 }
 
 /// Cap on `PUT /v1/config`'s `value` — generous enough for any real model
@@ -89,10 +94,16 @@ fn to_response(cfg: &ProvidersConfig) -> ConfigResponse {
             model: cfg.codex.model.clone(),
             api_key_set: !cfg.codex.api_key.is_empty(),
             base_url: cfg.codex.base_url.clone(),
+            bypass_hook_trust: cfg.codex.bypass_hook_trust,
         },
         gemini: GeminiConfigEntry {
             model: cfg.gemini.model.clone(),
             api_key_set: !cfg.gemini.api_key.is_empty(),
+        },
+        antigravity: AntigravityConfigEntry {
+            model: cfg.antigravity.model.clone(),
+            effort: cfg.antigravity.effort.clone(),
+            dangerously_skip_permissions: cfg.antigravity.dangerously_skip_permissions,
         },
         glm: GlmConfigEntry {
             model: cfg.glm.model.clone(),
@@ -109,8 +120,15 @@ fn to_response(cfg: &ProvidersConfig) -> ConfigResponse {
             api_key_set: !cfg.pi.api_key.is_empty(),
         },
         hermes: HermesConfigEntry {
+            provider: cfg.hermes.provider.clone(),
             model: cfg.hermes.model.clone(),
             api_key_set: !cfg.hermes.api_key.is_empty(),
+        },
+        kimi: KimiConfigEntry {
+            model: cfg.kimi.model.clone(),
+            api_key_set: !cfg.kimi.api_key.is_empty(),
+            base_url: cfg.kimi.base_url.clone(),
+            provider_type: cfg.kimi.provider_type.clone(),
         },
     }
 }
@@ -132,33 +150,13 @@ pub async fn get() -> Result<Json<ConfigResponse>, ApiError> {
     Ok(Json(to_response(&cfg)))
 }
 
-/// Loads `providers.toml`, refusing (rather than silently defaulting, the
-/// way `ProvidersConfig::load()` itself does) when the file EXISTS but
-/// fails to parse — see this module's review-fix doc comment for the exact
-/// data-loss scenario this closes on the write side, and [`get`]'s doc
-/// comment for why the read side uses it too. A missing file is still a
-/// normal, expected "nothing configured yet" case (`Ok(default)`), matching
-/// `ProvidersConfig::load()`'s own posture for that case.
-///
-/// Re-derives `ProvidersConfig::path()` (`crate::config::omega_dir().join(
-/// "providers.toml")` in `omega-core/src/providers.rs`) rather than calling
-/// it: that method is private to its own module, not `pub`, so this is
-/// necessarily a duplicated join of two already-`pub` primitives
-/// (`omega_core::config::omega_dir()` + the literal filename), not a
-/// reimplementation of any real logic.
+/// Strictly loads `providers.toml` through the same authority path as the CLI.
+/// `try_load` rejects corrupt content and captures the current private-file
+/// revision, so a second gateway PUT can save without being mistaken for a
+/// stale writer. The old hand-written TOML parse lost that revision and every
+/// PUT after the first returned 500.
 fn load_config_or_refuse() -> Result<ProvidersConfig, String> {
-    let path = omega_core::config::omega_dir().join("providers.toml");
-    if !path.exists() {
-        return Ok(ProvidersConfig::default());
-    }
-    let content = std::fs::read_to_string(&path)
-        .map_err(|e| format!("providers.toml exists but could not be read: {e}"))?;
-    toml::from_str(&content).map_err(|e| {
-        format!(
-            "providers.toml exists but failed to parse ({e}) -- refusing to write and silently \
-             drop its other fields; fix or remove the file first"
-        )
-    })
+    ProvidersConfig::try_load().map_err(|error| format!("{error:#}"))
 }
 
 /// The exact `(provider, field)` allowlist `omega-cli::set_config_value`
@@ -177,8 +175,14 @@ fn load_config_or_refuse() -> Result<ProvidersConfig, String> {
 /// not a functional deviation for any value that already parses.
 fn apply_config_value(cfg: &mut ProvidersConfig, key: &str, value: &str) -> Result<(), String> {
     let mut parts = key.splitn(2, '.');
-    let provider = parts.next().filter(|s| !s.is_empty()).ok_or("missing provider")?;
-    let field = parts.next().filter(|s| !s.is_empty()).ok_or("missing field (use provider.field)")?;
+    let provider = parts
+        .next()
+        .filter(|s| !s.is_empty())
+        .ok_or("missing provider")?;
+    let field = parts
+        .next()
+        .filter(|s| !s.is_empty())
+        .ok_or("missing field (use provider.field)")?;
     match (provider, field) {
         ("claude", "model") => cfg.claude.model = value.to_string(),
         ("claude", "effort") => cfg.claude.effort = value.to_string(),
@@ -192,15 +196,27 @@ fn apply_config_value(cfg: &mut ProvidersConfig, key: &str, value: &str) -> Resu
         // module's security reasoning otherwise discusses only `api_key`
         // READ blast radius, not this field's WRITE blast radius.
         ("claude", "dangerously_skip_permissions") => {
-            cfg.claude.dangerously_skip_permissions = value
-                .parse()
-                .map_err(|_| "dangerously_skip_permissions must be 'true' or 'false'".to_string())?;
+            cfg.claude.dangerously_skip_permissions = value.parse().map_err(|_| {
+                "dangerously_skip_permissions must be 'true' or 'false'".to_string()
+            })?;
         }
         ("codex", "model") => cfg.codex.model = value.to_string(),
         ("codex", "api_key") => cfg.codex.api_key = value.to_string(),
         ("codex", "base_url") => cfg.codex.base_url = value.to_string(),
+        ("codex", "bypass_hook_trust") => {
+            cfg.codex.bypass_hook_trust = value
+                .parse()
+                .map_err(|_| "bypass_hook_trust must be 'true' or 'false'".to_string())?;
+        }
         ("gemini", "model") => cfg.gemini.model = value.to_string(),
         ("gemini", "api_key") => cfg.gemini.api_key = value.to_string(),
+        ("antigravity", "model") => cfg.antigravity.model = value.to_string(),
+        ("antigravity", "effort") => cfg.antigravity.effort = value.to_string(),
+        ("antigravity", "dangerously_skip_permissions") => {
+            cfg.antigravity.dangerously_skip_permissions = value.parse().map_err(|_| {
+                "dangerously_skip_permissions must be 'true' or 'false'".to_string()
+            })?;
+        }
         ("openrouter", "model") => cfg.openrouter.model = value.to_string(),
         ("openrouter", "api_key") => cfg.openrouter.api_key = value.to_string(),
         ("openrouter", "base_url") => cfg.openrouter.base_url = value.to_string(),
@@ -209,8 +225,13 @@ fn apply_config_value(cfg: &mut ProvidersConfig, key: &str, value: &str) -> Resu
         ("pi", "api_key") => cfg.pi.api_key = value.to_string(),
         ("glm", "model") => cfg.glm.model = value.to_string(),
         ("glm", "api_key") => cfg.glm.api_key = value.to_string(),
+        ("hermes", "provider") => cfg.hermes.provider = value.to_string(),
         ("hermes", "model") => cfg.hermes.model = value.to_string(),
         ("hermes", "api_key") => cfg.hermes.api_key = value.to_string(),
+        ("kimi", "model") => cfg.kimi.model = value.to_string(),
+        ("kimi", "api_key") => cfg.kimi.api_key = value.to_string(),
+        ("kimi", "base_url") => cfg.kimi.base_url = value.to_string(),
+        ("kimi", "provider_type") => cfg.kimi.provider_type = value.to_string(),
         _ => return Err(format!("unknown key: {key}")),
     }
     Ok(())
@@ -229,7 +250,9 @@ pub async fn set(Json(req): Json<ConfigSetRequest>) -> Result<Json<ConfigRespons
         return Err(bad_request("key/value must not contain a NUL byte"));
     }
     if req.value.len() > MAX_CONFIG_VALUE_LEN {
-        return Err(bad_request(format!("value too long (max {MAX_CONFIG_VALUE_LEN} bytes)")));
+        return Err(bad_request(format!(
+            "value too long (max {MAX_CONFIG_VALUE_LEN} bytes)"
+        )));
     }
 
     let key = req.key.clone();
@@ -283,8 +306,12 @@ mod tests {
     fn apply_config_value_writes_the_openrouter_fields_the_cli_writes() {
         let mut cfg = ProvidersConfig::default();
         apply_config_value(&mut cfg, "openrouter.model", "stealth/ox-alpha").unwrap();
-        apply_config_value(&mut cfg, "openrouter.base_url", "https://openrouter.ai/api/v1")
-            .unwrap();
+        apply_config_value(
+            &mut cfg,
+            "openrouter.base_url",
+            "https://openrouter.ai/api/v1",
+        )
+        .unwrap();
         apply_config_value(&mut cfg, "openrouter.api_key", "sk-or-v1-test").unwrap();
         assert_eq!(cfg.openrouter.model, "stealth/ox-alpha");
         assert_eq!(cfg.openrouter.base_url, "https://openrouter.ai/api/v1");

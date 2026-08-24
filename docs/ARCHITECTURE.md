@@ -95,7 +95,7 @@ sessions through a unified configuration and orchestration layer.
 │   ├── sessions/                  Active session metadata
 │   ├── locks/                     Scope-claim file locks
 │   ├── done/                      .done.json files
-│   └── telegram-active-model.json Current provider+model per chat
+│   └── active-model.json          Global provider+model diagnostic mirror
 │
 ├── logs/                          Session logs
 └── audit/                         Audit results
@@ -125,14 +125,16 @@ One home, everything ordered. When an agent/LLM installs something, it lands her
 
 ### Principle
 
-OmegaOS keeps its canonical credential copies under `~/.omega/credentials/`.
-Claude and Gemini compatibility paths may be symlinked there. Codex is a
-special two-copy topology: its native `auth.json` stays under `CODEX_HOME`
+OmegaOS keeps canonical Claude and Codex credential copies under
+`~/.omega/credentials/`. Gemini 0.56+ and Antigravity keep OAuth in their
+native keyring/hybrid stores; Omega does not replace those stores with
+symlinks. Codex is a special two-copy topology: its native `auth.json` stays under `CODEX_HOME`
 (default `~/.codex`) while `omega codex-reconcile` compares, validates,
 quarantines conflicts, and updates the canonical OmegaOS copy. This way:
 
 - LLM CLIs still find their creds at the expected paths
-- Backups only need to cover `~/.omega/`
+- Omega-managed credentials are covered by `~/.omega/`; native Gemini,
+  Antigravity, Hermes, and Kimi auth stores require provider-native backup/login
 - Account switching = updating one file
 - Migration is a one-time operation
 
@@ -141,13 +143,14 @@ quarantines conflicts, and updates the canonical OmegaOS copy. This way:
 | Provider | Type | Credential file | Default model |
 |----------|------|-----------------|---------------|
 | Claude | OAuth | `credentials/claude.json` | opus |
-| Codex | ChatGPT device auth or API key | native `CODEX_HOME/auth.json`, reconciled with `credentials/codex.json` | gpt-5.5-codex |
-| Gemini | OAuth | `credentials/gemini.json` | gemini-3.1-pro |
-| GLM | API key | `credentials/glm.json` | glm-5.1 |
-| OpenRouter | API key | `credentials/openrouter.json` | anthropic/claude-opus-5 |
-| Pi | OpenRouter config | `credentials/pi.json` | anthropic/claude-opus-5 |
-| Hermes | API key | `credentials/hermes.json` | anthropic/claude-opus-5 |
-| Kimi | OAuth or API key | `credentials/kimi.json` | kimi-for-coding |
+| Codex | ChatGPT device auth or API key | native `CODEX_HOME/auth.json`, reconciled with `credentials/codex.json` | gpt-5.6 |
+| Gemini | Enterprise OAuth or API key | Gemini native keyring/store; API key in `providers.toml` | auto |
+| Antigravity | Google sign-in | native keyring | native account default |
+| GLM | API key | `providers.toml` | glm-5.3 |
+| OpenRouter | API key, launched through Pi | `providers.toml` | anthropic/claude-opus-5 |
+| Pi | OpenRouter config | `providers.toml` | anthropic/claude-opus-5 |
+| Hermes | native provider or OpenRouter key | Hermes native config + `providers.toml` | anthropic/claude-opus-5 |
+| Kimi | OAuth or API key | Kimi native OAuth or `providers.toml` | kimi-for-coding |
 | Shell | local process | none | none |
 
 ### Account Switching
@@ -163,17 +166,21 @@ no top-level `omega accounts` command.
 Behind the scenes: switching updates `~/.omega/credentials/claude.json`
 to be a copy/symlink of the saved profile.
 
-### Telegram Model Selection (per chat)
+### Global provider/model selection
 
 ```
 /model                       Show current + list available
 /model codex                 Switch to Codex (OmegaOS default)
 /model claude opus           Switch to Claude with opus
-/model codex gpt-5           Switch to Codex with gpt-5
+/model codex gpt-5.6         Switch to Codex with GPT-5.6
 /model openrouter            Switch to OpenRouter (default model)
 ```
 
-Active selection persisted to `~/.omega/state/telegram-active-model.json`.
+The same operation is available as
+`omega config activate <provider> [model]`. It updates
+`config.toml:agent_command`, the selected provider model, and the diagnostic
+mirror at `~/.omega/state/active-model.json`. A mission-level `--agent`
+override still wins for that mission.
 
 ---
 
@@ -252,9 +259,10 @@ Each LLM CLI reads OmegaOS config:
 | LLM | Mechanism |
 |-----|-----------|
 | Claude Code | `~/.claude/rules/omega-*.md` → symlinks to `~/.omega/rules/` |
-| Gemini CLI | `~/.gemini/GEMINI.md` includes `@import ~/.omega/OMEGA.md` |
+| Gemini CLI | `~/.gemini/GEMINI.md` includes `@import ~/.omega/OMEGA.md` (Enterprise/API-key lane) |
+| Antigravity | Agent Skills / project instruction discovery through `agy` |
 | Codex | `~/.codex/AGENTS.md` → symlink to `~/.omega/OMEGA.md` |
-| Pi / Hermes / GLM | Launch with `--append-system-prompt-file ~/.omega/OMEGA.md` |
+| Pi / OpenRouter / Hermes / GLM / Kimi | Role-scoped Laws and Rules are included in the dispatched mission prompt |
 
 ### User ↔ OmegaOS
 
@@ -342,7 +350,7 @@ auto_naming = true             # Sessions named claude-1, codex-2, ...
 model = "opus"
 
 [codex]
-model = "gpt-5.5-codex"
+model = "gpt-5.6"
 
 # The built-in provider default is Codex. `providers.toml` contains typed
 # per-provider settings; `omega config` manages the active selection.

@@ -20,6 +20,8 @@ pub struct ProvidersConfig {
     #[serde(default)]
     pub gemini: GeminiConfig,
     #[serde(default)]
+    pub antigravity: AntigravityConfig,
+    #[serde(default)]
     pub glm: GlmConfig,
     #[serde(default)]
     pub openrouter: OpenRouterConfig,
@@ -47,6 +49,12 @@ impl fmt::Debug for ProvidersConfig {
             .field("codex_has_api_key", &!self.codex.api_key.is_empty())
             .field("gemini_model", &self.gemini.model)
             .field("gemini_has_api_key", &!self.gemini.api_key.is_empty())
+            .field("antigravity_model", &self.antigravity.model)
+            .field("antigravity_effort", &self.antigravity.effort)
+            .field(
+                "antigravity_dangerously_skip_permissions",
+                &self.antigravity.dangerously_skip_permissions,
+            )
             .field("glm_model", &self.glm.model)
             .field("glm_has_api_key", &!self.glm.api_key.is_empty())
             .field("openrouter_model", &self.openrouter.model)
@@ -96,6 +104,10 @@ pub struct PiConfig {
 #[derive(Clone, Default, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct HermesConfig {
+    /// Hermes provider id. Empty means OpenRouter when an Omega-managed key
+    /// is configured, otherwise Hermes' own native configuration decides.
+    #[serde(default)]
+    pub provider: String,
     #[serde(default)]
     pub model: String,
     #[serde(default)]
@@ -129,7 +141,7 @@ pub struct ClaudeConfig {
     pub dangerously_skip_permissions: bool,
 }
 
-#[derive(Clone, Default, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct CodexConfig {
     #[serde(default)]
@@ -142,6 +154,22 @@ pub struct CodexConfig {
     /// OmegaOS's state/lock directories. Values must be absolute paths.
     #[serde(default)]
     pub additional_writable_dirs: Vec<String>,
+    /// Run enabled hooks without persisted trust for Omega-managed detached
+    /// sessions. This also trusts other enabled hooks, so operators can disable
+    /// it when they prefer Codex's interactive review.
+    pub bypass_hook_trust: bool,
+}
+
+impl Default for CodexConfig {
+    fn default() -> Self {
+        Self {
+            model: String::new(),
+            api_key: String::new(),
+            base_url: String::new(),
+            additional_writable_dirs: Vec::new(),
+            bypass_hook_trust: true,
+        }
+    }
 }
 
 #[derive(Clone, Default, Serialize, Deserialize)]
@@ -151,6 +179,33 @@ pub struct GeminiConfig {
     pub model: String,
     #[serde(default)]
     pub api_key: String,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct AntigravityConfig {
+    /// Optional account-visible model slug from `agy models`.
+    #[serde(default)]
+    pub model: String,
+    /// Optional reasoning effort: low, medium, or high.
+    #[serde(default)]
+    pub effort: String,
+    /// Antigravity otherwise asks for tool approvals. Detached Omega sessions
+    /// need an explicit, visible high-risk opt-in for full autonomy.
+    #[serde(default)]
+    pub dangerously_skip_permissions: bool,
+}
+
+impl Default for AntigravityConfig {
+    fn default() -> Self {
+        Self {
+            model: String::new(),
+            effort: String::new(),
+            // An Omega-managed session may be detached and has no operator at
+            // the approval prompt. Selecting this provider is the opt-in.
+            dangerously_skip_permissions: true,
+        }
+    }
 }
 
 #[derive(Clone, Default, Serialize, Deserialize)]
@@ -205,7 +260,7 @@ macro_rules! impl_redacted_provider_debug {
 }
 
 impl_redacted_provider_debug!(PiConfig, "PiConfig", [provider, model]);
-impl_redacted_provider_debug!(HermesConfig, "HermesConfig", [model]);
+impl_redacted_provider_debug!(HermesConfig, "HermesConfig", [provider, model]);
 impl_redacted_provider_debug!(OpenRouterConfig, "OpenRouterConfig", [model]);
 impl_redacted_provider_debug!(
     ClaudeConfig,
@@ -215,9 +270,22 @@ impl_redacted_provider_debug!(
 impl_redacted_provider_debug!(
     CodexConfig,
     "CodexConfig",
-    [model, additional_writable_dirs]
+    [model, additional_writable_dirs, bypass_hook_trust]
 );
 impl_redacted_provider_debug!(GeminiConfig, "GeminiConfig", [model]);
+impl fmt::Debug for AntigravityConfig {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("AntigravityConfig")
+            .field("model", &self.model)
+            .field("effort", &self.effort)
+            .field(
+                "dangerously_skip_permissions",
+                &self.dangerously_skip_permissions,
+            )
+            .finish()
+    }
+}
 impl_redacted_provider_debug!(
     GlmConfig,
     "GlmConfig",
@@ -283,6 +351,11 @@ impl ProvidersConfig {
     }
 
     pub(crate) fn validate(&self) -> Result<()> {
+        if !self.antigravity.effort.is_empty()
+            && !matches!(self.antigravity.effort.as_str(), "low" | "medium" | "high")
+        {
+            anyhow::bail!("invalid antigravity.effort; expected low, medium, or high");
+        }
         match self.kimi.provider_type.as_str() {
             "kimi" | "anthropic" | "openai" => {}
             _ => anyhow::bail!("invalid kimi.provider_type; expected kimi, anthropic, or openai"),
@@ -312,6 +385,7 @@ impl ProvidersConfig {
             "claude" => &self.claude.api_key,
             "codex" => &self.codex.api_key,
             "gemini" => &self.gemini.api_key,
+            "antigravity" => "",
             "glm" => &self.glm.api_key,
             "openrouter" => &self.openrouter.api_key,
             "pi" => &self.pi.api_key,
@@ -386,6 +460,7 @@ impl ProvidersConfig {
             "claude",
             "codex",
             "gemini",
+            "antigravity",
             "glm",
             "openrouter",
             "pi",
@@ -404,9 +479,14 @@ impl ProvidersConfig {
     pub fn default_model(provider: &str) -> &'static str {
         match provider {
             "claude" => "opus",
-            "codex" => "gpt-5.5-codex",
-            "gemini" => "gemini-3.1-pro",
-            "glm" => "glm-5.1",
+            // Let Codex resolve the current recommended GPT-5.6 variant for
+            // the account while still exposing explicit Sol/Terra/Luna picks.
+            "codex" => "gpt-5.6",
+            // Gemini CLI's account-aware router is safer than pinning a preview
+            // model an OAuth/API-key account may not be entitled to.
+            "gemini" => "auto",
+            "antigravity" => "auto",
+            "glm" => "glm-5.3",
             // Operator directive 2026-07-24: Claude Opus 5 is THE default brain
             // everywhere a tier has not been deliberately pinned (R-MODEL).
             "openrouter" | "pi" | "hermes" => "anthropic/claude-opus-5",
@@ -430,17 +510,29 @@ impl ProvidersConfig {
                 "haiku",
                 "fable",
             ],
-            // June 2026: gpt-5.5-codex = Codex default; gpt-5.2-codex stays the
-            // API-key-only fallback (5.5 needs ChatGPT sign-in).
-            "codex" => vec!["gpt-5.5-codex", "gpt-5.5", "gpt-5.2-codex"],
-            // 3.1+ line uses bare ids (no -preview); 2.5-pro kept as fallback.
+            "codex" => vec![
+                "gpt-5.6",
+                "gpt-5.6-sol",
+                "gpt-5.6-terra",
+                "gpt-5.6-luna",
+                "gpt-5.5",
+            ],
+            // Prefer account-aware aliases and only list model ids accepted by
+            // Gemini CLI 0.56 / the current Gemini API catalog.
             "gemini" => vec![
-                "gemini-3.1-pro",
-                "gemini-3.1-flash",
+                "auto",
+                "pro",
+                "flash",
+                "gemini-3.1-pro-preview",
+                "gemini-3.6-flash",
                 "gemini-3.5-flash",
+                "gemini-3.1-flash-lite",
                 "gemini-2.5-pro",
             ],
-            "glm" => vec!["glm-5.1", "glm-5", "glm-4.6"],
+            // `agy models` is account-scoped and changes independently of
+            // OmegaOS. Empty means UI callers offer a free-text field.
+            "antigravity" => vec![],
+            "glm" => vec!["glm-5.3", "glm-5-turbo", "glm-4.7"],
             // Pi and Hermes both route through OpenRouter, so they share the
             // same curated OpenRouter model IDs — this gives them an arrow-key
             // picker (no typing) instead of the free-text fallback.
@@ -451,7 +543,7 @@ impl ProvidersConfig {
                 "anthropic/claude-opus-4.8",
                 "openai/gpt-5.5",
                 "google/gemini-3.1-pro-preview",
-                "z-ai/glm-5.1",
+                "z-ai/glm-5.3",
                 "deepseek/deepseek-chat",
                 // Cloaked/stealth listing (added 2026-08-23): a reasoning model
                 // aimed at coding and sustained agentic work — 1M context, 131k
@@ -477,8 +569,9 @@ impl ProvidersConfig {
     /// Auth type for a provider: "oauth" | "api_key" | "config".
     pub fn auth_type(provider: &str) -> &'static str {
         match provider {
-            "claude" | "gemini" => "oauth",
-            "codex" | "glm" | "openrouter" | "pi" | "hermes" => "api_key",
+            "claude" | "gemini" | "antigravity" => "oauth",
+            "codex" => "oauth_or_api_key",
+            "glm" | "openrouter" | "pi" | "hermes" => "api_key",
             "kimi" => "oauth_or_api_key",
             "shell" => "local",
             _ => "unknown",
@@ -519,6 +612,14 @@ impl ProvidersConfig {
                 ProviderCapability::Reasoning,
                 ProviderCapability::CodeEditing,
                 ProviderCapability::ToolCalling,
+                ProviderCapability::Vision,
+                ProviderCapability::LongContext,
+            ][..],
+            "antigravity" => &[
+                ProviderCapability::Reasoning,
+                ProviderCapability::CodeEditing,
+                ProviderCapability::ToolCalling,
+                ProviderCapability::Delegation,
                 ProviderCapability::Vision,
                 ProviderCapability::LongContext,
             ][..],
@@ -673,8 +774,9 @@ fn provider_rank(provider: &str) -> usize {
         .unwrap_or(usize::MAX)
 }
 
-/// Track the per-Telegram-chat active model selection.
-/// Persisted to `~/.omega/state/telegram-active-model.json`.
+/// Mirror the global provider/model selected for newly spawned sessions.
+/// Persisted for diagnostics and non-Rust clients; `OmegaConfig::agent_command`
+/// remains the launch authority.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct ActiveModel {
@@ -709,6 +811,12 @@ impl ActiveModel {
     fn path() -> PathBuf {
         crate::config::omega_dir()
             .join("state")
+            .join("active-model.json")
+    }
+
+    fn legacy_path() -> PathBuf {
+        crate::config::omega_dir()
+            .join("state")
             .join("telegram-active-model.json")
     }
 
@@ -727,6 +835,16 @@ impl ActiveModel {
 
     pub fn try_load() -> Result<Self> {
         let path = Self::path();
+        if path.exists() {
+            return Self::load_from(&path);
+        }
+        let legacy = Self::legacy_path();
+        if legacy.exists() {
+            let mut model = Self::load_from(&legacy)?;
+            // The revision belongs to the legacy authority, not the new path.
+            model.source_revision = None;
+            return Ok(model);
+        }
         Self::load_from(&path)
     }
 
@@ -802,6 +920,7 @@ mod provider_capability_tests {
             "claude",
             "codex",
             "gemini",
+            "antigravity",
             "glm",
             "openrouter",
             "pi",
@@ -866,6 +985,28 @@ mod provider_capability_tests {
         );
         assert!(!env.contains_key("KIMI_API_KEY"));
         assert!(!env.contains_key("MOONSHOT_API_KEY"));
+    }
+
+    #[test]
+    fn current_cli_catalog_avoids_retired_or_fabricated_model_ids() {
+        assert_eq!(ProvidersConfig::default_model("codex"), "gpt-5.6");
+        assert!(!ProvidersConfig::models_for("codex").contains(&"gpt-5.5-codex"));
+        assert_eq!(ProvidersConfig::default_model("gemini"), "auto");
+        assert!(ProvidersConfig::models_for("gemini").contains(&"gemini-3.1-pro-preview"));
+        assert!(!ProvidersConfig::models_for("gemini").contains(&"gemini-3.1-pro"));
+        assert_eq!(ProvidersConfig::default_model("glm"), "glm-5.3");
+    }
+
+    #[test]
+    fn antigravity_is_first_class_and_uses_native_oauth() {
+        assert!(ProvidersConfig::is_known("antigravity"));
+        assert_eq!(ProvidersConfig::auth_type("antigravity"), "oauth");
+        assert!(ProvidersConfig::models_for("antigravity").is_empty());
+        assert!(
+            ProvidersConfig::default()
+                .antigravity
+                .dangerously_skip_permissions
+        );
     }
 
     #[test]
@@ -952,7 +1093,7 @@ mod provider_capability_tests {
         let tmp = tempfile::tempdir().unwrap();
         let victim = tmp.path().join("victim.toml");
         let authority = tmp.path().join("providers.toml");
-        std::fs::write(&victim, "[codex]\nmodel = \"gpt-5.5-codex\"\n").unwrap();
+        std::fs::write(&victim, "[codex]\nmodel = \"gpt-5.6\"\n").unwrap();
         let original_mode = std::fs::metadata(&victim).unwrap().permissions().mode() & 0o777;
 
         symlink(&victim, &authority).unwrap();
@@ -1049,7 +1190,7 @@ mod provider_capability_tests {
         let authority = tmp.path().join("active-model.json");
         std::fs::write(
             &victim,
-            r#"{"active_provider":"codex","active_model":"gpt-5.5-codex"}"#,
+            r#"{"active_provider":"codex","active_model":"gpt-5.6"}"#,
         )
         .unwrap();
         let original_mode = std::fs::metadata(&victim).unwrap().permissions().mode() & 0o777;

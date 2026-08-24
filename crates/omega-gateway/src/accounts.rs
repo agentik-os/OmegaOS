@@ -19,7 +19,8 @@ use std::sync::{Arc, Mutex};
 pub fn valid_slug(s: &str) -> bool {
     !s.is_empty()
         && s.len() <= 32
-        && s.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+        && s.chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
 }
 
 /// Handle over `<gateway_dir>/accounts`: every read/write goes straight to
@@ -47,7 +48,10 @@ impl AccountStore {
         let accounts_dir = gateway_dir.join("accounts");
         std::fs::create_dir_all(&accounts_dir).ok();
         harden_dir(&accounts_dir);
-        Self { accounts_dir, lock: Arc::new(Mutex::new(())) }
+        Self {
+            accounts_dir,
+            lock: Arc::new(Mutex::new(())),
+        }
     }
 
     fn registry_path(&self) -> PathBuf {
@@ -76,7 +80,9 @@ impl AccountStore {
         match serde_json::from_str(&text) {
             Ok(list) => list,
             Err(e) => {
-                tracing::error!("corrupted accounts.json ({e}); quarantining instead of overwriting");
+                tracing::error!(
+                    "corrupted accounts.json ({e}); quarantining instead of overwriting"
+                );
                 self.quarantine_corrupt_registry(&path);
                 Vec::new()
             }
@@ -117,7 +123,11 @@ impl AccountStore {
                 } else {
                     harden_file(&tmp);
                     if let Err(e) = std::fs::rename(&tmp, &path) {
-                        tracing::error!("failed to rename {} -> {}: {e}", tmp.display(), path.display());
+                        tracing::error!(
+                            "failed to rename {} -> {}: {e}",
+                            tmp.display(),
+                            path.display()
+                        );
                     } else {
                         harden_file(&path);
                     }
@@ -208,7 +218,9 @@ impl AccountStore {
 
     /// The current default account for `kind`, if any.
     pub fn default_for(&self, kind: AccountKind) -> Option<Account> {
-        self.read_registry().into_iter().find(|a| a.kind == kind && a.is_default)
+        self.read_registry()
+            .into_iter()
+            .find(|a| a.kind == kind && a.is_default)
     }
 }
 
@@ -235,7 +247,9 @@ mod tests {
     fn create_slot_roundtrip() {
         let dir = tempfile::tempdir().unwrap();
         let store = AccountStore::open(dir.path());
-        let account = store.create_slot("work-1", "Work account", AccountKind::Claude).unwrap();
+        let account = store
+            .create_slot("work-1", "Work account", AccountKind::Claude)
+            .unwrap();
 
         assert_eq!(account.slug, "work-1");
         assert_eq!(account.label, "Work account");
@@ -251,7 +265,9 @@ mod tests {
     fn create_slot_rejects_invalid_slug() {
         let dir = tempfile::tempdir().unwrap();
         let store = AccountStore::open(dir.path());
-        assert!(store.create_slot("../x", "bad", AccountKind::Claude).is_err());
+        assert!(store
+            .create_slot("../x", "bad", AccountKind::Claude)
+            .is_err());
         assert!(store.create_slot("UP", "bad", AccountKind::Claude).is_err());
     }
 
@@ -259,8 +275,12 @@ mod tests {
     fn create_slot_rejects_duplicate_slug() {
         let dir = tempfile::tempdir().unwrap();
         let store = AccountStore::open(dir.path());
-        store.create_slot("work-1", "Work", AccountKind::Claude).unwrap();
-        assert!(store.create_slot("work-1", "Again", AccountKind::Claude).is_err());
+        store
+            .create_slot("work-1", "Work", AccountKind::Claude)
+            .unwrap();
+        assert!(store
+            .create_slot("work-1", "Again", AccountKind::Claude)
+            .is_err());
     }
 
     #[test]
@@ -285,13 +305,22 @@ mod tests {
     fn first_of_kind_is_default_independently_per_kind() {
         let dir = tempfile::tempdir().unwrap();
         let store = AccountStore::open(dir.path());
-        let claude1 = store.create_slot("c1", "Claude 1", AccountKind::Claude).unwrap();
+        let claude1 = store
+            .create_slot("c1", "Claude 1", AccountKind::Claude)
+            .unwrap();
         assert!(claude1.is_default);
 
-        let codex1 = store.create_slot("x1", "Codex 1", AccountKind::Codex).unwrap();
-        assert!(codex1.is_default, "first Codex account is its own kind's default");
+        let codex1 = store
+            .create_slot("x1", "Codex 1", AccountKind::Codex)
+            .unwrap();
+        assert!(
+            codex1.is_default,
+            "first Codex account is its own kind's default"
+        );
 
-        let claude2 = store.create_slot("c2", "Claude 2", AccountKind::Claude).unwrap();
+        let claude2 = store
+            .create_slot("c2", "Claude 2", AccountKind::Claude)
+            .unwrap();
         assert!(!claude2.is_default, "second Claude account is not default");
     }
 
@@ -299,9 +328,15 @@ mod tests {
     fn set_default_moves_default_within_kind_other_kind_untouched() {
         let dir = tempfile::tempdir().unwrap();
         let store = AccountStore::open(dir.path());
-        store.create_slot("c1", "Claude 1", AccountKind::Claude).unwrap();
-        store.create_slot("c2", "Claude 2", AccountKind::Claude).unwrap();
-        let codex1 = store.create_slot("x1", "Codex 1", AccountKind::Codex).unwrap();
+        store
+            .create_slot("c1", "Claude 1", AccountKind::Claude)
+            .unwrap();
+        store
+            .create_slot("c2", "Claude 2", AccountKind::Claude)
+            .unwrap();
+        let codex1 = store
+            .create_slot("x1", "Codex 1", AccountKind::Codex)
+            .unwrap();
 
         assert!(store.set_default("c2"));
 
@@ -326,8 +361,12 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = AccountStore::open(dir.path());
         assert!(store.default_for(AccountKind::Claude).is_none());
-        store.create_slot("c1", "Claude 1", AccountKind::Claude).unwrap();
-        store.create_slot("c2", "Claude 2", AccountKind::Claude).unwrap();
+        store
+            .create_slot("c1", "Claude 1", AccountKind::Claude)
+            .unwrap();
+        store
+            .create_slot("c2", "Claude 2", AccountKind::Claude)
+            .unwrap();
         store.set_default("c2");
         assert_eq!(store.default_for(AccountKind::Claude).unwrap().slug, "c2");
     }
@@ -336,7 +375,9 @@ mod tests {
     fn remove_deletes_dir_and_registry_entry() {
         let dir = tempfile::tempdir().unwrap();
         let store = AccountStore::open(dir.path());
-        store.create_slot("work-1", "Work", AccountKind::Claude).unwrap();
+        store
+            .create_slot("work-1", "Work", AccountKind::Claude)
+            .unwrap();
         let slot_dir = store.slot_dir("work-1");
         assert!(slot_dir.exists());
 
@@ -357,14 +398,21 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         {
             let store = AccountStore::open(dir.path());
-            store.create_slot("work-1", "Work", AccountKind::Claude).unwrap();
-            store.create_slot("work-2", "Work 2", AccountKind::Claude).unwrap();
+            store
+                .create_slot("work-1", "Work", AccountKind::Claude)
+                .unwrap();
+            store
+                .create_slot("work-2", "Work 2", AccountKind::Claude)
+                .unwrap();
             store.set_default("work-2");
         }
 
         let store2 = AccountStore::open(dir.path());
         assert_eq!(store2.list().len(), 2);
-        assert_eq!(store2.default_for(AccountKind::Claude).unwrap().slug, "work-2");
+        assert_eq!(
+            store2.default_for(AccountKind::Claude).unwrap().slug,
+            "work-2"
+        );
     }
 
     #[cfg(unix)]
@@ -373,14 +421,20 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
         let store = AccountStore::open(dir.path());
-        store.create_slot("work-1", "Work", AccountKind::Claude).unwrap();
+        store
+            .create_slot("work-1", "Work", AccountKind::Claude)
+            .unwrap();
 
         let slot_dir = dir.path().join("accounts").join("work-1");
         let dir_mode = std::fs::metadata(&slot_dir).unwrap().permissions().mode() & 0o777;
         assert_eq!(dir_mode, 0o700, "slot dir must be 0700");
 
         let registry_path = dir.path().join("accounts").join("accounts.json");
-        let registry_mode = std::fs::metadata(&registry_path).unwrap().permissions().mode() & 0o777;
+        let registry_mode = std::fs::metadata(&registry_path)
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
         assert_eq!(registry_mode, 0o600, "accounts.json must be 0600");
     }
 
@@ -395,18 +449,33 @@ mod tests {
         // (a) reading a corrupt registry returns empty/usable rather than
         // panicking or propagating the parse error.
         let listed = store.list();
-        assert!(listed.is_empty(), "a corrupt registry must read back as an empty, usable list");
+        assert!(
+            listed.is_empty(),
+            "a corrupt registry must read back as an empty, usable list"
+        );
 
         // (b) the original bad bytes now live at accounts.json.corrupt,
         // untouched, instead of being clobbered by the next write.
         let corrupt_path = dir.path().join("accounts").join("accounts.json.corrupt");
-        assert!(corrupt_path.exists(), "the corrupt file must be quarantined");
-        assert_eq!(std::fs::read(&corrupt_path).unwrap(), bad_bytes, "quarantined bytes must be untouched");
-        assert!(!registry_path.exists(), "the corrupt path is vacated by the rename");
+        assert!(
+            corrupt_path.exists(),
+            "the corrupt file must be quarantined"
+        );
+        assert_eq!(
+            std::fs::read(&corrupt_path).unwrap(),
+            bad_bytes,
+            "quarantined bytes must be untouched"
+        );
+        assert!(
+            !registry_path.exists(),
+            "the corrupt path is vacated by the rename"
+        );
 
         // The store keeps working normally afterward (a fresh write does not
         // collide with the quarantined file).
-        store.create_slot("work-1", "Work", AccountKind::Claude).unwrap();
+        store
+            .create_slot("work-1", "Work", AccountKind::Claude)
+            .unwrap();
         assert_eq!(store.list().len(), 1);
     }
 
@@ -433,7 +502,9 @@ mod tests {
         let handle_a = std::thread::spawn(move || {
             for i in 0..iterations {
                 barrier_a.wait();
-                store_a.create_slot(&format!("race-a-{i}"), "A", AccountKind::Claude).unwrap();
+                store_a
+                    .create_slot(&format!("race-a-{i}"), "A", AccountKind::Claude)
+                    .unwrap();
             }
         });
 
@@ -442,7 +513,9 @@ mod tests {
         let handle_b = std::thread::spawn(move || {
             for i in 0..iterations {
                 barrier_b.wait();
-                store_b.create_slot(&format!("race-b-{i}"), "B", AccountKind::Codex).unwrap();
+                store_b
+                    .create_slot(&format!("race-b-{i}"), "B", AccountKind::Codex)
+                    .unwrap();
             }
         });
 
@@ -460,7 +533,11 @@ mod tests {
                 "lost race-b-{i}: concurrent create_slot dropped an account (I-6)"
             );
         }
-        assert_eq!(listed.len(), iterations * 2, "registry must contain every created account, no lost updates");
+        assert_eq!(
+            listed.len(),
+            iterations * 2,
+            "registry must contain every created account, no lost updates"
+        );
     }
 
     #[test]
@@ -470,7 +547,11 @@ mod tests {
         std::fs::create_dir_all(&accounts_dir).unwrap();
         // Pre-seed an existing quarantine file, as if an earlier corruption
         // was already quarantined.
-        std::fs::write(accounts_dir.join("accounts.json.corrupt"), b"first corruption").unwrap();
+        std::fs::write(
+            accounts_dir.join("accounts.json.corrupt"),
+            b"first corruption",
+        )
+        .unwrap();
 
         let store = AccountStore::open(dir.path());
         let registry_path = accounts_dir.join("accounts.json");

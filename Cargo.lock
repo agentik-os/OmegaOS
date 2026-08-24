@@ -1342,7 +1342,7 @@ dependencies = [
 
 [[package]]
 name = "omega"
-version = "0.1.13"
+version = "0.1.14"
 dependencies = [
  "anyhow",
  "base64",
@@ -1368,7 +1368,7 @@ dependencies = [
 
 [[package]]
 name = "omega-core"
-version = "0.1.13"
+version = "0.1.14"
 dependencies = [
  "anyhow",
  "blake3",
@@ -1401,7 +1401,7 @@ dependencies = [
 
 [[package]]
 name = "omega-gateway"
-version = "0.1.0"
+version = "0.1.14"
 dependencies = [
  "anyhow",
  "axum",
@@ -1429,7 +1429,7 @@ dependencies = [
 
 [[package]]
 name = "omega-tui"
-version = "0.1.13"
+version = "0.1.14"
 dependencies = [
  "anyhow",
  "base64",

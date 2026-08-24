@@ -33,14 +33,20 @@ fn install_fake_home(home_dir: &std::path::Path, project_name: &str) -> std::pat
 
 async fn app_and_token(gateway_dir: &std::path::Path) -> (axum::Router, String) {
     let (_, token) = DeviceStore::open(gateway_dir).issue("t");
-    let app = build_router(AppState::new(gateway_dir.to_path_buf(), GatewayConfig::default()));
+    let app = build_router(AppState::new(
+        gateway_dir.to_path_buf(),
+        GatewayConfig::default(),
+    ));
     (app, token)
 }
 
 #[tokio::test]
 async fn list_requires_auth() {
     let gateway_dir = tempfile::tempdir().unwrap();
-    let app = build_router(AppState::new(gateway_dir.path().to_path_buf(), GatewayConfig::default()));
+    let app = build_router(AppState::new(
+        gateway_dir.path().to_path_buf(),
+        GatewayConfig::default(),
+    ));
     let base = spawn(app).await;
 
     let res = reqwest::Client::new()
@@ -54,7 +60,10 @@ async fn list_requires_auth() {
 #[tokio::test]
 async fn read_requires_auth() {
     let gateway_dir = tempfile::tempdir().unwrap();
-    let app = build_router(AppState::new(gateway_dir.path().to_path_buf(), GatewayConfig::default()));
+    let app = build_router(AppState::new(
+        gateway_dir.path().to_path_buf(),
+        GatewayConfig::default(),
+    ));
     let base = spawn(app).await;
 
     let res = reqwest::Client::new()
@@ -108,7 +117,10 @@ async fn list_returns_project_root_entries_dirs_first_then_alpha() {
     assert_eq!(res.status(), 200);
     let body: serde_json::Value = res.json().await.unwrap();
     let entries = body["entries"].as_array().unwrap();
-    let names: Vec<&str> = entries.iter().map(|e| e["name"].as_str().unwrap()).collect();
+    let names: Vec<&str> = entries
+        .iter()
+        .map(|e| e["name"].as_str().unwrap())
+        .collect();
     // .git is also present (created by install_fake_home) but ordering only
     // needs to hold: every dir before every file, alpha within each group.
     let zdir_idx = names.iter().position(|n| *n == "zdir").unwrap();
@@ -132,7 +144,9 @@ async fn list_rejects_traversal_via_http() {
     let base = spawn(app).await;
 
     let res = reqwest::Client::new()
-        .get(format!("{base}/v1/files?project=TestProj&path=..%2Fsecret.txt"))
+        .get(format!(
+            "{base}/v1/files?project=TestProj&path=..%2Fsecret.txt"
+        ))
         .bearer_auth(&token)
         .send()
         .await
@@ -226,7 +240,9 @@ async fn read_returns_content_for_a_real_text_file() {
     let base = spawn(app).await;
 
     let res = reqwest::Client::new()
-        .get(format!("{base}/v1/files/read?project=TestProj&path=hello.txt"))
+        .get(format!(
+            "{base}/v1/files/read?project=TestProj&path=hello.txt"
+        ))
         .bearer_auth(&token)
         .send()
         .await
@@ -273,7 +289,9 @@ async fn read_rejects_oversized_file() {
     let base = spawn(app).await;
 
     let res = reqwest::Client::new()
-        .get(format!("{base}/v1/files/read?project=TestProj&path=big.bin"))
+        .get(format!(
+            "{base}/v1/files/read?project=TestProj&path=big.bin"
+        ))
         .bearer_auth(&token)
         .send()
         .await
@@ -295,7 +313,9 @@ async fn read_rejects_binary_file() {
     let base = spawn(app).await;
 
     let res = reqwest::Client::new()
-        .get(format!("{base}/v1/files/read?project=TestProj&path=binary.dat"))
+        .get(format!(
+            "{base}/v1/files/read?project=TestProj&path=binary.dat"
+        ))
         .bearer_auth(&token)
         .send()
         .await

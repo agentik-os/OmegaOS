@@ -22,7 +22,10 @@ async fn spawn(app: axum::Router) -> String {
 
 async fn app_and_token(gateway_dir: &std::path::Path) -> (axum::Router, String) {
     let (_, token) = DeviceStore::open(gateway_dir).issue("t");
-    let app = build_router(AppState::new(gateway_dir.to_path_buf(), GatewayConfig::default()));
+    let app = build_router(AppState::new(
+        gateway_dir.to_path_buf(),
+        GatewayConfig::default(),
+    ));
     (app, token)
 }
 
@@ -56,7 +59,12 @@ async fn happy_path_fans_out_to_all_four_boxes() {
     let file_name = body["file"].as_str().unwrap();
     assert!(deposit_dir.path().join("inbox").join(file_name).exists());
     for b in ["Home", "AltReality", "Omega", "Box"] {
-        assert!(deposit_dir.path().join("deposit").join(b).join(file_name).exists());
+        assert!(deposit_dir
+            .path()
+            .join("deposit")
+            .join(b)
+            .join(file_name)
+            .exists());
     }
 
     std::env::remove_var("OMEGA_DEPOSIT_DIR");
@@ -206,7 +214,10 @@ async fn post_deposit_requires_auth() {
     let deposit_dir = tempfile::tempdir().unwrap();
     std::env::set_var("OMEGA_DEPOSIT_DIR", deposit_dir.path());
 
-    let app = build_router(AppState::new(gateway_dir.path().to_path_buf(), GatewayConfig::default()));
+    let app = build_router(AppState::new(
+        gateway_dir.path().to_path_buf(),
+        GatewayConfig::default(),
+    ));
     let base = spawn(app).await;
 
     let part = reqwest::multipart::Part::bytes(b"hello".to_vec()).file_name("note.txt");

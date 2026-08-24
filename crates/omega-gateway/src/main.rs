@@ -27,9 +27,7 @@ enum Command {
     /// List chats (id, title, agent, updated_at)
     Chats,
     /// Revoke a device by id (its token stops verifying immediately)
-    Revoke {
-        device_id: String,
-    },
+    Revoke { device_id: String },
     /// List account slots (slug, label, kind, default, live auth status)
     Accounts,
     /// Create a new isolated credential slot (kind: claude|codex)
@@ -101,7 +99,10 @@ async fn main() -> anyhow::Result<()> {
             } else {
                 println!("{:<18} {:<20} {:<28} REVOKED", "ID", "NAME", "CREATED_AT");
                 for d in devices {
-                    println!("{:<18} {:<20} {:<28} {}", d.id, d.name, d.created_at, d.revoked);
+                    println!(
+                        "{:<18} {:<20} {:<28} {}",
+                        d.id, d.name, d.created_at, d.revoked
+                    );
                 }
             }
         }
@@ -137,7 +138,10 @@ async fn main() -> anyhow::Result<()> {
             if accounts.is_empty() {
                 println!("no accounts");
             } else {
-                println!("{:<16} {:<20} {:<8} {:<8} STATUS", "SLUG", "LABEL", "KIND", "DEFAULT");
+                println!(
+                    "{:<16} {:<20} {:<8} {:<8} STATUS",
+                    "SLUG", "LABEL", "KIND", "DEFAULT"
+                );
                 for a in accounts {
                     let slot = store.slot_dir(&a.slug);
                     let status = match account_login::status(&a, &slot) {
@@ -169,7 +173,10 @@ async fn main() -> anyhow::Result<()> {
                     match kind {
                         AccountKind::Claude => {
                             println!("next step, log this slot in — either:");
-                            println!("  run: CLAUDE_CONFIG_DIR={} claude auth login", slot_dir.display());
+                            println!(
+                                "  run: CLAUDE_CONFIG_DIR={} claude auth login",
+                                slot_dir.display()
+                            );
                             println!("  or:  complete login via the app's account pairing flow");
                         }
                         AccountKind::Codex => {
@@ -220,7 +227,11 @@ fn code_hash(code: &str) -> String {
     use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
     hasher.update(code.as_bytes());
-    hasher.finalize().iter().map(|b| format!("{b:02x}")).collect()
+    hasher
+        .finalize()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
 }
 
 /// The Convex HTTP mutation envelope for `boxPairing:redeem`. Built as data so
@@ -327,7 +338,9 @@ mod tests {
         );
         let hashed = code_hash("a1b2c3d4");
         assert_eq!(hashed.len(), 64);
-        assert!(hashed.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
+        assert!(hashed
+            .chars()
+            .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
         assert!(!hashed.contains("a1b2c3d4"));
     }
 
@@ -346,7 +359,13 @@ mod tests {
 
     #[test]
     fn redeem_request_carries_a_tailscale_host_when_there_is_one() {
-        let body = redeem_request("a1b2c3d4", "b", "L", 4477, Some("station.tail64d114.ts.net"));
+        let body = redeem_request(
+            "a1b2c3d4",
+            "b",
+            "L",
+            4477,
+            Some("station.tail64d114.ts.net"),
+        );
         assert_eq!(body["args"]["tailscaleHost"], "station.tail64d114.ts.net");
     }
 
@@ -372,8 +391,14 @@ mod tests {
 
     #[test]
     fn cli_parses_account_add_subcommand_with_positional_args() {
-        let cli =
-            Cli::try_parse_from(["omega-gatewayd", "account-add", "work-a", "Work A", "claude"]).unwrap();
+        let cli = Cli::try_parse_from([
+            "omega-gatewayd",
+            "account-add",
+            "work-a",
+            "Work A",
+            "claude",
+        ])
+        .unwrap();
         match cli.command {
             Some(Command::AccountAdd { slug, label, kind }) => {
                 assert_eq!(slug, "work-a");

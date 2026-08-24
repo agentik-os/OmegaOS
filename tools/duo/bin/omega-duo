@@ -684,12 +684,15 @@ function codexArgv(mode: string, degraded = false, preflight = false): string[] 
   if (mode === "code") {
     // Bypass Codex's bwrap workspace sandbox. On this operator-owned VPS the
     // network namespace is locked down, so bwrap's loopback setup fails
-    // ("RTM_NEWADDR: Operation not permitted") and --full-auto can't write a
+    // ("RTM_NEWADDR: Operation not permitted") and the sandbox can't write a
     // single file. Bypassing matches how Claude already runs here
     // (--dangerously-skip-permissions): same trust boundary, same box, the
-    // operator owns it. DUO_CODEX_FULL_AUTO=1 forces the sandboxed path back
-    // on a host where bwrap works.
-    if (process.env.DUO_CODEX_FULL_AUTO === "1") return [...base, "--full-auto", "-"];
+    // operator owns it. The legacy env name is retained for compatibility;
+    // Codex >=0.147 removed --full-auto, and --approve-for-me now supplies the
+    // workspace-write + automatic-review preset by itself.
+    if (process.env.DUO_CODEX_FULL_AUTO === "1") {
+      return [...base, "--approve-for-me", "--dangerously-bypass-hook-trust", "-"];
+    }
     return [...base, "--dangerously-bypass-approvals-and-sandbox", "-"];
   }
   throw new Error("invalid duo mode");

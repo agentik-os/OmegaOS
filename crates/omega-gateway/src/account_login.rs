@@ -147,7 +147,9 @@ pub fn poll_login_complete(account: &Account, slot: &Path) -> bool {
 /// [`begin_claude_login`] and [`begin_codex_login`] — the only difference
 /// between the two providers is which command gets built.
 fn begin_login(mut cmd: Command) -> Result<LoginOutcome> {
-    cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null());
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
     let mut child = cmd.spawn()?;
     let stdout = child.stdout.take().expect("stdout was piped");
 
@@ -247,7 +249,10 @@ pub fn logout(account: &Account, slot: &Path) -> Result<()> {
             .output()?,
     };
     if !output.status.success() {
-        bail!("logout failed: {}", String::from_utf8_lossy(&output.stderr).trim());
+        bail!(
+            "logout failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
     }
     Ok(())
 }
@@ -326,8 +331,14 @@ mod tests {
 
     #[test]
     fn parse_auth_status_compact_json_form() {
-        assert_eq!(parse_auth_status("{\"loggedIn\":false}"), AuthStatus::LoggedOut);
-        assert_eq!(parse_auth_status("{\"loggedIn\":true}"), AuthStatus::LoggedIn);
+        assert_eq!(
+            parse_auth_status("{\"loggedIn\":false}"),
+            AuthStatus::LoggedOut
+        );
+        assert_eq!(
+            parse_auth_status("{\"loggedIn\":true}"),
+            AuthStatus::LoggedIn
+        );
     }
 
     // --- parse_login_url (pure) ---
@@ -370,7 +381,11 @@ mod tests {
     fn status_parses_fake_claude_logged_in() {
         let _g = LOCK.lock().unwrap();
         let dir = tempfile::tempdir().unwrap();
-        let bin = fake_bin(dir.path(), "fake-claude", "echo 'Logged in as test@example.com'");
+        let bin = fake_bin(
+            dir.path(),
+            "fake-claude",
+            "echo 'Logged in as test@example.com'",
+        );
         std::env::set_var("OMEGA_CLAUDE_BIN", &bin);
 
         let account = test_account(AccountKind::Claude);
@@ -399,7 +414,10 @@ mod tests {
     #[test]
     fn status_missing_binary_is_unknown() {
         let _g = LOCK.lock().unwrap();
-        std::env::set_var("OMEGA_CLAUDE_BIN", "/nonexistent/definitely-not-a-binary-xyz");
+        std::env::set_var(
+            "OMEGA_CLAUDE_BIN",
+            "/nonexistent/definitely-not-a-binary-xyz",
+        );
 
         let account = test_account(AccountKind::Claude);
         let slot = tempfile::tempdir().unwrap();

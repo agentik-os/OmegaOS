@@ -16,7 +16,10 @@ async fn spawn(app: axum::Router) -> String {
 
 async fn app_and_token(gateway_dir: &std::path::Path) -> (axum::Router, String) {
     let (_, token) = DeviceStore::open(gateway_dir).issue("t");
-    let app = build_router(AppState::new(gateway_dir.to_path_buf(), GatewayConfig::default()));
+    let app = build_router(AppState::new(
+        gateway_dir.to_path_buf(),
+        GatewayConfig::default(),
+    ));
     (app, token)
 }
 
@@ -40,7 +43,12 @@ async fn put_then_get_roundtrips_over_the_wire() {
     assert_eq!(echoed["folder"], "/work/foo");
     assert_eq!(echoed["pinned"], true);
 
-    let res = client.get(format!("{base}/v1/session-org")).bearer_auth(&token).send().await.unwrap();
+    let res = client
+        .get(format!("{base}/v1/session-org"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
     assert_eq!(res.status(), 200);
     let body: serde_json::Value = res.json().await.unwrap();
     let entry = &body["entries"]["oracle-Foo-1"];
@@ -92,8 +100,15 @@ async fn put_is_a_full_replace_not_a_merge() {
     assert_eq!(res.status(), 200);
     let echoed: serde_json::Value = res.json().await.unwrap();
     assert_eq!(echoed["label"], "new");
-    assert_eq!(echoed["folder"], serde_json::Value::Null, "full replace: folder must not survive from the first PUT");
-    assert_eq!(echoed["pinned"], false, "full replace: pinned must reset to its default, not survive as true");
+    assert_eq!(
+        echoed["folder"],
+        serde_json::Value::Null,
+        "full replace: folder must not survive from the first PUT"
+    );
+    assert_eq!(
+        echoed["pinned"], false,
+        "full replace: pinned must reset to its default, not survive as true"
+    );
 }
 
 #[tokio::test]
@@ -118,7 +133,12 @@ async fn put_a_different_key_preserves_the_first_entry() {
         .await
         .unwrap();
 
-    let res = client.get(format!("{base}/v1/session-org")).bearer_auth(&token).send().await.unwrap();
+    let res = client
+        .get(format!("{base}/v1/session-org"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
     let body: serde_json::Value = res.json().await.unwrap();
     assert_eq!(body["entries"].as_object().unwrap().len(), 2);
     assert_eq!(body["entries"]["oracle-Foo-1"]["label"], "first");
@@ -140,7 +160,11 @@ async fn invalid_session_name_rejects_400_before_any_file_write() {
             .send()
             .await
             .unwrap();
-        assert_eq!(res.status(), 400, "expected 400 for session name {bad_name}");
+        assert_eq!(
+            res.status(),
+            400,
+            "expected 400 for session name {bad_name}"
+        );
     }
 
     assert!(
@@ -188,17 +212,27 @@ async fn oversized_folder_rejects_400() {
 #[tokio::test]
 async fn get_requires_auth() {
     let gateway_dir = tempfile::tempdir().unwrap();
-    let app = build_router(AppState::new(gateway_dir.path().to_path_buf(), GatewayConfig::default()));
+    let app = build_router(AppState::new(
+        gateway_dir.path().to_path_buf(),
+        GatewayConfig::default(),
+    ));
     let base = spawn(app).await;
 
-    let res = reqwest::Client::new().get(format!("{base}/v1/session-org")).send().await.unwrap();
+    let res = reqwest::Client::new()
+        .get(format!("{base}/v1/session-org"))
+        .send()
+        .await
+        .unwrap();
     assert_eq!(res.status(), 401);
 }
 
 #[tokio::test]
 async fn put_requires_auth() {
     let gateway_dir = tempfile::tempdir().unwrap();
-    let app = build_router(AppState::new(gateway_dir.path().to_path_buf(), GatewayConfig::default()));
+    let app = build_router(AppState::new(
+        gateway_dir.path().to_path_buf(),
+        GatewayConfig::default(),
+    ));
     let base = spawn(app).await;
 
     let res = reqwest::Client::new()

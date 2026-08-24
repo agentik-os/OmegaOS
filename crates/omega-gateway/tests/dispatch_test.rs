@@ -26,15 +26,17 @@ async fn spawn(app: axum::Router) -> String {
 /// The script also appends its full argv (one per line, `--`-separated) to
 /// a capture file under `capture_dir`, so a test can prove exactly what was
 /// passed to the subprocess.
-fn install_fake_omega(bin_dir: &std::path::Path, capture_file: &std::path::Path, script_body: &str) {
+fn install_fake_omega(
+    bin_dir: &std::path::Path,
+    capture_file: &std::path::Path,
+    script_body: &str,
+) {
     use std::os::unix::fs::PermissionsExt;
     let path = bin_dir.join("omega");
     let capture = capture_file.display();
     std::fs::write(
         &path,
-        format!(
-            "#!/usr/bin/env bash\nprintf '%s\\n' \"$@\" > '{capture}'\n{script_body}\n"
-        ),
+        format!("#!/usr/bin/env bash\nprintf '%s\\n' \"$@\" > '{capture}'\n{script_body}\n"),
     )
     .unwrap();
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -52,7 +54,10 @@ fn install_fake_home(home_dir: &std::path::Path, project_name: &str) {
 
 async fn app_and_token(gateway_dir: &std::path::Path) -> (axum::Router, String) {
     let (_, token) = DeviceStore::open(gateway_dir).issue("t");
-    let app = build_router(AppState::new(gateway_dir.to_path_buf(), GatewayConfig::default()));
+    let app = build_router(AppState::new(
+        gateway_dir.to_path_buf(),
+        GatewayConfig::default(),
+    ));
     (app, token)
 }
 
@@ -113,7 +118,11 @@ async fn unknown_project_rejects_before_any_subprocess_spawn() {
     install_fake_home(home_dir.path(), "TestProj");
     // Install a fake omega that would fail loudly if invoked at all, proving
     // a spawn never happens rather than merely happening to succeed.
-    install_fake_omega(bin_dir.path(), &capture_file, "echo 'SHOULD NEVER RUN' >&2; exit 1");
+    install_fake_omega(
+        bin_dir.path(),
+        &capture_file,
+        "echo 'SHOULD NEVER RUN' >&2; exit 1",
+    );
 
     let (app, token) = app_and_token(gateway_dir.path()).await;
     let base = spawn(app).await;
@@ -133,7 +142,10 @@ async fn unknown_project_rejects_before_any_subprocess_spawn() {
     // The single most important assertion in this plan: the subprocess was
     // NEVER spawned, so the capture file the fake omega script writes on
     // every invocation must not exist.
-    assert!(!capture_file.exists(), "omega subprocess was spawned for an unknown project");
+    assert!(
+        !capture_file.exists(),
+        "omega subprocess was spawned for an unknown project"
+    );
 
     std::env::remove_var("OMEGA_HOME");
     std::env::remove_var("OMEGA_BIN");
@@ -172,13 +184,25 @@ async fn subprocess_failure_surfaces_stderr_as_502() {
     // sanitized, generic error. The full raw text still goes to the
     // gateway's own tracing log (not asserted here, out of this test's
     // reach), never the HTTP response.
-    assert!(body.get("stderr").is_none(), "must not echo raw stderr: {body}");
-    assert!(body.get("stdout").is_none(), "must not echo raw stdout: {body}");
     assert!(
-        !body["error"].as_str().unwrap().contains("oracle registry lock held"),
+        body.get("stderr").is_none(),
+        "must not echo raw stderr: {body}"
+    );
+    assert!(
+        body.get("stdout").is_none(),
+        "must not echo raw stdout: {body}"
+    );
+    assert!(
+        !body["error"]
+            .as_str()
+            .unwrap()
+            .contains("oracle registry lock held"),
         "error message must not contain the raw subprocess text: {body}"
     );
-    assert!(body.get("oracle").is_none(), "must never fabricate an oracle name on failure");
+    assert!(
+        body.get("oracle").is_none(),
+        "must never fabricate an oracle name on failure"
+    );
 
     std::env::remove_var("OMEGA_HOME");
     std::env::remove_var("OMEGA_BIN");
@@ -258,7 +282,10 @@ async fn empty_project_and_mission_reject_before_discovery() {
 #[tokio::test]
 async fn post_dispatch_requires_auth() {
     let gateway_dir = tempfile::tempdir().unwrap();
-    let app = build_router(AppState::new(gateway_dir.path().to_path_buf(), GatewayConfig::default()));
+    let app = build_router(AppState::new(
+        gateway_dir.path().to_path_buf(),
+        GatewayConfig::default(),
+    ));
     let base = spawn(app).await;
 
     let res = reqwest::Client::new()
@@ -304,7 +331,10 @@ async fn dash_prefixed_values_land_as_positionals_after_separator() {
 
     let recorded = std::fs::read_to_string(&capture_file).unwrap();
     let argv: Vec<&str> = recorded.lines().collect();
-    assert_eq!(argv, vec!["dispatch", "--", "-weird-project", "-rf everything"]);
+    assert_eq!(
+        argv,
+        vec!["dispatch", "--", "-weird-project", "-rf everything"]
+    );
 
     std::env::remove_var("OMEGA_HOME");
     std::env::remove_var("OMEGA_BIN");
@@ -320,7 +350,11 @@ async fn unknown_agent_rejects_with_400_before_any_subprocess_spawn() {
     let capture_file = capture_dir.path().join("argv.txt");
 
     install_fake_home(home_dir.path(), "TestProj");
-    install_fake_omega(bin_dir.path(), &capture_file, "echo 'SHOULD NEVER RUN' >&2; exit 1");
+    install_fake_omega(
+        bin_dir.path(),
+        &capture_file,
+        "echo 'SHOULD NEVER RUN' >&2; exit 1",
+    );
 
     let (app, token) = app_and_token(gateway_dir.path()).await;
     let base = spawn(app).await;
@@ -335,7 +369,10 @@ async fn unknown_agent_rejects_with_400_before_any_subprocess_spawn() {
     assert_eq!(res.status(), 400);
     let body: serde_json::Value = res.json().await.unwrap();
     assert!(body["error"].as_str().unwrap().contains("not-a-real-agent"));
-    assert!(!capture_file.exists(), "omega subprocess was spawned for an unknown agent");
+    assert!(
+        !capture_file.exists(),
+        "omega subprocess was spawned for an unknown agent"
+    );
 
     std::env::remove_var("OMEGA_HOME");
     std::env::remove_var("OMEGA_BIN");
@@ -379,7 +416,17 @@ async fn known_agent_dispatches_normally() {
 
     let recorded = std::fs::read_to_string(&capture_file).unwrap();
     let argv: Vec<&str> = recorded.lines().collect();
-    assert_eq!(argv, vec!["dispatch", "--agent", agent_name, "--", "TestProj", "do the thing"]);
+    assert_eq!(
+        argv,
+        vec![
+            "dispatch",
+            "--agent",
+            agent_name,
+            "--",
+            "TestProj",
+            "do the thing"
+        ]
+    );
 
     std::env::remove_var("OMEGA_HOME");
     std::env::remove_var("OMEGA_BIN");
@@ -395,7 +442,11 @@ async fn mission_with_nul_byte_rejects_with_400_no_spawn() {
     let capture_file = capture_dir.path().join("argv.txt");
 
     install_fake_home(home_dir.path(), "TestProj");
-    install_fake_omega(bin_dir.path(), &capture_file, "echo 'SHOULD NEVER RUN' >&2; exit 1");
+    install_fake_omega(
+        bin_dir.path(),
+        &capture_file,
+        "echo 'SHOULD NEVER RUN' >&2; exit 1",
+    );
 
     let (app, token) = app_and_token(gateway_dir.path()).await;
     let base = spawn(app).await;
@@ -410,7 +461,10 @@ async fn mission_with_nul_byte_rejects_with_400_no_spawn() {
     assert_eq!(res.status(), 400);
     let body: serde_json::Value = res.json().await.unwrap();
     assert!(body["error"].as_str().unwrap().contains("NUL"));
-    assert!(!capture_file.exists(), "omega subprocess was spawned for a NUL-containing mission");
+    assert!(
+        !capture_file.exists(),
+        "omega subprocess was spawned for a NUL-containing mission"
+    );
 
     std::env::remove_var("OMEGA_HOME");
     std::env::remove_var("OMEGA_BIN");
@@ -426,7 +480,11 @@ async fn mission_over_length_cap_rejects_with_400_no_spawn() {
     let capture_file = capture_dir.path().join("argv.txt");
 
     install_fake_home(home_dir.path(), "TestProj");
-    install_fake_omega(bin_dir.path(), &capture_file, "echo 'SHOULD NEVER RUN' >&2; exit 1");
+    install_fake_omega(
+        bin_dir.path(),
+        &capture_file,
+        "echo 'SHOULD NEVER RUN' >&2; exit 1",
+    );
 
     let (app, token) = app_and_token(gateway_dir.path()).await;
     let base = spawn(app).await;
@@ -443,7 +501,10 @@ async fn mission_over_length_cap_rejects_with_400_no_spawn() {
     assert_eq!(res.status(), 400);
     let body: serde_json::Value = res.json().await.unwrap();
     assert!(body["error"].as_str().unwrap().contains("too long"));
-    assert!(!capture_file.exists(), "omega subprocess was spawned for an over-length mission");
+    assert!(
+        !capture_file.exists(),
+        "omega subprocess was spawned for an over-length mission"
+    );
 
     std::env::remove_var("OMEGA_HOME");
     std::env::remove_var("OMEGA_BIN");
@@ -484,7 +545,9 @@ async fn concurrency_cap_returns_429_when_dispatch_permits_exhausted() {
             client
                 .post(format!("{base}/v1/dispatch"))
                 .bearer_auth(&token)
-                .json(&serde_json::json!({"project": "TestProj", "mission": format!("mission {i}")}))
+                .json(
+                    &serde_json::json!({"project": "TestProj", "mission": format!("mission {i}")}),
+                )
                 .send()
                 .await
                 .unwrap()
@@ -507,7 +570,10 @@ async fn concurrency_cap_returns_429_when_dispatch_permits_exhausted() {
         .unwrap();
     assert_eq!(busy_res.status(), 429);
     let body: serde_json::Value = busy_res.json().await.unwrap();
-    assert!(body["error"].as_str().unwrap().contains("too many concurrent dispatches"));
+    assert!(body["error"]
+        .as_str()
+        .unwrap()
+        .contains("too many concurrent dispatches"));
 
     for task in in_flight {
         let status = task.await.unwrap();
@@ -532,6 +598,9 @@ async fn concurrency_cap_returns_429_when_dispatch_permits_exhausted() {
 /// test run that it provably won't collide with any real project name.
 fn uuid_like() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
-    let nanos = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
     format!("{nanos:x}")
 }

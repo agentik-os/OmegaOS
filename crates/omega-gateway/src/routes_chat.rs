@@ -51,7 +51,10 @@ pub struct ChatCreateRequest {
 /// path-traversal surface (`../../etc/passwd`-shaped ids). Reject anything
 /// that doesn't match the real id shape BEFORE the store is ever touched.
 fn valid_chat_id(id: &str) -> bool {
-    id.len() == 16 && id.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+    id.len() == 16
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
 }
 
 pub async fn list(State(state): State<AppState>) -> Json<serde_json::Value> {
@@ -80,14 +83,22 @@ pub async fn create(
     // canonicalized ancestor, see its own doc comment); that is what gets
     // stored, so the persisted `cwd` can never diverge from what was
     // actually checked here.
-    let cwd = crate::routes_sessions::dir_under_home(&req.cwd)?.to_string_lossy().into_owned();
+    let cwd = crate::routes_sessions::dir_under_home(&req.cwd)?
+        .to_string_lossy()
+        .into_owned();
 
     if let Some(slug) = &req.account_slug {
         if !accounts::valid_slug(slug) {
-            return Err((StatusCode::BAD_REQUEST, Json(json!({ "error": "invalid account_slug" }))));
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": "invalid account_slug" })),
+            ));
         }
         let Some(account) = state.accounts.get(slug) else {
-            return Err((StatusCode::BAD_REQUEST, Json(json!({ "error": "account not found" }))));
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": "account not found" })),
+            ));
         };
         if account.kind != account_kind_for(req.agent) {
             return Err((
@@ -96,7 +107,9 @@ pub async fn create(
             ));
         }
     }
-    let meta = state.chats.create(req.agent, cwd, req.title, req.account_slug);
+    let meta = state
+        .chats
+        .create(req.agent, cwd, req.title, req.account_slug);
     Ok((StatusCode::CREATED, Json(meta)))
 }
 
@@ -121,7 +134,11 @@ pub async fn get(
     // existing HTTP tests) is chronological, oldest-first, so reverse it.
     let (mut messages, next_cursor) = state.chats.tail_page(&id, None, DETAIL_WINDOW);
     messages.reverse();
-    Ok(Json(ChatDetailResponse { meta, messages, next_cursor }))
+    Ok(Json(ChatDetailResponse {
+        meta,
+        messages,
+        next_cursor,
+    }))
 }
 
 #[derive(Deserialize)]
@@ -144,7 +161,10 @@ pub async fn messages(
     state.chats.get(&id).ok_or(StatusCode::NOT_FOUND)?;
     let limit = query.limit.unwrap_or(DEFAULT_MESSAGES_LIMIT);
     let (messages, next_cursor) = state.chats.tail_page(&id, query.before, limit);
-    Ok(Json(ChatMessagesPage { messages, next_cursor }))
+    Ok(Json(ChatMessagesPage {
+        messages,
+        next_cursor,
+    }))
 }
 
 pub async fn stream(
@@ -167,11 +187,16 @@ fn resolve_account_dir(accounts: &AccountStore, meta: &ChatMeta) -> Option<PathB
     if let Some(slug) = &meta.account_slug {
         return Some(accounts.slot_dir(slug));
     }
-    accounts.default_for(account_kind_for(meta.agent)).map(|a| accounts.slot_dir(&a.slug))
+    accounts
+        .default_for(account_kind_for(meta.agent))
+        .map(|a| accounts.slot_dir(&a.slug))
 }
 
 /// Serializes and sends one server frame. `Err` means the socket is dead.
-async fn send_frame(socket: &mut WebSocket, frame: &ChatStreamServerMsg) -> Result<(), axum::Error> {
+async fn send_frame(
+    socket: &mut WebSocket,
+    frame: &ChatStreamServerMsg,
+) -> Result<(), axum::Error> {
     let text = serde_json::to_string(frame).expect("serialize ChatStreamServerMsg");
     socket.send(Message::Text(text.into())).await
 }
@@ -179,11 +204,21 @@ async fn send_frame(socket: &mut WebSocket, frame: &ChatStreamServerMsg) -> Resu
 /// Sends `Error{message}` then `TurnDone`, the "can't start a turn" pair used
 /// by both the unknown-chat and busy-semaphore short-circuits. Returns
 /// `Err(())` if the socket died mid-send, so the caller can stop the loop.
-async fn send_error_turn_done(socket: &mut WebSocket, message: impl Into<String>) -> Result<(), ()> {
-    send_frame(socket, &ChatStreamServerMsg::Error { message: message.into() })
+async fn send_error_turn_done(
+    socket: &mut WebSocket,
+    message: impl Into<String>,
+) -> Result<(), ()> {
+    send_frame(
+        socket,
+        &ChatStreamServerMsg::Error {
+            message: message.into(),
+        },
+    )
+    .await
+    .map_err(|_| ())?;
+    send_frame(socket, &ChatStreamServerMsg::TurnDone)
         .await
-        .map_err(|_| ())?;
-    send_frame(socket, &ChatStreamServerMsg::TurnDone).await.map_err(|_| ())
+        .map_err(|_| ())
 }
 
 /// I-5 RAII guard: marks chat `id`'s turn as ended (`ChatStore::end_turn`)
@@ -206,8 +241,13 @@ impl Drop for TurnGuard {
 
 async fn stream_loop(mut socket: WebSocket, id: String, state: AppState) {
     if !valid_chat_id(&id) {
-        let _ = send_frame(&mut socket, &ChatStreamServerMsg::Error { message: "invalid chat id".to_string() })
-            .await;
+        let _ = send_frame(
+            &mut socket,
+            &ChatStreamServerMsg::Error {
+                message: "invalid chat id".to_string(),
+            },
+        )
+        .await;
         let _ = socket.send(Message::Close(None)).await;
         return;
     }
@@ -217,14 +257,17 @@ async fn stream_loop(mut socket: WebSocket, id: String, state: AppState) {
         let text = match socket.recv().await {
             Some(Ok(Message::Text(text))) => text.to_string(),
             Some(Ok(Message::Close(_))) | None => return, // client closed or gone
-            Some(Ok(_)) => continue,                       // ping/pong/binary: not a turn
-            Some(Err(_)) => return,                        // socket error: dead
+            Some(Ok(_)) => continue,                      // ping/pong/binary: not a turn
+            Some(Err(_)) => return,                       // socket error: dead
         };
 
         let client_msg: ChatStreamClientMsg = match serde_json::from_str(&text) {
             Ok(m) => m,
             Err(e) => {
-                if send_error_turn_done(&mut socket, format!("bad client message: {e}")).await.is_err() {
+                if send_error_turn_done(&mut socket, format!("bad client message: {e}"))
+                    .await
+                    .is_err()
+                {
                     return;
                 }
                 continue;
@@ -233,7 +276,10 @@ async fn stream_loop(mut socket: WebSocket, id: String, state: AppState) {
         let ChatStreamClientMsg::UserMessage { text: user_text } = client_msg;
 
         let Some(meta) = state.chats.get(&id) else {
-            if send_error_turn_done(&mut socket, "chat not found").await.is_err() {
+            if send_error_turn_done(&mut socket, "chat not found")
+                .await
+                .is_err()
+            {
                 return;
             }
             continue;
@@ -241,11 +287,18 @@ async fn stream_loop(mut socket: WebSocket, id: String, state: AppState) {
 
         state.chats.append_message(
             &id,
-            &ChatMessage { role: "user".to_string(), text: user_text.clone(), ts: now() },
+            &ChatMessage {
+                role: "user".to_string(),
+                text: user_text.clone(),
+                ts: now(),
+            },
         );
 
         let Ok(permit) = state.chat_permits.clone().try_acquire_owned() else {
-            if send_error_turn_done(&mut socket, "busy, too many active chats").await.is_err() {
+            if send_error_turn_done(&mut socket, "busy, too many active chats")
+                .await
+                .is_err()
+            {
                 return;
             }
             continue;
@@ -258,12 +311,18 @@ async fn stream_loop(mut socket: WebSocket, id: String, state: AppState) {
         // second concurrent turn on one chat outright rather than letting
         // both run.
         if !state.chats.try_start_turn(&id) {
-            if send_error_turn_done(&mut socket, "a turn is already active on this chat").await.is_err() {
+            if send_error_turn_done(&mut socket, "a turn is already active on this chat")
+                .await
+                .is_err()
+            {
                 return;
             }
             continue;
         }
-        let _turn_guard = TurnGuard { chats: state.chats.clone(), id: id.clone() };
+        let _turn_guard = TurnGuard {
+            chats: state.chats.clone(),
+            id: id.clone(),
+        };
 
         let (tx, mut rx) = tokio::sync::mpsc::channel::<ChatStreamServerMsg>(64);
         let timeout = std::time::Duration::from_millis(state.cfg.chat_turn_timeout_ms);
@@ -271,7 +330,15 @@ async fn stream_loop(mut socket: WebSocket, id: String, state: AppState) {
         let turn_meta = meta.clone();
         let turn_handle = tokio::spawn(async move {
             let _permit = permit; // held for the whole turn, released on drop
-            run_turn(&turn_meta, &user_text, None, account_dir.as_deref(), timeout, tx).await
+            run_turn(
+                &turn_meta,
+                &user_text,
+                None,
+                account_dir.as_deref(),
+                timeout,
+                tx,
+            )
+            .await
         });
 
         let mut assistant_text = String::new();
@@ -286,7 +353,8 @@ async fn stream_loop(mut socket: WebSocket, id: String, state: AppState) {
                 continue;
             }
             match &frame {
-                ChatStreamServerMsg::Delta { text } | ChatStreamServerMsg::AssistantMessage { text } => {
+                ChatStreamServerMsg::Delta { text }
+                | ChatStreamServerMsg::AssistantMessage { text } => {
                     assistant_text.push_str(text);
                 }
                 ChatStreamServerMsg::TurnDone => turn_done_seen = true,
@@ -302,7 +370,11 @@ async fn stream_loop(mut socket: WebSocket, id: String, state: AppState) {
         if !assistant_text.is_empty() {
             state.chats.append_message(
                 &id,
-                &ChatMessage { role: "assistant".to_string(), text: assistant_text, ts: now() },
+                &ChatMessage {
+                    role: "assistant".to_string(),
+                    text: assistant_text,
+                    ts: now(),
+                },
             );
         }
         if let Some(sid) = provider_session_id {

@@ -38,7 +38,10 @@ pub fn gateway_dir() -> PathBuf {
     if let Ok(dir) = std::env::var("OMEGA_GATEWAY_DIR") {
         return PathBuf::from(dir);
     }
-    dirs::home_dir().expect("no home dir").join(".omega").join("gateway")
+    dirs::home_dir()
+        .expect("no home dir")
+        .join(".omega")
+        .join("gateway")
 }
 
 /// `$OMEGA_HOME` when set, else the real `$HOME` (`dirs::home_dir()`) — the
@@ -86,7 +89,11 @@ mod tests {
     #[test]
     fn file_overrides_partial_fields() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("gateway.toml"), "bind = \"127.0.0.1:9999\"\n").unwrap();
+        std::fs::write(
+            dir.path().join("gateway.toml"),
+            "bind = \"127.0.0.1:9999\"\n",
+        )
+        .unwrap();
         let cfg = GatewayConfig::load(dir.path());
         assert_eq!(cfg.bind, "127.0.0.1:9999");
         assert_eq!(cfg.stream_lines, 200);

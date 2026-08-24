@@ -27,7 +27,9 @@
 //! `routes_dispatch.rs`/`routes_files.rs` use — a client never supplies a raw
 //! filesystem path, only a project NAME resolved server-side to its real root.
 
-use crate::protocol::{AuditCheckResponse, AuditEntry, AuditRequest, AuditStreamMsg, AuditsResponse};
+use crate::protocol::{
+    AuditCheckResponse, AuditEntry, AuditRequest, AuditStreamMsg, AuditsResponse,
+};
 use axum::{
     extract::{
         ws::{Message, WebSocket, WebSocketUpgrade},
@@ -73,8 +75,12 @@ pub async fn list() -> Json<AuditsResponse> {
 /// parse of an embedded TOML, no filesystem walk), so this needs no
 /// `spawn_blocking` of its own.
 fn resolve_audit_kind(kind: &str) -> Result<AuditSkill, (StatusCode, String)> {
-    omega_core::audit::find_audit(kind)
-        .ok_or_else(|| (StatusCode::BAD_REQUEST, format!("unknown audit kind: {kind}")))
+    omega_core::audit::find_audit(kind).ok_or_else(|| {
+        (
+            StatusCode::BAD_REQUEST,
+            format!("unknown audit kind: {kind}"),
+        )
+    })
 }
 
 /// Resolves `project` against the discovered-project allowlist — the exact
@@ -87,11 +93,19 @@ async fn resolve_project_path(project: &str) -> Result<PathBuf, (StatusCode, Str
     let name = project.to_string();
     let found = tokio::task::spawn_blocking(move || {
         let home = crate::config::home_dir();
-        omega_core::projects::discover(&home).into_iter().find(|p| p.name == name).map(|p| p.path)
+        omega_core::projects::discover(&home)
+            .into_iter()
+            .find(|p| p.name == name)
+            .map(|p| p.path)
     })
     .await
     .unwrap_or(None);
-    found.ok_or_else(|| (StatusCode::BAD_REQUEST, format!("unknown project: {project}")))
+    found.ok_or_else(|| {
+        (
+            StatusCode::BAD_REQUEST,
+            format!("unknown project: {project}"),
+        )
+    })
 }
 
 /// Shared by [`check`] (C1) and [`stream`] (C2) so both endpoints reject the
@@ -139,7 +153,10 @@ pub async fn check(Json(req): Json<AuditRequest>) -> Result<Json<AuditCheckRespo
 /// where `project_path` is the SAME server-resolved path
 /// [`resolve_project_path`] just validated — never a client-supplied path —
 /// and streams its stdout/stderr lines, then a final exit frame.
-pub async fn stream(ws: WebSocketUpgrade, Query(query): Query<HashMap<String, String>>) -> Response {
+pub async fn stream(
+    ws: WebSocketUpgrade,
+    Query(query): Query<HashMap<String, String>>,
+) -> Response {
     let project = query.get("project").cloned().unwrap_or_default();
     let kind = query.get("kind").cloned().unwrap_or_default();
     match resolve_audit_request(&project, &kind).await {
@@ -150,7 +167,10 @@ pub async fn stream(ws: WebSocketUpgrade, Query(query): Query<HashMap<String, St
 
 /// Serializes and sends one audit-stream frame. `Err` means the socket is
 /// dead.
-async fn send_audit_frame(socket: &mut WebSocket, frame: &AuditStreamMsg) -> Result<(), axum::Error> {
+async fn send_audit_frame(
+    socket: &mut WebSocket,
+    frame: &AuditStreamMsg,
+) -> Result<(), axum::Error> {
     let text = serde_json::to_string(frame).expect("serialize AuditStreamMsg");
     socket.send(Message::Text(text.into())).await
 }
@@ -170,7 +190,10 @@ async fn forward_lines<R: AsyncRead + Unpin>(
     loop {
         match lines.next_line().await {
             Ok(Some(text)) => {
-                let frame = AuditStreamMsg::Line { stream: stream_name.to_string(), text };
+                let frame = AuditStreamMsg::Line {
+                    stream: stream_name.to_string(),
+                    text,
+                };
                 if tx.send(frame).await.is_err() {
                     return;
                 }
@@ -188,7 +211,10 @@ async fn forward_lines<R: AsyncRead + Unpin>(
 /// subprocess work).
 async fn kill_process_group(pid: u32) {
     let _ = tokio::task::spawn_blocking(move || {
-        std::process::Command::new("kill").arg("--").arg(format!("-{pid}")).status()
+        std::process::Command::new("kill")
+            .arg("--")
+            .arg(format!("-{pid}"))
+            .status()
     })
     .await;
 }
@@ -242,7 +268,11 @@ async fn kill_and_drain(
 /// the full history: a send-failure-only check misses exactly this case).
 async fn audit_stream_loop(mut socket: WebSocket, audit: AuditSkill, project_path: PathBuf) {
     let mut cmd = Command::new(crate::omega_cli::omega_bin());
-    cmd.arg("audit").arg("run").arg(audit.id).arg("--dir").arg(&project_path);
+    cmd.arg("audit")
+        .arg("run")
+        .arg(audit.id)
+        .arg("--dir")
+        .arg(&project_path);
     cmd.stdin(Stdio::null());
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
@@ -254,7 +284,9 @@ async fn audit_stream_loop(mut socket: WebSocket, audit: AuditSkill, project_pat
         Err(e) => {
             let _ = send_audit_frame(
                 &mut socket,
-                &AuditStreamMsg::Error { message: format!("failed to spawn omega: {e}") },
+                &AuditStreamMsg::Error {
+                    message: format!("failed to spawn omega: {e}"),
+                },
             )
             .await;
             let _ = socket.send(Message::Close(None)).await;
@@ -327,8 +359,13 @@ async fn audit_stream_loop(mut socket: WebSocket, audit: AuditSkill, project_pat
     let _ = stderr_task.await;
 
     let exit_frame = match child.wait().await {
-        Ok(status) => AuditStreamMsg::Exit { success: status.success(), code: status.code() },
-        Err(e) => AuditStreamMsg::Error { message: format!("failed to wait on child: {e}") },
+        Ok(status) => AuditStreamMsg::Exit {
+            success: status.success(),
+            code: status.code(),
+        },
+        Err(e) => AuditStreamMsg::Error {
+            message: format!("failed to wait on child: {e}"),
+        },
     };
     let _ = send_audit_frame(&mut socket, &exit_frame).await;
     let _ = socket.send(Message::Close(None)).await;
@@ -348,7 +385,11 @@ mod resolve_audit_kind_tests {
     fn rejects_unknown_audit_kind() {
         let err = resolve_audit_kind("not-a-real-audit").unwrap_err();
         assert_eq!(err.0, axum::http::StatusCode::BAD_REQUEST);
-        assert!(err.1.contains("not-a-real-audit"), "message should name the kind: {}", err.1);
+        assert!(
+            err.1.contains("not-a-real-audit"),
+            "message should name the kind: {}",
+            err.1
+        );
     }
 
     #[test]

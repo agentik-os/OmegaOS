@@ -17,9 +17,6 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW_DIR = ROOT / ".github" / "workflows"
-NON_GATEWAY_PACKAGES = "-p omega-core -p omega-tui -p omega"
-
-
 class ReleaseContractTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -46,6 +43,7 @@ class ReleaseContractTests(unittest.TestCase):
     def test_prebuilt_requires_checksum_and_build_info(self):
         self.assertIn('if ! curl -fsSL "$base/$tarball.sha256"', self.install)
         self.assertIn('-f "$tmp/BUILD-INFO.json"', self.install)
+        self.assertIn('-f "$tmp/omega-gatewayd"', self.install)
         self.assertNotIn("if the .sha256 sidecar exists", self.install)
 
     def test_source_build_never_falls_back_to_unlocked_dependencies(self):
@@ -85,17 +83,16 @@ class ReleaseContractTests(unittest.TestCase):
                 f"checkout credential persistence in {workflow}",
             )
 
-    def test_non_gateway_quality_gate_is_blocking_locked_and_reusable(self):
+    def test_full_workspace_quality_gate_is_blocking_locked_and_reusable(self):
         for command in (
-            f"cargo fmt {NON_GATEWAY_PACKAGES} -- --check",
-            f"cargo clippy --locked {NON_GATEWAY_PACKAGES} --all-targets -- -D warnings",
-            f"cargo build --release --locked {NON_GATEWAY_PACKAGES}",
-            f"cargo test --locked {NON_GATEWAY_PACKAGES}",
+            "cargo fmt --all -- --check",
+            "cargo clippy --locked --workspace --all-targets -- -D warnings",
+            "cargo build --release --locked --workspace",
+            "cargo test --locked --workspace",
         ):
             self.assertIn(command, self.ci)
-        self.assertNotIn("--workspace", self.ci)
-        self.assertNotIn("-p omega-gateway", self.ci)
-        self.assertIn("-not -path './crates/omega-gateway/*'", self.ci)
+        self.assertNotIn("non-gateway", self.ci)
+        self.assertNotIn("-not -path './crates/omega-gateway/*'", self.ci)
         self.assertNotIn("continue-on-error", self.ci)
         self.assertIn("workflow_call:", self.ci)
         self.assertIn("uses: ./.github/workflows/ci.yml", self.release)
@@ -193,6 +190,7 @@ class ReleaseContractTests(unittest.TestCase):
             dist = root / "dist"
             dist.mkdir()
             (dist / "omega").write_bytes(b"omega-binary")
+            (dist / "omega-gatewayd").write_bytes(b"gateway-binary")
             (dist / "rmux").write_bytes(b"rmux-binary")
             (dist / "BUILD-INFO.json").write_text("{}\n", encoding="utf-8")
             command = [sys.executable, "-", "x86_64-unknown-linux-gnu"]
@@ -218,7 +216,10 @@ class ReleaseContractTests(unittest.TestCase):
             self.assertEqual(second.returncode, 0, second.stderr)
             self.assertEqual(archive_path.read_bytes(), before)
             with tarfile.open(fileobj=io.BytesIO(before), mode="r:gz") as bundle:
-                self.assertEqual(bundle.getnames(), ["omega", "rmux", "BUILD-INFO.json"])
+                self.assertEqual(
+                    bundle.getnames(),
+                    ["omega", "omega-gatewayd", "rmux", "BUILD-INFO.json"],
+                )
                 metadata = {
                     item.name: (item.uid, item.gid, item.mtime, item.mode)
                     for item in bundle.getmembers()
@@ -227,6 +228,7 @@ class ReleaseContractTests(unittest.TestCase):
                 metadata,
                 {
                     "omega": (0, 0, 0, 0o755),
+                    "omega-gatewayd": (0, 0, 0, 0o755),
                     "rmux": (0, 0, 0, 0o755),
                     "BUILD-INFO.json": (0, 0, 0, 0o644),
                 },
@@ -277,6 +279,7 @@ class ReleaseContractTests(unittest.TestCase):
                 with tarfile.open(archive_path, "w:gz") as bundle:
                     for name, data in (
                         ("omega", b"omega"),
+                        ("omega-gatewayd", b"gateway"),
                         ("rmux", b"rmux"),
                         ("BUILD-INFO.json", build_info),
                     ):
@@ -332,6 +335,7 @@ class ReleaseContractTests(unittest.TestCase):
                 ).encode()
                 for name, data in (
                     ("omega", b"omega"),
+                    ("omega-gatewayd", b"gateway"),
                     ("rmux", b"rmux"),
                     ("BUILD-INFO.json", forged),
                 ):

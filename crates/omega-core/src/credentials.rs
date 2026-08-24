@@ -1056,12 +1056,10 @@ pub fn legacy_path_for(provider: &str) -> Option<PathBuf> {
     match provider {
         "codex" => Some(codex_home_dir().join("auth.json")),
         "claude" => Some(dirs::home_dir()?.join(".claude").join(".credentials.json")),
-        "gemini" => Some(
-            dirs::home_dir()?
-                .join(".config")
-                .join("gemini")
-                .join("oauth_creds.json"),
-        ),
+        // Legacy Gemini CLI file location. Gemini 0.56+ may migrate this into
+        // its native hybrid/keyring store; Omega does not try to symlink that
+        // modern store, but diagnostics must still name the real legacy path.
+        "gemini" => Some(dirs::home_dir()?.join(".gemini").join("oauth_creds.json")),
         // api-key providers store config in providers.toml; no legacy path.
         _ => None,
     }

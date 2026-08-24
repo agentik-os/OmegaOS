@@ -13,7 +13,10 @@ async fn spawn(app: axum::Router) -> String {
 async fn get_rules_returns_laws_and_operational_rules() {
     let gateway_dir = tempfile::tempdir().unwrap();
     let (_, token) = DeviceStore::open(gateway_dir.path()).issue("t");
-    let app = build_router(AppState::new(gateway_dir.path().to_path_buf(), GatewayConfig::default()));
+    let app = build_router(AppState::new(
+        gateway_dir.path().to_path_buf(),
+        GatewayConfig::default(),
+    ));
     let base = spawn(app).await;
 
     let res = reqwest::Client::new()
@@ -30,16 +33,30 @@ async fn get_rules_returns_laws_and_operational_rules() {
     assert!(laws.iter().any(|l| l["id"] == "L0"), "L0 must be present");
 
     let rules = body["rules"].as_array().unwrap();
-    assert!(rules.len() >= 40, "expected at least 40 operational rules, got {}", rules.len());
-    assert!(rules.iter().any(|r| r["id"] == "R-CLI"), "R-CLI must be present");
+    assert!(
+        rules.len() >= 40,
+        "expected at least 40 operational rules, got {}",
+        rules.len()
+    );
+    assert!(
+        rules.iter().any(|r| r["id"] == "R-CLI"),
+        "R-CLI must be present"
+    );
 }
 
 #[tokio::test]
 async fn get_rules_requires_auth() {
     let gateway_dir = tempfile::tempdir().unwrap();
-    let app = build_router(AppState::new(gateway_dir.path().to_path_buf(), GatewayConfig::default()));
+    let app = build_router(AppState::new(
+        gateway_dir.path().to_path_buf(),
+        GatewayConfig::default(),
+    ));
     let base = spawn(app).await;
 
-    let res = reqwest::Client::new().get(format!("{base}/v1/rules")).send().await.unwrap();
+    let res = reqwest::Client::new()
+        .get(format!("{base}/v1/rules"))
+        .send()
+        .await
+        .unwrap();
     assert_eq!(res.status(), 401);
 }

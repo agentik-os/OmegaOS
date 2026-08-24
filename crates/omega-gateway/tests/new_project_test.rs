@@ -53,7 +53,10 @@ async fn stream_rejects_empty_name_before_any_spawn() {
     let bin_dir = tempfile::tempdir().unwrap();
     install_fake_omega_that_must_not_run(bin_dir.path());
     let (_, token) = DeviceStore::open(gateway_dir.path()).issue("t");
-    let app = build_router(AppState::new(gateway_dir.path().to_path_buf(), GatewayConfig::default()));
+    let app = build_router(AppState::new(
+        gateway_dir.path().to_path_buf(),
+        GatewayConfig::default(),
+    ));
     let base = spawn(app).await;
 
     // A REAL WS handshake attempt proves this hits our handler's own
@@ -73,7 +76,10 @@ async fn stream_rejects_bad_name_charset_before_any_spawn() {
     let bin_dir = tempfile::tempdir().unwrap();
     install_fake_omega_that_must_not_run(bin_dir.path());
     let (_, token) = DeviceStore::open(gateway_dir.path()).issue("t");
-    let app = build_router(AppState::new(gateway_dir.path().to_path_buf(), GatewayConfig::default()));
+    let app = build_router(AppState::new(
+        gateway_dir.path().to_path_buf(),
+        GatewayConfig::default(),
+    ));
     let base = spawn(app).await;
 
     let url = ws_url(&base, "/v1/new-project/stream", &token) + "&name=My_Project&category=works";
@@ -97,7 +103,10 @@ async fn stream_rejects_name_starting_with_dash_build_before_any_spawn() {
     let bin_dir = tempfile::tempdir().unwrap();
     install_fake_omega_that_must_not_run(bin_dir.path());
     let (_, token) = DeviceStore::open(gateway_dir.path()).issue("t");
-    let app = build_router(AppState::new(gateway_dir.path().to_path_buf(), GatewayConfig::default()));
+    let app = build_router(AppState::new(
+        gateway_dir.path().to_path_buf(),
+        GatewayConfig::default(),
+    ));
     let base = spawn(app).await;
 
     let url = ws_url(&base, "/v1/new-project/stream", &token) + "&name=--build&category=works";
@@ -117,7 +126,10 @@ async fn stream_rejects_name_starting_with_dash_dry_run_before_any_spawn() {
     let bin_dir = tempfile::tempdir().unwrap();
     install_fake_omega_that_must_not_run(bin_dir.path());
     let (_, token) = DeviceStore::open(gateway_dir.path()).issue("t");
-    let app = build_router(AppState::new(gateway_dir.path().to_path_buf(), GatewayConfig::default()));
+    let app = build_router(AppState::new(
+        gateway_dir.path().to_path_buf(),
+        GatewayConfig::default(),
+    ));
     let base = spawn(app).await;
 
     let url = ws_url(&base, "/v1/new-project/stream", &token) + "&name=--dry-run&category=works";
@@ -137,10 +149,14 @@ async fn stream_rejects_group_starting_with_dash_before_any_spawn() {
     let bin_dir = tempfile::tempdir().unwrap();
     install_fake_omega_that_must_not_run(bin_dir.path());
     let (_, token) = DeviceStore::open(gateway_dir.path()).issue("t");
-    let app = build_router(AppState::new(gateway_dir.path().to_path_buf(), GatewayConfig::default()));
+    let app = build_router(AppState::new(
+        gateway_dir.path().to_path_buf(),
+        GatewayConfig::default(),
+    ));
     let base = spawn(app).await;
 
-    let url = ws_url(&base, "/v1/new-project/stream", &token) + "&name=cool-app&category=works&group=-x";
+    let url =
+        ws_url(&base, "/v1/new-project/stream", &token) + "&name=cool-app&category=works&group=-x";
     let err = connect_async(url).await.unwrap_err();
     assert!(err.to_string().contains("400"), "unexpected error: {err}");
 
@@ -156,17 +172,22 @@ async fn stream_rejects_group_starting_with_dash_before_any_spawn() {
 /// reject before any spawn, mirroring `routes_team.rs`'s own
 /// `"Team-{project}"` round-trip check.
 #[tokio::test]
-async fn stream_rejects_name_that_would_truncate_session_name_after_setup_suffix_before_any_spawn() {
+async fn stream_rejects_name_that_would_truncate_session_name_after_setup_suffix_before_any_spawn()
+{
     let _g = LOCK.lock().await;
     let gateway_dir = tempfile::tempdir().unwrap();
     let bin_dir = tempfile::tempdir().unwrap();
     install_fake_omega_that_must_not_run(bin_dir.path());
     let (_, token) = DeviceStore::open(gateway_dir.path()).issue("t");
-    let app = build_router(AppState::new(gateway_dir.path().to_path_buf(), GatewayConfig::default()));
+    let app = build_router(AppState::new(
+        gateway_dir.path().to_path_buf(),
+        GatewayConfig::default(),
+    ));
     let base = spawn(app).await;
 
     let name = "a".repeat(49);
-    let url = ws_url(&base, "/v1/new-project/stream", &token) + &format!("&name={name}&category=works");
+    let url =
+        ws_url(&base, "/v1/new-project/stream", &token) + &format!("&name={name}&category=works");
     let err = connect_async(url).await.unwrap_err();
     assert!(err.to_string().contains("400"), "unexpected error: {err}");
 
@@ -180,13 +201,17 @@ async fn stream_rejects_name_that_would_truncate_session_name_after_setup_suffix
 /// independently rejected before any spawn, never silently merged onto one
 /// real session.
 #[tokio::test]
-async fn stream_rejects_both_of_two_names_that_would_collide_onto_the_same_session_before_any_spawn() {
+async fn stream_rejects_both_of_two_names_that_would_collide_onto_the_same_session_before_any_spawn(
+) {
     let _g = LOCK.lock().await;
     let gateway_dir = tempfile::tempdir().unwrap();
     let bin_dir = tempfile::tempdir().unwrap();
     install_fake_omega_that_must_not_run(bin_dir.path());
     let (_, token) = DeviceStore::open(gateway_dir.path()).issue("t");
-    let app = build_router(AppState::new(gateway_dir.path().to_path_buf(), GatewayConfig::default()));
+    let app = build_router(AppState::new(
+        gateway_dir.path().to_path_buf(),
+        GatewayConfig::default(),
+    ));
     let base = spawn(app).await;
 
     // Sanity-check the collision premise itself before asserting on the
@@ -196,15 +221,26 @@ async fn stream_rejects_both_of_two_names_that_would_collide_onto_the_same_sessi
     let name_b = "a".repeat(50);
     let session_a = omega_core::session::sanitize_session_name(&format!("{name_a}-setup"));
     let session_b = omega_core::session::sanitize_session_name(&format!("{name_b}-setup"));
-    assert_eq!(session_a, session_b, "test premise broken: these two names no longer collide");
+    assert_eq!(
+        session_a, session_b,
+        "test premise broken: these two names no longer collide"
+    );
 
-    let url_a = ws_url(&base, "/v1/new-project/stream", &token) + &format!("&name={name_a}&category=works");
+    let url_a =
+        ws_url(&base, "/v1/new-project/stream", &token) + &format!("&name={name_a}&category=works");
     let err_a = connect_async(url_a).await.unwrap_err();
-    assert!(err_a.to_string().contains("400"), "unexpected error for name_a: {err_a}");
+    assert!(
+        err_a.to_string().contains("400"),
+        "unexpected error for name_a: {err_a}"
+    );
 
-    let url_b = ws_url(&base, "/v1/new-project/stream", &token) + &format!("&name={name_b}&category=works");
+    let url_b =
+        ws_url(&base, "/v1/new-project/stream", &token) + &format!("&name={name_b}&category=works");
     let err_b = connect_async(url_b).await.unwrap_err();
-    assert!(err_b.to_string().contains("400"), "unexpected error for name_b: {err_b}");
+    assert!(
+        err_b.to_string().contains("400"),
+        "unexpected error for name_b: {err_b}"
+    );
 
     clear_env();
 }
@@ -216,10 +252,14 @@ async fn stream_rejects_unknown_category_before_any_spawn() {
     let bin_dir = tempfile::tempdir().unwrap();
     install_fake_omega_that_must_not_run(bin_dir.path());
     let (_, token) = DeviceStore::open(gateway_dir.path()).issue("t");
-    let app = build_router(AppState::new(gateway_dir.path().to_path_buf(), GatewayConfig::default()));
+    let app = build_router(AppState::new(
+        gateway_dir.path().to_path_buf(),
+        GatewayConfig::default(),
+    ));
     let base = spawn(app).await;
 
-    let url = ws_url(&base, "/v1/new-project/stream", &token) + "&name=cool-app&category=not-a-real-category";
+    let url = ws_url(&base, "/v1/new-project/stream", &token)
+        + "&name=cool-app&category=not-a-real-category";
     let err = connect_async(url).await.unwrap_err();
     assert!(err.to_string().contains("400"), "unexpected error: {err}");
 
@@ -249,7 +289,10 @@ exit 1
         ),
     );
     let (_, token) = DeviceStore::open(gateway_dir.path()).issue("t");
-    let app = build_router(AppState::new(gateway_dir.path().to_path_buf(), GatewayConfig::default()));
+    let app = build_router(AppState::new(
+        gateway_dir.path().to_path_buf(),
+        GatewayConfig::default(),
+    ));
     let base = spawn(app).await;
 
     // category omitted entirely: must default to "works" in the argv.
@@ -266,7 +309,11 @@ exit 1
         lines.push(v);
     };
 
-    assert_eq!(lines.len(), 3, "2 stdout + 1 stderr line expected, got {lines:?}");
+    assert_eq!(
+        lines.len(),
+        3,
+        "2 stdout + 1 stderr line expected, got {lines:?}"
+    );
     let texts: Vec<&str> = lines.iter().map(|l| l["text"].as_str().unwrap()).collect();
     assert!(texts.iter().any(|t| t.contains("bootstrap running")));
     assert!(texts.iter().any(|t| t.contains("session: cool-app-setup")));
@@ -283,9 +330,18 @@ exit 1
     assert_eq!(argv[2], "cool-app");
     assert_eq!(argv[3], "nextstack");
     assert_eq!(argv[4], "works");
-    assert!(!argv.contains(&"--group"), "group must not be forwarded when omitted: {argv:?}");
-    assert!(!argv.contains(&"--build"), "build must never be forwarded: {argv:?}");
-    assert!(!argv.contains(&"--dry-run"), "dry-run must never be forwarded: {argv:?}");
+    assert!(
+        !argv.contains(&"--group"),
+        "group must not be forwarded when omitted: {argv:?}"
+    );
+    assert!(
+        !argv.contains(&"--build"),
+        "build must never be forwarded: {argv:?}"
+    );
+    assert!(
+        !argv.contains(&"--dry-run"),
+        "dry-run must never be forwarded: {argv:?}"
+    );
 
     clear_env();
 }
@@ -308,7 +364,10 @@ exit 0
         ),
     );
     let (_, token) = DeviceStore::open(gateway_dir.path()).issue("t");
-    let app = build_router(AppState::new(gateway_dir.path().to_path_buf(), GatewayConfig::default()));
+    let app = build_router(AppState::new(
+        gateway_dir.path().to_path_buf(),
+        GatewayConfig::default(),
+    ));
     let base = spawn(app).await;
 
     let url = ws_url(&base, "/v1/new-project/stream", &token)
@@ -344,7 +403,10 @@ async fn stream_nonzero_exit_reports_failure() {
     let bin_dir = tempfile::tempdir().unwrap();
     install_fake_omega(bin_dir.path(), "echo 'trying...'; echo 'boom' >&2; exit 1");
     let (_, token) = DeviceStore::open(gateway_dir.path()).issue("t");
-    let app = build_router(AppState::new(gateway_dir.path().to_path_buf(), GatewayConfig::default()));
+    let app = build_router(AppState::new(
+        gateway_dir.path().to_path_buf(),
+        GatewayConfig::default(),
+    ));
     let base = spawn(app).await;
 
     let url = ws_url(&base, "/v1/new-project/stream", &token) + "&name=cool-app&category=works";
@@ -399,7 +461,10 @@ fi
         ),
     );
     let (_, token) = DeviceStore::open(gateway_dir.path()).issue("t");
-    let app = build_router(AppState::new(gateway_dir.path().to_path_buf(), GatewayConfig::default()));
+    let app = build_router(AppState::new(
+        gateway_dir.path().to_path_buf(),
+        GatewayConfig::default(),
+    ));
     let base = spawn(app).await;
 
     let url = ws_url(&base, "/v1/new-project/stream", &token) + "&name=cool-app&category=works";
@@ -411,14 +476,23 @@ fi
     ws.close(None).await.unwrap();
     drop(ws);
 
-    assert!(!marker.exists(), "marker must not exist yet — the nested child hasn't reached it");
+    assert!(
+        !marker.exists(),
+        "marker must not exist yet — the nested child hasn't reached it"
+    );
 
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(8);
     while tokio::time::Instant::now() < deadline {
-        assert!(!marker.exists(), "the SILENT nested child kept running after a clean disconnect");
+        assert!(
+            !marker.exists(),
+            "the SILENT nested child kept running after a clean disconnect"
+        );
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
     }
-    assert!(!marker.exists(), "the silent nested child survived the disconnect");
+    assert!(
+        !marker.exists(),
+        "the silent nested child survived the disconnect"
+    );
 
     clear_env();
 }
@@ -432,7 +506,10 @@ async fn concurrency_cap_returns_429_when_new_project_permits_exhausted() {
     // attempt fires.
     install_fake_omega(bin_dir.path(), "echo starting; sleep 5; exit 0");
     let (_, token) = DeviceStore::open(gateway_dir.path()).issue("t");
-    let app = build_router(AppState::new(gateway_dir.path().to_path_buf(), GatewayConfig::default()));
+    let app = build_router(AppState::new(
+        gateway_dir.path().to_path_buf(),
+        GatewayConfig::default(),
+    ));
     let base = spawn(app).await;
 
     // Must match server.rs's MAX_CONCURRENT_NEW_PROJECT_SPAWNS.
@@ -440,8 +517,8 @@ async fn concurrency_cap_returns_429_when_new_project_permits_exhausted() {
 
     let mut held = Vec::new();
     for i in 0..MAX_CONCURRENT_NEW_PROJECT_SPAWNS {
-        let url =
-            ws_url(&base, "/v1/new-project/stream", &token) + &format!("&name=cool-app-{i}&category=works");
+        let url = ws_url(&base, "/v1/new-project/stream", &token)
+            + &format!("&name=cool-app-{i}&category=works");
         let (mut ws, _) = connect_async(url).await.unwrap();
         let first = ws.next().await.unwrap().unwrap();
         let v: serde_json::Value = serde_json::from_str(&first.into_text().unwrap()).unwrap();
@@ -459,10 +536,19 @@ async fn concurrency_cap_returns_429_when_new_project_permits_exhausted() {
 #[tokio::test]
 async fn stream_requires_auth() {
     let gateway_dir = tempfile::tempdir().unwrap();
-    let app = build_router(AppState::new(gateway_dir.path().to_path_buf(), GatewayConfig::default()));
+    let app = build_router(AppState::new(
+        gateway_dir.path().to_path_buf(),
+        GatewayConfig::default(),
+    ));
     let base = spawn(app).await;
-    let url = format!("{}/v1/new-project/stream?name=x&category=works", base.replacen("http", "ws", 1));
+    let url = format!(
+        "{}/v1/new-project/stream?name=x&category=works",
+        base.replacen("http", "ws", 1)
+    );
     let err = connect_async(url).await.unwrap_err();
     let msg = err.to_string();
-    assert!(msg.contains("401") || msg.contains("Unauthorized"), "unexpected error: {msg}");
+    assert!(
+        msg.contains("401") || msg.contains("Unauthorized"),
+        "unexpected error: {msg}"
+    );
 }

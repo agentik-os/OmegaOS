@@ -328,9 +328,11 @@ pub enum MenuAction {
     NewClaude,
     NewCodex,
     NewGemini,
+    NewAntigravity,
     NewPi,
     NewHermes,
     NewGlm,
+    NewKimi,
     NewTerminal,
     NewProject,
     DispatchOracle,
@@ -349,9 +351,11 @@ impl MenuAction {
             MenuAction::NewClaude,
             MenuAction::NewCodex,
             MenuAction::NewGemini,
+            MenuAction::NewAntigravity,
             MenuAction::NewPi,
             MenuAction::NewHermes,
             MenuAction::NewGlm,
+            MenuAction::NewKimi,
             MenuAction::NewTerminal,
             MenuAction::NewProject,
             MenuAction::DispatchOracle,
@@ -370,9 +374,11 @@ impl MenuAction {
             MenuAction::NewClaude => "New Claude session",
             MenuAction::NewCodex => "New Codex session",
             MenuAction::NewGemini => "New Gemini session",
+            MenuAction::NewAntigravity => "New Antigravity session",
             MenuAction::NewPi => "New Pi session (earendil-works)",
             MenuAction::NewHermes => "New Hermes session (Nous Research)",
             MenuAction::NewGlm => "New GLM session",
+            MenuAction::NewKimi => "New Kimi session (Moonshot AI)",
             MenuAction::NewTerminal => "New Terminal (plain shell)",
             MenuAction::NewProject => {
                 "New project  →  pick stack + auto-provision (Convex/Vercel/Clerk/Stripe)"
@@ -395,9 +401,11 @@ impl MenuAction {
             MenuAction::NewClaude => "c",
             MenuAction::NewCodex => "o",
             MenuAction::NewGemini => "g",
+            MenuAction::NewAntigravity => "a",
             MenuAction::NewPi => "p",
             MenuAction::NewHermes => "h",
             MenuAction::NewGlm => "G",
+            MenuAction::NewKimi => "K",
             MenuAction::NewTerminal => "t",
             MenuAction::NewProject => "N",
             MenuAction::DispatchOracle => "d",
@@ -416,9 +424,11 @@ impl MenuAction {
             MenuAction::NewClaude => Some(omega_core::agents::Agent::Claude),
             MenuAction::NewCodex => Some(omega_core::agents::Agent::Codex),
             MenuAction::NewGemini => Some(omega_core::agents::Agent::Gemini),
+            MenuAction::NewAntigravity => Some(omega_core::agents::Agent::Antigravity),
             MenuAction::NewPi => Some(omega_core::agents::Agent::Pi),
             MenuAction::NewHermes => Some(omega_core::agents::Agent::Hermes),
             MenuAction::NewGlm => Some(omega_core::agents::Agent::Glm),
+            MenuAction::NewKimi => Some(omega_core::agents::Agent::Kimi),
             MenuAction::NewTerminal => Some(omega_core::agents::Agent::Shell),
             _ => None,
         }
@@ -580,8 +590,8 @@ fn effort_field(config_key: &str, current: &str) -> SettingsField {
 
 /// Build a model field for a provider. When the provider has a known model
 /// list (`providers::models_for`), this is an arrow-key Select (NO typing);
-/// otherwise it falls back to a free-text field so providers without a curated
-/// list (e.g. pi/hermes) still work.
+/// otherwise it falls back to a free-text field for account-scoped catalogs
+/// such as Antigravity.
 fn model_field(provider: &str, config_key: &str, current: &str) -> SettingsField {
     let opts: Vec<String> = omega_core::providers::ProvidersConfig::models_for(provider)
         .iter()
@@ -699,7 +709,12 @@ pub fn fields_for_section(
             SettingsSection::Claude => Some(Agent::Claude),
             SettingsSection::Codex => Some(Agent::Codex),
             SettingsSection::Gemini => Some(Agent::Gemini),
+            SettingsSection::Antigravity => Some(Agent::Antigravity),
+            SettingsSection::OpenRouter => Some(Agent::OpenRouter),
+            SettingsSection::Pi => Some(Agent::Pi),
+            SettingsSection::Hermes => Some(Agent::Hermes),
             SettingsSection::Glm => Some(Agent::Glm),
+            SettingsSection::Kimi => Some(Agent::Kimi),
             _ => None,
         }
     };
@@ -847,6 +862,11 @@ pub fn fields_for_section(
                 current_value: c.base_url.clone(),
                 masked: false,
             });
+            out.push(SettingsField::Toggle {
+                label: "Bypass hook trust in Omega sessions".to_string(),
+                config_key: "codex.bypass_hook_trust".to_string(),
+                current: c.bypass_hook_trust,
+            });
             out.extend(install_actions_for(Agent::Codex));
         }
         SettingsSection::Gemini => {
@@ -860,6 +880,32 @@ pub fn fields_for_section(
             });
             out.extend(install_actions_for(Agent::Gemini));
         }
+        SettingsSection::Antigravity => {
+            let c = &providers.antigravity;
+            out.push(model_field("antigravity", "antigravity.model", &c.model));
+            let mut effort_options =
+                vec!["low".to_string(), "medium".to_string(), "high".to_string()];
+            let effort_index = match effort_options.iter().position(|e| e == &c.effort) {
+                Some(index) => index,
+                None if c.effort.is_empty() => 1,
+                None => {
+                    effort_options.insert(0, c.effort.clone());
+                    0
+                }
+            };
+            out.push(SettingsField::Select {
+                label: "Effort".to_string(),
+                config_key: "antigravity.effort".to_string(),
+                options: effort_options,
+                current_index: effort_index,
+            });
+            out.push(SettingsField::Toggle {
+                label: "Dangerously skip permissions".to_string(),
+                config_key: "antigravity.dangerously_skip_permissions".to_string(),
+                current: c.dangerously_skip_permissions,
+            });
+            out.extend(install_actions_for(Agent::Antigravity));
+        }
         SettingsSection::Glm => {
             let c = &providers.glm;
             out.push(model_field("glm", "glm.model", &c.model));
@@ -870,6 +916,23 @@ pub fn fields_for_section(
                 masked: true,
             });
             out.extend(install_actions_for(Agent::Glm));
+        }
+        SettingsSection::OpenRouter => {
+            let c = &providers.openrouter;
+            out.push(model_field("openrouter", "openrouter.model", &c.model));
+            out.push(SettingsField::EditText {
+                label: "OpenRouter API key".to_string(),
+                config_key: "openrouter.api_key".to_string(),
+                current_value: c.api_key.clone(),
+                masked: true,
+            });
+            out.push(SettingsField::EditText {
+                label: "Base URL".to_string(),
+                config_key: "openrouter.base_url".to_string(),
+                current_value: c.base_url.clone(),
+                masked: false,
+            });
+            out.extend(install_actions_for(Agent::OpenRouter));
         }
         SettingsSection::Pi => {
             let c = &providers.pi;
@@ -890,6 +953,12 @@ pub fn fields_for_section(
         }
         SettingsSection::Hermes => {
             let c = &providers.hermes;
+            out.push(SettingsField::EditText {
+                label: "Provider (empty = native; key = openrouter)".to_string(),
+                config_key: "hermes.provider".to_string(),
+                current_value: c.provider.clone(),
+                masked: false,
+            });
             out.push(model_field("hermes", "hermes.model", &c.model));
             out.push(SettingsField::EditText {
                 label: "Hermes API key".to_string(),
@@ -898,6 +967,29 @@ pub fn fields_for_section(
                 masked: true,
             });
             out.extend(install_actions_for(Agent::Hermes));
+        }
+        SettingsSection::Kimi => {
+            let c = &providers.kimi;
+            out.push(model_field("kimi", "kimi.model", &c.model));
+            out.push(SettingsField::EditText {
+                label: "Kimi API key".to_string(),
+                config_key: "kimi.api_key".to_string(),
+                current_value: c.api_key.clone(),
+                masked: true,
+            });
+            out.push(SettingsField::EditText {
+                label: "Base URL".to_string(),
+                config_key: "kimi.base_url".to_string(),
+                current_value: c.base_url.clone(),
+                masked: false,
+            });
+            out.push(SettingsField::EditText {
+                label: "Provider type (kimi/anthropic/openai)".to_string(),
+                config_key: "kimi.provider_type".to_string(),
+                current_value: c.provider_type.clone(),
+                masked: false,
+            });
+            out.extend(install_actions_for(Agent::Kimi));
         }
         SettingsSection::Aisb => {
             out.push(SettingsField::Info(format!(
@@ -1013,9 +1105,12 @@ pub enum SettingsSection {
     Claude,
     Codex,
     Gemini,
+    Antigravity,
+    OpenRouter,
     Pi,
     Hermes,
     Glm,
+    Kimi,
     Aisb,
     Telegram,
 }
@@ -1029,9 +1124,12 @@ impl SettingsSection {
             SettingsSection::Claude,
             SettingsSection::Codex,
             SettingsSection::Gemini,
+            SettingsSection::Antigravity,
+            SettingsSection::OpenRouter,
             SettingsSection::Pi,
             SettingsSection::Hermes,
             SettingsSection::Glm,
+            SettingsSection::Kimi,
             SettingsSection::Aisb,
             SettingsSection::Telegram,
         ]
@@ -1044,9 +1142,12 @@ impl SettingsSection {
             SettingsSection::Claude => "Claude (Anthropic)",
             SettingsSection::Codex => "Codex (OpenAI)",
             SettingsSection::Gemini => "Gemini (Google)",
+            SettingsSection::Antigravity => "Antigravity (Google)",
+            SettingsSection::OpenRouter => "OpenRouter (via Pi)",
             SettingsSection::Pi => "Pi (earendil-works)",
             SettingsSection::Hermes => "Hermes (Nous Research)",
             SettingsSection::Glm => "GLM (Z.AI)",
+            SettingsSection::Kimi => "Kimi (Moonshot AI)",
             SettingsSection::Aisb => "AISB viewer (legacy)",
             SettingsSection::Telegram => "Telegram",
         }
@@ -2185,6 +2286,26 @@ impl App {
         }
     }
 
+    fn record_preview_failure(
+        &mut self,
+        name: &str,
+        capture_kind: &str,
+        error: &dyn std::fmt::Display,
+    ) {
+        self.preview_fail_streak = self.preview_fail_streak.saturating_add(1);
+        self.preview_revision = 0;
+        if self.preview_fail_streak >= 3 {
+            if self.preview_fail_streak == 3 {
+                omega_core::tuilog::log(format!(
+                    "preview: {capture_kind} capture for '{name}' failed 3 consecutive ticks — showing placeholder; last error: {error}"
+                ));
+            }
+            self.preview_content = String::from("(session has no pane content)");
+            self.preview_styled = None;
+            self.preview_cursor = None;
+        }
+    }
+
     pub async fn refresh_preview(&mut self) -> anyhow::Result<()> {
         let name = match self.selected_session() {
             Some(e) => e.session.name.clone(),
@@ -2225,8 +2346,6 @@ impl App {
             }
         }
 
-        // Cached connection — avoid a fresh rmux daemon socket per refresh.
-        let mgr = omega_core::session::SessionManager::connect_cached().await?;
         // Hot tail path stays on the cheap visible-only snapshot. Only when the
         // user is browsing history (follow_tail == false) do we pay for a full
         // scrollback capture, so there is real content above the screen to
@@ -2238,6 +2357,16 @@ impl App {
             // renderer would paint stale history over the live tail.
             self.preview_history_for = None;
             self.preview_history_styled = None;
+            // A missing daemon is a preview capture failure, not a reason to
+            // fail the whole TUI refresh. This also keeps cache-only unit tests
+            // hermetic instead of requiring a real rmux binary.
+            let mgr = match omega_core::session::SessionManager::connect_cached().await {
+                Ok(manager) => manager,
+                Err(error) => {
+                    self.record_preview_failure(&name, "styled", &error);
+                    return Ok(());
+                }
+            };
             // Tail path: capture STYLED rows + text + REAL cursor together.
             // Styled rows carry the `/` selector highlight + Claude's
             // colored UI; plain text is kept as a fallback + for scroll math.
@@ -2284,19 +2413,7 @@ impl App {
                     // last good frame and force a full recapture next tick
                     // (revision=0). Only a SUSTAINED failure (≥3 ticks) — i.e. a
                     // genuinely dead pane — replaces the view with the message.
-                    self.preview_fail_streak = self.preview_fail_streak.saturating_add(1);
-                    self.preview_revision = 0; // force fresh recapture next tick
-                    if self.preview_fail_streak >= 3 {
-                        // Log only on the transition (not every later tick).
-                        if self.preview_fail_streak == 3 {
-                            omega_core::tuilog::log(format!(
-                                "preview: styled capture for '{name}' failed 3 consecutive ticks — showing placeholder; last error: {e:#}"
-                            ));
-                        }
-                        self.preview_content = String::from("(session has no pane content)");
-                        self.preview_styled = None;
-                        self.preview_cursor = None;
-                    }
+                    self.record_preview_failure(&name, "styled", &e);
                     // else: retain this target's last-good frame, or the cleared
                     // frame prepared above when this tick switched sessions.
                 }
@@ -2313,6 +2430,15 @@ impl App {
             // so the next scroll-up gets a fresh deep capture. Depth matches the
             // rmux history-limit so the user can scroll to the very top.
             if self.preview_history_for.as_deref() != Some(name.as_str()) {
+                let mgr = match omega_core::session::SessionManager::connect_cached().await {
+                    Ok(manager) => manager,
+                    Err(error) => {
+                        self.preview_history_for = None;
+                        self.preview_history_styled = None;
+                        self.record_preview_failure(&name, "history", &error);
+                        return Ok(());
+                    }
+                };
                 match mgr.capture_pane_history(&name, 500_000).await {
                     Ok(content) => {
                         // The capture now carries its attributes (-e), so split
@@ -2328,15 +2454,7 @@ impl App {
                     Err(e) => {
                         // Same sticky-last-good policy as the tail path: a
                         // transient capture error must not clobber the view.
-                        self.preview_fail_streak = self.preview_fail_streak.saturating_add(1);
-                        if self.preview_fail_streak >= 3 {
-                            if self.preview_fail_streak == 3 {
-                                omega_core::tuilog::log(format!(
-                                    "preview: history capture for '{name}' failed 3 consecutive ticks — showing placeholder; last error: {e:#}"
-                                ));
-                            }
-                            self.preview_content = String::from("(session has no pane content)");
-                        }
+                        self.record_preview_failure(&name, "history", &e);
                         self.preview_history_for = None;
                         self.preview_history_styled = None;
                     }

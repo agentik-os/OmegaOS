@@ -71,14 +71,15 @@ The architecture (centralized config, symlinks, multi-provider) is enforced
 by install.sh Phase 5:
 
 ```bash
-# Phase 5a: Credential Migration (migrate_creds function)
-migrate_creds "claude" "$HOME/.claude/.credentials.json"
-migrate_creds "gemini" "$HOME/.config/gemini/oauth_creds.json"
-# → moves existing Claude/Gemini creds to ~/.omega/credentials/ and links back
+# Phase 5a + end-of-install reconciliation
+omega reconcile
+# → freshness-aware Claude migration/symlink repair in omega-core
 
 # Codex is handled separately by the CODEX_HOME-aware omega-core reconciler.
 # It validates native and canonical copies under a lock and quarantines
 # conflicts instead of blindly replacing either file.
+#
+# Gemini 0.56+ and Antigravity retain their native hybrid/keyring stores.
 
 # Then:
 omega rules export    # writes the 7 Laws + named Rules to ~/.omega/rules/
@@ -179,7 +180,7 @@ shows the real email instead of "unknown".
 | File | Purpose |
 |------|---------|
 | `~/.omega/state/pending-reauth.json` | Pending login record; expires after five minutes |
-| `~/.omega/state/telegram-active-model.json` | Per-chat active provider+model |
+| `~/.omega/state/active-model.json` | Global active provider+model mirror |
 | `~/.omega/credentials/accounts/*.json` | Saved account profiles |
 
 The pending record's five-minute lifetime is distinct from the in-process
@@ -200,7 +201,7 @@ When detected, the bridge can auto-trigger the reauth flow.
 |---------|------|---------|
 | /help | List commands | — |
 | /account | Account card | [Login] [Logout] [Billing] [Switch] |
-| /model | Switch provider/model | Provider buttons → model buttons |
+| /model | Switch the global default provider/model | Provider buttons → model buttons |
 | /projects | Project list | per-project + [+ New] [Scan & add existing] |
 | /sessions | Active sessions | per-session (tap to target) |
 

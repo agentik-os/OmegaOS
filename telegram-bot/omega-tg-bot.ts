@@ -1427,8 +1427,8 @@ async function runCodex(text: string, systemPrompt: string, addDir: string, who:
   const task = systemPrompt.trim() ? `${systemPrompt.trim()}\n\n---\n\n${text}` : text;
   return runAgentProc(
     codex,
-    ["exec", "--skip-git-repo-check", "--dangerously-bypass-approvals-and-sandbox", task],
-    who, cwd || addDir, timeoutMs, "codex",
+    ["exec", "--skip-git-repo-check", "--dangerously-bypass-approvals-and-sandbox", "--dangerously-bypass-hook-trust", "-"],
+    who, cwd || addDir, timeoutMs, "codex", task,
   );
 }
 
@@ -1436,11 +1436,15 @@ async function runCodex(text: string, systemPrompt: string, addDir: string, who:
 // implementation so Claude and Codex cannot drift apart on timeout handling,
 // kill escalation or empty-output diagnostics. `label` names the binary in the
 // operator-facing messages.
-async function runAgentProc(bin: string, argv: string[], who: string, cwd: string | undefined, timeoutMs: number, label: string): Promise<string> {
+async function runAgentProc(bin: string, argv: string[], who: string, cwd: string | undefined, timeoutMs: number, label: string, stdinText?: string): Promise<string> {
   try {
     const proc = Bun.spawn([bin, ...argv], {
-      cwd, env: { ...process.env, OMEGA_DIR }, stdin: "ignore", stdout: "pipe", stderr: "pipe",
+      cwd, env: { ...process.env, OMEGA_DIR }, stdin: stdinText === undefined ? "ignore" : "pipe", stdout: "pipe", stderr: "pipe",
     });
+    if (stdinText !== undefined) {
+      proc.stdin.write(stdinText);
+      proc.stdin.end();
+    }
     // Race the run against the watchdog instead of awaiting the streams after a
     // kill: a SIGTERM'd claude can leave a grandchild holding the stdout pipe,
     // which would block the drain (and the operator's reply) until IT exits.
@@ -3081,18 +3085,28 @@ function statusCard(raw: string): string {
 // is the fallback for binaries predating that subcommand. Selecting writes
 // providers.toml (omega sessions) and, for claude, the omega-mc dashboard fallback
 // (defaults.model only — the per-agent opus/sonnet split is preserved).
-const PROVIDER_FALLBACK = ["claude", "codex", "gemini", "glm", "openrouter"];
+const PROVIDER_FALLBACK = [
+  "claude", "codex", "gemini", "antigravity", "glm",
+  "openrouter", "pi", "hermes", "kimi",
+];
 const MODEL_FALLBACK: Record<string, string[]> = {
   claude: ["opus", "sonnet", "haiku"],
-  codex: ["gpt-5", "gpt-5-codex", "o3"],
-  gemini: ["gemini-2.5-pro", "gemini-2.5-flash"],
-  glm: ["glm-4.6", "glm-4.5"],
-  openrouter: ["anthropic/claude-sonnet-4.6", "anthropic/claude-opus-4.8", "openai/gpt-5", "google/gemini-2.5-pro", "deepseek/deepseek-chat"],
+  codex: ["gpt-5.6", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"],
+  gemini: ["auto", "pro", "flash", "gemini-3.1-pro-preview", "gemini-3.6-flash"],
+  antigravity: [],
+  glm: ["glm-5.3", "glm-5-turbo", "glm-4.7"],
+  openrouter: ["anthropic/claude-opus-5", "anthropic/claude-sonnet-5", "openai/gpt-5.5", "google/gemini-3.1-pro-preview", "z-ai/glm-5.3", "deepseek/deepseek-chat"],
+  pi: ["anthropic/claude-opus-5", "anthropic/claude-sonnet-5", "openai/gpt-5.5"],
+  hermes: ["anthropic/claude-opus-5", "anthropic/claude-sonnet-5", "openai/gpt-5.5"],
+  kimi: ["kimi-for-coding", "kimi-for-coding-highspeed", "k3", "k3-256k"],
 };
-const PROVIDER_ICON: Record<string, string> = { claude: "🟣", codex: "🟢", gemini: "🔵", glm: "🟡", openrouter: "🌐" };
+const PROVIDER_ICON: Record<string, string> = {
+  claude: "🟣", codex: "🟢", gemini: "🔵", antigravity: "🚀",
+  glm: "🟡", openrouter: "🌐", pi: "π", hermes: "⚕", kimi: "🌙",
+};
 // Claude alias → full model id the omega-mc yaml uses (mirror of dispatch.rs + the
 // dashboard's model convention). Anything not aliased is passed through verbatim.
-const CLAUDE_FULL_ID: Record<string, string> = { opus: "claude-opus-5", sonnet: "claude-sonnet-4-6", haiku: "claude-haiku-4-5" };
+const CLAUDE_FULL_ID: Record<string, string> = { opus: "claude-opus-5", sonnet: "claude-sonnet-5", haiku: "claude-haiku-4-5" };
 async function listProviders(): Promise<string[]> {
   const out = await omega(["config", "models"]);
   const ps = out.split("\n").map(s => s.trim()).filter(s => /^[a-z]+$/.test(s));
@@ -3140,7 +3154,8 @@ async function modelProviderView(provider: string, banner = ""): Promise<{ text:
     ? ` Current: <code>${esc(cur || "default")}</code>\n Tap a model to activate it.\n\n${keyLine}`
     : ` No catalogued models. Configure: <code>omega config set ${esc(provider)}.model …</code>\n\n${keyLine}`);
   const keyRow: Btn[][] = hasKey ? [[{ text: "🗑 Delete API key (x)", callback_data: `model:delkey:${provider}`.slice(0, 64) }]] : [];
-  return { text: card(`MODEL — ${provider.toUpperCase()}`, body), markup: kb([...rows, ...keyRow, [{ text: "« Providers", callback_data: "nav:model" }]]) };
+  const activateRow: Btn[][] = [[{ text: "✓ Use provider native default", callback_data: `model:activate:${provider}`.slice(0, 64) }]];
+  return { text: card(`MODEL — ${provider.toUpperCase()}`, body), markup: kb([...rows, ...activateRow, ...keyRow, [{ text: "« Providers", callback_data: "nav:model" }]]) };
 }
 
 // ── Zernio views (built from the omega-zernio --json CLI) ─────────────────────
@@ -3358,11 +3373,10 @@ async function view(name: string): Promise<{ text: string; markup: any }> {
     ]) };
     case "model": {
       const provs = await listProviders();
-      const active = await currentModel("claude");
       const rows: Btn[][] = [];
       for (let i = 0; i < provs.length; i += 2)
         rows.push(provs.slice(i, i + 2).map(p => ({ text: `${PROVIDER_ICON[p] || "•"} ${p}`.slice(0, 28), callback_data: `model:prov:${p}`.slice(0, 64) })));
-      const body = ` omega sessions run on:\n <b>claude</b> · <code>${esc(active || "default")}</code>\n\n Pick a provider to view and change its model.`;
+      const body = ` Pick a provider, then a model. The selection becomes the global default for new sessions; <code>--agent</code> or “avec codex/claude” still overrides one mission.`;
       return { text: card("MODEL / PROVIDERS", body), markup: kb([...rows, [{ text: "🔄 Refresh", callback_data: "nav:model" }, back()]]) };
     }
     case "zernio": return await zernioHome();
@@ -3446,18 +3460,27 @@ async function onCallback(data: string, chat: number, msgId: number, from: numbe
     const v = await modelProviderView(arg, ` ${ok ? "🗑 ✅" : "⚠️"} <b>${esc(arg)}</b> API key ${ok ? "deleted — sessions now use OAuth/subscription (autonomous, no prompt)." : "delete failed: " + esc(res.slice(0, 80))}`);
     return edit(chat, msgId, v.text, v.markup);
   }
+  if (ns === "model" && action === "activate") {
+    const res = await omega(["config", "activate", arg]);
+    const ok = /^\[\+\] Active provider/m.test(res);
+    const v = await modelProviderView(
+      arg,
+      ` ${ok ? "✅" : "⚠️"} <b>${esc(arg)}</b> native default ${ok ? "activated globally." : "activation failed: " + esc(res.slice(0, 100))}`,
+    );
+    return edit(chat, msgId, v.text, v.markup);
+  }
   if (ns === "model" && action === "set") {
     // arg = "provider:model" — model may contain "/" (openrouter ids), never ":".
     const i = arg.indexOf(":"); const provider = arg.slice(0, i); const model = arg.slice(i + 1);
-    const res = await omega(["config", "set", `${provider}.model`, model]);
-    const okOmega = /^\[\+\] Set/m.test(res);
+    const res = await omega(["config", "activate", provider, model]);
+    const okOmega = /^\[\+\] Active provider/m.test(res);
     let dash = "";
     if (provider === "claude") {
       const full = CLAUDE_FULL_ID[model] || model;
       const wrote = mcSetDefaultModel(full);
       dash = `\n 🖥 Dashboard defaults: ${wrote ? `<code>${esc(full)}</code> ✅ <i>(hot-reload ~3s)</i>` : "unchanged"}`;
     }
-    const banner = ` ${okOmega ? "✅" : "⚠️"} <b>${esc(provider)}</b> → <code>${esc(model)}</code>\n ⚙️ omega sessions: ${okOmega ? "✅" : "⚠️ " + esc(res.slice(0, 80))}${dash}`;
+    const banner = ` ${okOmega ? "✅" : "⚠️"} <b>${esc(provider)}</b> → <code>${esc(model)}</code>\n ⚙️ global default for new sessions: ${okOmega ? "✅" : "⚠️ " + esc(res.slice(0, 80))}${dash}`;
     const v = await modelProviderView(provider, banner);
     return edit(chat, msgId, v.text, v.markup);
   }

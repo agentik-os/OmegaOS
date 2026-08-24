@@ -27,7 +27,10 @@ async fn spawn(app: axum::Router) -> String {
 
 async fn app_and_token(gateway_dir: &std::path::Path) -> (axum::Router, String) {
     let (_, token) = DeviceStore::open(gateway_dir).issue("t");
-    let app = build_router(AppState::new(gateway_dir.to_path_buf(), GatewayConfig::default()));
+    let app = build_router(AppState::new(
+        gateway_dir.to_path_buf(),
+        GatewayConfig::default(),
+    ));
     (app, token)
 }
 
@@ -55,7 +58,10 @@ fn install_fake_duo(
     exit_code: i32,
 ) {
     use std::os::unix::fs::PermissionsExt;
-    assert!(!stdout_body.contains('\''), "test stdout body must not contain a single quote");
+    assert!(
+        !stdout_body.contains('\''),
+        "test stdout body must not contain a single quote"
+    );
     let path = bin_dir.join("omega-duo");
     let capture = capture_file.display();
     let body = format!(
@@ -75,7 +81,11 @@ fn clear_env() {
 }
 
 fn argv_lines(capture_file: &std::path::Path) -> Vec<String> {
-    std::fs::read_to_string(capture_file).unwrap_or_default().lines().map(str::to_string).collect()
+    std::fs::read_to_string(capture_file)
+        .unwrap_or_default()
+        .lines()
+        .map(str::to_string)
+        .collect()
 }
 
 /// Finding 2 (adversarial review round): writes an executable fake
@@ -123,8 +133,14 @@ fn install_fake_duo_with_banner_line(
     exit_code: i32,
 ) {
     use std::os::unix::fs::PermissionsExt;
-    assert!(!stdout_body.contains('\''), "test stdout body must not contain a single quote");
-    assert!(!banner.contains('\''), "test banner must not contain a single quote");
+    assert!(
+        !stdout_body.contains('\''),
+        "test stdout body must not contain a single quote"
+    );
+    assert!(
+        !banner.contains('\''),
+        "test banner must not contain a single quote"
+    );
     let path = bin_dir.join("omega-duo");
     let capture = capture_file.display();
     let body = format!(
@@ -210,13 +226,19 @@ async fn happy_path_with_project_builds_exact_argv_and_maps_every_field() {
     assert_eq!(argv[0], "run");
     let task_idx = argv.iter().position(|l| l == "--task").unwrap();
     let task_path = &argv[task_idx + 1];
-    assert!(task_path.starts_with(duo_scratch.path().join("tasks").to_str().unwrap()), "argv: {argv:?}");
+    assert!(
+        task_path.starts_with(duo_scratch.path().join("tasks").to_str().unwrap()),
+        "argv: {argv:?}"
+    );
     let cwd_idx = argv.iter().position(|l| l == "--cwd").unwrap();
     assert_eq!(argv[cwd_idx + 1], project_path.to_str().unwrap());
     let mode_idx = argv.iter().position(|l| l == "--mode").unwrap();
     assert_eq!(argv[mode_idx + 1], "code");
     // --agent / --verify are NEVER passed by this endpoint.
-    assert!(!argv.iter().any(|l| l == "--agent" || l == "--verify"), "argv: {argv:?}");
+    assert!(
+        !argv.iter().any(|l| l == "--agent" || l == "--verify"),
+        "argv: {argv:?}"
+    );
     // No `--` separator (omega-duo's own parser has no positionals to
     // protect) and no `=`-joined flags (its parser does not understand
     // them -- see routes_duo.rs's doc comment).
@@ -247,7 +269,12 @@ async fn happy_path_with_dir_uses_the_dir_under_home_resolved_path() {
     let (app, token) = app_and_token(gateway_dir.path()).await;
     let base = spawn(app).await;
 
-    let dir_str = fake_home.path().join("Station").join("Proj").display().to_string();
+    let dir_str = fake_home
+        .path()
+        .join("Station")
+        .join("Proj")
+        .display()
+        .to_string();
     let res = reqwest::Client::new()
         .post(format!("{base}/v1/duo"))
         .bearer_auth(&token)
@@ -276,7 +303,13 @@ async fn profile_review_maps_to_mode_review() {
     let capture_file = bin_dir.path().join("capture.txt");
 
     install_fake_home(home_dir.path(), "TestProj");
-    install_fake_duo(bin_dir.path(), &capture_file, "0", &fake_bridge_result_json().to_string(), 0);
+    install_fake_duo(
+        bin_dir.path(),
+        &capture_file,
+        "0",
+        &fake_bridge_result_json().to_string(),
+        0,
+    );
     std::env::set_var("OMEGA_DUO_DIR", duo_scratch.path());
 
     let (app, token) = app_and_token(gateway_dir.path()).await;
@@ -306,7 +339,13 @@ async fn both_project_and_dir_given_rejects_with_400_no_spawn() {
     let bin_dir = tempfile::tempdir().unwrap();
     let duo_scratch = tempfile::tempdir().unwrap();
     let capture_file = bin_dir.path().join("capture.txt");
-    install_fake_duo(bin_dir.path(), &capture_file, "0", &fake_bridge_result_json().to_string(), 0);
+    install_fake_duo(
+        bin_dir.path(),
+        &capture_file,
+        "0",
+        &fake_bridge_result_json().to_string(),
+        0,
+    );
     std::env::set_var("OMEGA_DUO_DIR", duo_scratch.path());
 
     let (app, token) = app_and_token(gateway_dir.path()).await;
@@ -334,7 +373,13 @@ async fn neither_project_nor_dir_given_rejects_with_400_no_spawn() {
     let bin_dir = tempfile::tempdir().unwrap();
     let duo_scratch = tempfile::tempdir().unwrap();
     let capture_file = bin_dir.path().join("capture.txt");
-    install_fake_duo(bin_dir.path(), &capture_file, "0", &fake_bridge_result_json().to_string(), 0);
+    install_fake_duo(
+        bin_dir.path(),
+        &capture_file,
+        "0",
+        &fake_bridge_result_json().to_string(),
+        0,
+    );
     std::env::set_var("OMEGA_DUO_DIR", duo_scratch.path());
 
     let (app, token) = app_and_token(gateway_dir.path()).await;
@@ -365,7 +410,13 @@ async fn unknown_project_rejects_with_400_no_spawn() {
     let capture_file = bin_dir.path().join("capture.txt");
 
     install_fake_home(home_dir.path(), "RealProj");
-    install_fake_duo(bin_dir.path(), &capture_file, "0", &fake_bridge_result_json().to_string(), 0);
+    install_fake_duo(
+        bin_dir.path(),
+        &capture_file,
+        "0",
+        &fake_bridge_result_json().to_string(),
+        0,
+    );
     std::env::set_var("OMEGA_DUO_DIR", duo_scratch.path());
 
     let (app, token) = app_and_token(gateway_dir.path()).await;
@@ -379,7 +430,10 @@ async fn unknown_project_rejects_with_400_no_spawn() {
         .await
         .unwrap();
     assert_eq!(res.status(), 400);
-    assert!(!capture_file.exists(), "no subprocess was ever spawned for an unknown project");
+    assert!(
+        !capture_file.exists(),
+        "no subprocess was ever spawned for an unknown project"
+    );
 
     clear_env();
 }
@@ -394,7 +448,13 @@ async fn dir_outside_home_rejects_with_400_no_spawn() {
     let capture_file = bin_dir.path().join("capture.txt");
 
     std::env::set_var("HOME", fake_home.path());
-    install_fake_duo(bin_dir.path(), &capture_file, "0", &fake_bridge_result_json().to_string(), 0);
+    install_fake_duo(
+        bin_dir.path(),
+        &capture_file,
+        "0",
+        &fake_bridge_result_json().to_string(),
+        0,
+    );
     std::env::set_var("OMEGA_DUO_DIR", duo_scratch.path());
 
     let (app, token) = app_and_token(gateway_dir.path()).await;
@@ -424,13 +484,24 @@ async fn dir_with_parent_dir_component_rejects_with_400_no_spawn() {
     let capture_file = bin_dir.path().join("capture.txt");
 
     std::env::set_var("HOME", fake_home.path());
-    install_fake_duo(bin_dir.path(), &capture_file, "0", &fake_bridge_result_json().to_string(), 0);
+    install_fake_duo(
+        bin_dir.path(),
+        &capture_file,
+        "0",
+        &fake_bridge_result_json().to_string(),
+        0,
+    );
     std::env::set_var("OMEGA_DUO_DIR", duo_scratch.path());
 
     let (app, token) = app_and_token(gateway_dir.path()).await;
     let base = spawn(app).await;
 
-    let escaping = fake_home.path().join("does-not-exist-yet").join("..").join("..").join("etc");
+    let escaping = fake_home
+        .path()
+        .join("does-not-exist-yet")
+        .join("..")
+        .join("..")
+        .join("etc");
     let res = reqwest::Client::new()
         .post(format!("{base}/v1/duo"))
         .bearer_auth(&token)
@@ -454,7 +525,13 @@ async fn empty_prompt_rejects_with_400_no_spawn() {
     let capture_file = bin_dir.path().join("capture.txt");
 
     install_fake_home(home_dir.path(), "TestProj");
-    install_fake_duo(bin_dir.path(), &capture_file, "0", &fake_bridge_result_json().to_string(), 0);
+    install_fake_duo(
+        bin_dir.path(),
+        &capture_file,
+        "0",
+        &fake_bridge_result_json().to_string(),
+        0,
+    );
     std::env::set_var("OMEGA_DUO_DIR", duo_scratch.path());
 
     let (app, token) = app_and_token(gateway_dir.path()).await;
@@ -483,7 +560,13 @@ async fn oversized_prompt_rejects_with_400_no_spawn() {
     let capture_file = bin_dir.path().join("capture.txt");
 
     install_fake_home(home_dir.path(), "TestProj");
-    install_fake_duo(bin_dir.path(), &capture_file, "0", &fake_bridge_result_json().to_string(), 0);
+    install_fake_duo(
+        bin_dir.path(),
+        &capture_file,
+        "0",
+        &fake_bridge_result_json().to_string(),
+        0,
+    );
     std::env::set_var("OMEGA_DUO_DIR", duo_scratch.path());
 
     let (app, token) = app_and_token(gateway_dir.path()).await;
@@ -513,7 +596,13 @@ async fn nul_byte_prompt_rejects_with_400_no_spawn() {
     let capture_file = bin_dir.path().join("capture.txt");
 
     install_fake_home(home_dir.path(), "TestProj");
-    install_fake_duo(bin_dir.path(), &capture_file, "0", &fake_bridge_result_json().to_string(), 0);
+    install_fake_duo(
+        bin_dir.path(),
+        &capture_file,
+        "0",
+        &fake_bridge_result_json().to_string(),
+        0,
+    );
     std::env::set_var("OMEGA_DUO_DIR", duo_scratch.path());
 
     let (app, token) = app_and_token(gateway_dir.path()).await;
@@ -542,7 +631,13 @@ async fn unknown_profile_rejects_with_400_no_spawn() {
     let capture_file = bin_dir.path().join("capture.txt");
 
     install_fake_home(home_dir.path(), "TestProj");
-    install_fake_duo(bin_dir.path(), &capture_file, "0", &fake_bridge_result_json().to_string(), 0);
+    install_fake_duo(
+        bin_dir.path(),
+        &capture_file,
+        "0",
+        &fake_bridge_result_json().to_string(),
+        0,
+    );
     std::env::set_var("OMEGA_DUO_DIR", duo_scratch.path());
 
     let (app, token) = app_and_token(gateway_dir.path()).await;
@@ -575,7 +670,13 @@ async fn malformed_stdout_is_502_with_a_sanitized_error_never_the_raw_output() {
     let capture_file = bin_dir.path().join("capture.txt");
 
     install_fake_home(home_dir.path(), "TestProj");
-    install_fake_duo(bin_dir.path(), &capture_file, "0", "this is not json at all", 1);
+    install_fake_duo(
+        bin_dir.path(),
+        &capture_file,
+        "0",
+        "this is not json at all",
+        1,
+    );
     std::env::set_var("OMEGA_DUO_DIR", duo_scratch.path());
 
     let (app, token) = app_and_token(gateway_dir.path()).await;
@@ -594,8 +695,14 @@ async fn malformed_stdout_is_502_with_a_sanitized_error_never_the_raw_output() {
     // longer echoed into the response body -- only the parse error itself
     // (a generic "expected value at..." shape). The full raw text still
     // goes to the gateway's own tracing log, never the HTTP response.
-    assert!(body.get("stdout").is_none(), "must not echo raw stdout: {body}");
-    assert!(body.get("stderr").is_none(), "must not echo raw stderr: {body}");
+    assert!(
+        body.get("stdout").is_none(),
+        "must not echo raw stdout: {body}"
+    );
+    assert!(
+        body.get("stderr").is_none(),
+        "must not echo raw stderr: {body}"
+    );
     assert!(
         !body["error"].as_str().unwrap().contains("not json"),
         "error message must not contain the raw subprocess text: {body}"
@@ -617,7 +724,13 @@ async fn malformed_stdout_never_leaks_a_secret_shaped_string_into_the_response()
     let capture_file = bin_dir.path().join("capture.txt");
 
     install_fake_home(home_dir.path(), "TestProj");
-    install_fake_duo(bin_dir.path(), &capture_file, "0", "sk-ProjSECRETVALUE1234567890", 1);
+    install_fake_duo(
+        bin_dir.path(),
+        &capture_file,
+        "0",
+        "sk-ProjSECRETVALUE1234567890",
+        1,
+    );
     std::env::set_var("OMEGA_DUO_DIR", duo_scratch.path());
 
     let (app, token) = app_and_token(gateway_dir.path()).await;
@@ -695,7 +808,13 @@ async fn subprocess_past_a_short_overridden_timeout_returns_bounded_with_a_clear
     install_fake_home(home_dir.path(), "TestProj");
     // Sleeps 3s; the endpoint's own timeout is overridden to 1s, so this
     // must return well under the full sleep, never the full 1800s default.
-    install_fake_duo(bin_dir.path(), &capture_file, "3", &fake_bridge_result_json().to_string(), 0);
+    install_fake_duo(
+        bin_dir.path(),
+        &capture_file,
+        "3",
+        &fake_bridge_result_json().to_string(),
+        0,
+    );
     std::env::set_var("OMEGA_DUO_DIR", duo_scratch.path());
     std::env::set_var("DUO_TIMEOUT_SECS", "1");
 
@@ -712,7 +831,10 @@ async fn subprocess_past_a_short_overridden_timeout_returns_bounded_with_a_clear
         .unwrap();
     let elapsed = started.elapsed();
     assert_eq!(res.status(), 504);
-    assert!(elapsed < std::time::Duration::from_secs(3), "took {elapsed:?}, expected well under the 3s sleep");
+    assert!(
+        elapsed < std::time::Duration::from_secs(3),
+        "took {elapsed:?}, expected well under the 3s sleep"
+    );
     let body: serde_json::Value = res.json().await.unwrap();
     assert!(body["error"].as_str().unwrap().contains("timed out"));
 
@@ -736,7 +858,13 @@ async fn concurrency_cap_returns_429_when_duo_permits_exhausted() {
     std::fs::create_dir_all(home_dir.path().join("ProjB").join(".git")).unwrap();
     std::fs::create_dir_all(home_dir.path().join("ProjC").join(".git")).unwrap();
     std::env::set_var("OMEGA_HOME", home_dir.path());
-    install_fake_duo(bin_dir.path(), &capture_file, "0.15", &fake_bridge_result_json().to_string(), 0);
+    install_fake_duo(
+        bin_dir.path(),
+        &capture_file,
+        "0.15",
+        &fake_bridge_result_json().to_string(),
+        0,
+    );
     std::env::set_var("OMEGA_DUO_DIR", duo_scratch.path());
 
     let (app, token) = app_and_token(gateway_dir.path()).await;
@@ -777,7 +905,10 @@ async fn concurrency_cap_returns_429_when_duo_permits_exhausted() {
         .unwrap();
     assert_eq!(busy_res.status(), 429);
     let body: serde_json::Value = busy_res.json().await.unwrap();
-    assert!(body["error"].as_str().unwrap().contains("too many concurrent"));
+    assert!(body["error"]
+        .as_str()
+        .unwrap()
+        .contains("too many concurrent"));
 
     for task in in_flight {
         assert_eq!(task.await.unwrap(), 200);
@@ -796,7 +927,13 @@ async fn per_cwd_lock_rejects_a_second_concurrent_run_then_releases_after_the_fi
     let capture_file = bin_dir.path().join("capture.txt");
 
     install_fake_home(home_dir.path(), "TestProj");
-    install_fake_duo(bin_dir.path(), &capture_file, "0.25", &fake_bridge_result_json().to_string(), 0);
+    install_fake_duo(
+        bin_dir.path(),
+        &capture_file,
+        "0.25",
+        &fake_bridge_result_json().to_string(),
+        0,
+    );
     std::env::set_var("OMEGA_DUO_DIR", duo_scratch.path());
 
     let (app, token) = app_and_token(gateway_dir.path()).await;
@@ -834,7 +971,10 @@ async fn per_cwd_lock_rejects_a_second_concurrent_run_then_releases_after_the_fi
         .unwrap();
     assert_eq!(second_res.status(), 409);
     let body: serde_json::Value = second_res.json().await.unwrap();
-    assert!(body["error"].as_str().unwrap().contains("already in flight"));
+    assert!(body["error"]
+        .as_str()
+        .unwrap()
+        .contains("already in flight"));
 
     assert_eq!(first.await.unwrap(), 200);
 
@@ -880,7 +1020,13 @@ async fn per_cwd_lock_keys_on_repo_root_so_two_spellings_of_the_same_repo_collid
     std::fs::create_dir_all(&nested).unwrap();
     std::fs::create_dir_all(repo_root.join(".git")).unwrap();
 
-    install_fake_duo(bin_dir.path(), &capture_file, "0.25", &fake_bridge_result_json().to_string(), 0);
+    install_fake_duo(
+        bin_dir.path(),
+        &capture_file,
+        "0.25",
+        &fake_bridge_result_json().to_string(),
+        0,
+    );
     std::env::set_var("OMEGA_DUO_DIR", duo_scratch.path());
 
     let (app, token) = app_and_token(gateway_dir.path()).await;
@@ -923,7 +1069,10 @@ async fn per_cwd_lock_keys_on_repo_root_so_two_spellings_of_the_same_repo_collid
         "two textually different paths into the same repo must collide on the per-cwd lock"
     );
     let body: serde_json::Value = second_res.json().await.unwrap();
-    assert!(body["error"].as_str().unwrap().contains("already in flight"));
+    assert!(body["error"]
+        .as_str()
+        .unwrap()
+        .contains("already in flight"));
 
     assert_eq!(first.await.unwrap(), 200);
 
@@ -1000,7 +1149,10 @@ async fn client_disconnect_kills_the_nested_agent_and_releases_the_cwd_lock() {
     let before = std::fs::read_to_string(&marker_file).unwrap_or_default();
     tokio::time::sleep(std::time::Duration::from_millis(150)).await;
     let grew = std::fs::read_to_string(&marker_file).unwrap_or_default();
-    assert!(grew.len() > before.len(), "nested grandchild marker was not growing before the disconnect");
+    assert!(
+        grew.len() > before.len(),
+        "nested grandchild marker was not growing before the disconnect"
+    );
 
     // CLIENT-side disconnect: abort the task holding the connection, never
     // a server-side timeout.
@@ -1016,13 +1168,22 @@ async fn client_disconnect_kills_the_nested_agent_and_releases_the_cwd_lock() {
         }
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
-    assert!(died, "the nested grandchild (pid {nested_pid}) survived the client disconnect");
+    assert!(
+        died,
+        "the nested grandchild (pid {nested_pid}) survived the client disconnect"
+    );
 
     // The per-cwd lock must have been released too, ONLY once the kill
     // happened -- not leaked, and not letting a real orphan race a second
     // run. Point OMEGA_DUO_BIN at a fast, ordinary fake bin so this third
     // request does not also have to sit out a long sleep.
-    install_fake_duo(bin_dir.path(), &capture_file, "0", &fake_bridge_result_json().to_string(), 0);
+    install_fake_duo(
+        bin_dir.path(),
+        &capture_file,
+        "0",
+        &fake_bridge_result_json().to_string(),
+        0,
+    );
     let third_res = client
         .post(format!("{base}/v1/duo"))
         .bearer_auth(&token)
@@ -1069,7 +1230,13 @@ async fn dash_prefixed_resolved_dir_is_rejected_before_any_spawn() {
     let _cwd_restore = CwdRestore(original_cwd);
     std::env::set_current_dir(fake_home.path()).unwrap();
 
-    install_fake_duo(bin_dir.path(), &capture_file, "0", &fake_bridge_result_json().to_string(), 0);
+    install_fake_duo(
+        bin_dir.path(),
+        &capture_file,
+        "0",
+        &fake_bridge_result_json().to_string(),
+        0,
+    );
     std::env::set_var("OMEGA_DUO_DIR", duo_scratch.path());
 
     let (app, token) = app_and_token(gateway_dir.path()).await;
@@ -1087,7 +1254,10 @@ async fn dash_prefixed_resolved_dir_is_rejected_before_any_spawn() {
 
     assert_eq!(res.status(), 400);
     let body: serde_json::Value = res.json().await.unwrap();
-    assert!(body["error"].as_str().unwrap().contains("absolute"), "error: {body}");
+    assert!(
+        body["error"].as_str().unwrap().contains("absolute"),
+        "error: {body}"
+    );
     assert!(!capture_file.exists(), "no subprocess was ever spawned");
 
     clear_env();
@@ -1130,7 +1300,11 @@ async fn stray_banner_line_before_the_json_is_still_parsed_from_the_last_line() 
         .send()
         .await
         .unwrap();
-    assert_eq!(res.status(), 200, "a stray banner line before the real JSON line must not 502");
+    assert_eq!(
+        res.status(),
+        200,
+        "a stray banner line before the real JSON line must not 502"
+    );
     let resp: serde_json::Value = res.json().await.unwrap();
     assert_eq!(resp, body);
 
@@ -1145,7 +1319,10 @@ async fn create_requires_auth() {
     let gateway_dir = tempfile::tempdir().unwrap();
     let duo_scratch = tempfile::tempdir().unwrap();
     std::env::set_var("OMEGA_DUO_DIR", duo_scratch.path());
-    let app = build_router(AppState::new(gateway_dir.path().to_path_buf(), GatewayConfig::default()));
+    let app = build_router(AppState::new(
+        gateway_dir.path().to_path_buf(),
+        GatewayConfig::default(),
+    ));
     let base = spawn(app).await;
 
     let res = reqwest::Client::new()

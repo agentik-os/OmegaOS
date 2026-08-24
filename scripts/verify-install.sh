@@ -13,6 +13,7 @@
 set -u
 cd "$(dirname "$0")/.." || exit 2
 fail=0
+VERIFY_SOURCE_ONLY="${VERIFY_SOURCE_ONLY:-0}"
 ok()   { printf '  \033[32m✓\033[0m %s\n' "$1"; }
 bad()  { printf '  \033[31m✗ %s\033[0m\n' "$1"; fail=1; }
 
@@ -323,6 +324,8 @@ DUO_INVARIANTS
   else
     bad "omega-duo source self-test failed or incomplete"
   fi
+elif [ "$VERIFY_SOURCE_ONLY" = "1" ] && ! command -v bun >/dev/null 2>&1; then
+  ok "Bun runtime self-test skipped in VERIFY_SOURCE_ONLY mode (installer wiring checked above)"
 else
   bad "Bun absent: omega-duo runtime gate cannot execute"
 fi
@@ -419,6 +422,8 @@ LC_RULE_SRC=$(grep -cE "id:[[:space:]]*\"$LC_RULE_ID\"" crates/omega-core/src/ru
 LC_DOC_SRC=$(find docs -iname '*lifecycle*.md' 2>/dev/null | wc -l)
 if [ "$LC_RULE_SRC" -eq 0 ] && [ "$LC_DOC_SRC" -eq 0 ]; then
   ok "oracle lifecycle contract assets absent from this branch (0 $LC_RULE_ID registrations in rules.rs, 0 docs/*lifecycle*.md): landing check SKIPPED, nothing to verify yet"
+elif [ "$VERIFY_SOURCE_ONLY" = "1" ]; then
+  ok "installed lifecycle landing check skipped in VERIFY_SOURCE_ONLY mode"
 elif [ ! -d "$LC_HOME" ]; then
   ok "$LC_HOME absent (OmegaOS never installed here): lifecycle landing check SKIPPED (sources present: $LC_RULE_SRC $LC_RULE_ID registration(s), $LC_DOC_SRC docs pages)"
 else
@@ -701,7 +706,7 @@ fi
 # import error, so the enforcement vanished with nothing to see. Assert the whole
 # chain so that class of bug is caught here instead of in production.
 HOOK_PARITY_OK=1
-for f in stop-verify-hook.sh omega-session-contract.sh omega-prompt-scan.sh omega-plan-mirror.sh omega_plan_state.py; do
+for f in stop-verify-hook.sh omega-session-contract.sh omega-prompt-scan.sh omega-plan-mirror.sh omega-audit-guard.sh track-tool-use.sh omega_plan_state.py; do
   [ -f "scripts/hooks/$f" ] || { bad "hook payload missing from repo: scripts/hooks/$f"; HOOK_PARITY_OK=0; }
 done
 grep -q 'scripts/hooks/"\*\.py' install.sh || { bad "install.sh does not copy scripts/hooks/*.py (shared parser would not ship)"; HOOK_PARITY_OK=0; }
@@ -709,6 +714,13 @@ for marker in stop-verify-hook omega-session-contract omega-prompt-scan omega-pl
   grep -q "$marker" install.sh || { bad "install.sh never registers $marker"; HOOK_PARITY_OK=0; }
 done
 [ "$HOOK_PARITY_OK" = "1" ] && ok "anti-abandon hooks shipped, copied (*.sh + *.py) and registered by install.sh"
+if [ "$(grep -c '\.hooks.PreToolUse' install.sh)" -ge 2 ] \
+  && [ "$(grep -c '\.hooks.PostToolUse' install.sh)" -ge 2 ] \
+  && grep -q -- '--dangerously-bypass-hook-trust' crates/omega-core/src/agents.rs; then
+  ok "Claude and Codex both receive audit/tracker hooks; detached Codex trust is explicit"
+else
+  bad "Codex hook enforcement is not in parity with Claude"
+fi
 
 # 10b. Post-update coherence: an install must reconcile itself, and the
 # staleness check must have something true to compare against.
@@ -767,7 +779,8 @@ if grep -q 'skip_metadata' tools/agent-reach/install-agent-reach.sh \
 else
   bad "Agent Reach can publish upstream-only metadata that breaks omega sync"
 fi
-if grep -q 'rsync -a --delete "$sk_dir/"' install.sh \
+if grep -q 'mirror_owned_dir "$sk_dir"' install.sh \
+  && grep -q 'rsync -a --delete "$src/" "$dst/"' install.sh \
   && grep -q 'rsync -a --delete --exclude=node_modules' install.sh \
   && grep -q 'skills validate --root "$sk_dir"' install.sh \
   && grep -q 'SKMIRROR_REJECTED' install.sh; then
@@ -776,14 +789,45 @@ else
   bad "skill mirrors can retain stale or schema-invalid protocols across reinstall"
 fi
 
-# omega-gateway (app API daemon): unit shipped, a workspace member (so the
-# source-build `cargo build --release` above produces omega-gatewayd for
-# free), and installer wiring (binary install + systemd unit + enable).
+# omega-gateway (app API daemon): unit shipped, source-build wiring, AND the
+# deterministic prebuilt archive. Grepping install.sh alone used to report a
+# false pass while every prebuilt install silently omitted the daemon.
 if [ -f config/omega-gateway.service ] && grep -q "crates/omega-gateway" Cargo.toml \
-  && grep -q "omega-gatewayd" install.sh && grep -q "omega-gateway.service" install.sh; then
-  ok "omega-gateway daemon shipped + wired (unit + workspace build + install.sh)"
+  && grep -q "omega-gatewayd" install.sh && grep -q "omega-gateway.service" install.sh \
+  && grep -q "release/omega-gatewayd" .github/workflows/release.yml \
+  && grep -q "'omega-gatewayd'" .github/workflows/release.yml \
+  && grep -q '\$tmp/omega-gatewayd' install.sh; then
+  ok "omega-gateway daemon shipped in source + prebuilt lanes"
 else
-  bad "omega-gateway daemon not fully shipped/wired (unit file / workspace member / install.sh wiring)"
+  bad "omega-gateway daemon missing from source/prebuilt/install wiring"
+fi
+
+# The configured runtime default and fresh-install payload must agree.
+if grep -q 'default_agent_command().*codex\|agent_command = "codex"' config/default.toml \
+  && grep -q 'omega" install codex' install.sh; then
+  ok "fresh install provisions the default Codex runtime"
+else
+  bad "Codex is the default but install.sh does not provision it"
+fi
+
+# Provider template is non-secret, installed owner-only, and visible on a fresh
+# box instead of materializing only after the first UI mutation.
+if [ -f config/providers.default.toml ] \
+  && grep -q 'config/providers.default.toml' install.sh \
+  && grep -q 'chmod 600 "\$OMEGA_DIR/providers.toml"' install.sh; then
+  ok "providers.toml template shipped + installed owner-only"
+else
+  bad "provider config template missing or not installed owner-only"
+fi
+
+# Reproducible Rust version: CI, rust-toolchain.toml, and source installer must
+# name the same compiler floor.
+if grep -q 'channel = "1.97.1"' rust-toolchain.toml \
+  && grep -q 'rust_required="1.97.1"' install.sh \
+  && grep -q 'toolchain: 1.97.1' .github/workflows/ci.yml; then
+  ok "Rust toolchain pinned consistently (1.97.1)"
+else
+  bad "Rust toolchain pin drift between CI, installer, and rust-toolchain.toml"
 fi
 
 # ── OS suite parity: every INTEGRATED OS (a payload beyond its scaffold) must
@@ -873,6 +917,8 @@ fi
 if command -v bun >/dev/null 2>&1 \
   && bun scripts/verify-os-suite.ts >/dev/null; then
   ok "OS documentation parity: 24 complete manifests and checksum inventories"
+elif [ "$VERIFY_SOURCE_ONLY" = "1" ] && ! command -v bun >/dev/null 2>&1; then
+  ok "OS documentation runtime verifier skipped in VERIFY_SOURCE_ONLY mode (Bun unavailable)"
 else
   bad "OS documentation parity failed (README/README_FR/MANIFEST/integration/skill/checksums)"
 fi

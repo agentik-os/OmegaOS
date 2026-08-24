@@ -15,13 +15,18 @@ personal pieces are left — they take ~5 minutes.**
 New OmegaOS and Oracle sessions use Codex by default. Link it once:
 
 ```
-codex login
-codex login status
+omega codex-login
+omega codex-login-status
 ```
 
-On a headless VPS, use the displayed device flow. A successful status prints
-the active login method. Claude Code remains available as an explicit provider:
-run `claude`, enter `/login`, then select Claude per session or mission.
+On a headless VPS, approve the displayed device flow. A successful status
+prints the active login method. Claude Code remains available as an explicit
+provider: run `claude auth login`, then select Claude per session or mission.
+
+For personal Google accounts, use Antigravity (`omega install antigravity`,
+then `agy` once to authenticate). Google ended Gemini CLI service for free,
+AI Pro, and Ultra individual accounts in June 2026; `gemini` remains supported
+for Gemini Code Assist Standard/Enterprise and paid API-key users.
 
 ## Step 2 — Telegram remote control (recommended)
 
@@ -144,7 +149,9 @@ local chat), and `omega attach -t <session>` (jump into any live agent).
 
 - **Mission Control dashboard** (web UI, one container per agent — needs
   Docker): `omega-mc-up`, then open `http://<host>:8080`.
-- **More CLI agents**: `omega install claude|gemini|pi|hermes|glm` (or
+- **More CLI agents**:
+  `omega install claude|antigravity|gemini|openrouter|pi|hermes|glm|kimi`
+  (or
   Settings → Install agents in the TUI). All install user-space, no root.
 - **Global keybindings**: `omega install-bindings` (Ctrl+Space popup).
 - **Themes**: a gallery of TUI palettes with live preview (Settings → Theme) —

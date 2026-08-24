@@ -43,7 +43,10 @@ impl SessionOrgStore {
         std::fs::create_dir_all(gateway_dir).ok();
         harden_dir(gateway_dir);
         let path = gateway_dir.join("session_org.json");
-        Self { path, lock: Mutex::new(()) }
+        Self {
+            path,
+            lock: Mutex::new(()),
+        }
     }
 
     fn read_all(&self) -> HashMap<String, SessionOrgEntry> {
@@ -149,7 +152,11 @@ mod tests {
         store.set("oracle-Bar-2", entry(Some("second"), None, true));
 
         let all = store.get_all();
-        assert_eq!(all.len(), 2, "a read-modify-write over the whole map, not an overwrite of it");
+        assert_eq!(
+            all.len(),
+            2,
+            "a read-modify-write over the whole map, not an overwrite of it"
+        );
         assert_eq!(all["oracle-Foo-1"].label.as_deref(), Some("first"));
         assert_eq!(all["oracle-Bar-2"].label.as_deref(), Some("second"));
         assert!(all["oracle-Bar-2"].pinned);
@@ -166,7 +173,10 @@ mod tests {
         assert_eq!(all.len(), 1);
         let got = &all["oracle-Foo-1"];
         assert_eq!(got.label.as_deref(), Some("new"));
-        assert_eq!(got.folder, None, "full replace: an omitted field must not survive from the old entry");
+        assert_eq!(
+            got.folder, None,
+            "full replace: an omitted field must not survive from the old entry"
+        );
         assert!(got.pinned);
     }
 

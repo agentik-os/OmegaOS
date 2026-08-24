@@ -91,11 +91,19 @@ async fn resolve_project_path(project: &str) -> Result<PathBuf, (StatusCode, Str
     let name = project.to_string();
     let found = tokio::task::spawn_blocking(move || {
         let home = crate::config::home_dir();
-        omega_core::projects::discover(&home).into_iter().find(|p| p.name == name).map(|p| p.path)
+        omega_core::projects::discover(&home)
+            .into_iter()
+            .find(|p| p.name == name)
+            .map(|p| p.path)
     })
     .await
     .unwrap_or(None);
-    found.ok_or_else(|| (StatusCode::BAD_REQUEST, format!("unknown project: {project}")))
+    found.ok_or_else(|| {
+        (
+            StatusCode::BAD_REQUEST,
+            format!("unknown project: {project}"),
+        )
+    })
 }
 
 /// Validates `project`/`mission`/`agent` and resolves the real project root,
@@ -107,21 +115,35 @@ async fn resolve_orchestrate_request(
     agent: &str,
 ) -> Result<PathBuf, (StatusCode, String)> {
     if project.trim().is_empty() {
-        return Err((StatusCode::BAD_REQUEST, "project must not be empty".to_string()));
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "project must not be empty".to_string(),
+        ));
     }
     if mission.trim().is_empty() {
-        return Err((StatusCode::BAD_REQUEST, "mission must not be empty".to_string()));
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "mission must not be empty".to_string(),
+        ));
     }
     if project.contains('\0') || mission.contains('\0') {
-        return Err((StatusCode::BAD_REQUEST, "project/mission must not contain a NUL byte".to_string()));
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "project/mission must not contain a NUL byte".to_string(),
+        ));
     }
     if mission.len() > MAX_MISSION_LEN {
-        return Err((StatusCode::BAD_REQUEST, format!("mission too long (max {MAX_MISSION_LEN} bytes)")));
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!("mission too long (max {MAX_MISSION_LEN} bytes)"),
+        ));
     }
     if !agent.is_empty() {
         let name = agent.to_string();
         let is_known = tokio::task::spawn_blocking(move || {
-            omega_core::agents::Agent::all().iter().any(|a| a.name() == name)
+            omega_core::agents::Agent::all()
+                .iter()
+                .any(|a| a.name() == name)
         })
         .await
         .unwrap_or(false);
@@ -153,7 +175,9 @@ pub async fn stream(
             let Ok(permit) = state.orchestrate_permits.clone().try_acquire_owned() else {
                 return StatusCode::TOO_MANY_REQUESTS.into_response();
             };
-            ws.on_upgrade(move |socket| orchestrate_stream_loop(socket, project, mission, project_path, permit))
+            ws.on_upgrade(move |socket| {
+                orchestrate_stream_loop(socket, project, mission, project_path, permit)
+            })
         }
         Err((code, _msg)) => code.into_response(),
     }
@@ -184,7 +208,10 @@ async fn forward_lines<R: AsyncRead + Unpin>(
     loop {
         match lines.next_line().await {
             Ok(Some(text)) => {
-                let frame = OrchestrateStreamMsg::Line { stream: stream_name.to_string(), text };
+                let frame = OrchestrateStreamMsg::Line {
+                    stream: stream_name.to_string(),
+                    text,
+                };
                 if tx.send(frame).await.is_err() {
                     return;
                 }
@@ -202,7 +229,10 @@ async fn forward_lines<R: AsyncRead + Unpin>(
 /// subprocess work).
 async fn kill_process_group(pid: u32) {
     let _ = tokio::task::spawn_blocking(move || {
-        std::process::Command::new("kill").arg("--").arg(format!("-{pid}")).status()
+        std::process::Command::new("kill")
+            .arg("--")
+            .arg(format!("-{pid}"))
+            .status()
     })
     .await;
 }
@@ -262,7 +292,12 @@ async fn orchestrate_stream_loop(
     // — `project`/`mission` could themselves start with `-`, and everything
     // after `--` is treated as a positional value by clap even then (same
     // clap-safe argv construction `routes_dispatch.rs::create` documents).
-    cmd.arg("orchestrate").arg("--dir").arg(&project_path).arg("--").arg(&project).arg(&mission);
+    cmd.arg("orchestrate")
+        .arg("--dir")
+        .arg(&project_path)
+        .arg("--")
+        .arg(&project)
+        .arg(&mission);
     cmd.stdin(Stdio::null());
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
@@ -274,7 +309,9 @@ async fn orchestrate_stream_loop(
         Err(e) => {
             let _ = send_orchestrate_frame(
                 &mut socket,
-                &OrchestrateStreamMsg::Error { message: format!("failed to spawn omega: {e}") },
+                &OrchestrateStreamMsg::Error {
+                    message: format!("failed to spawn omega: {e}"),
+                },
             )
             .await;
             let _ = socket.send(Message::Close(None)).await;
@@ -358,8 +395,13 @@ async fn orchestrate_stream_loop(
     let _ = stderr_task.await;
 
     let exit_frame = match child.wait().await {
-        Ok(status) => OrchestrateStreamMsg::Exit { success: status.success(), code: status.code() },
-        Err(e) => OrchestrateStreamMsg::Error { message: format!("failed to wait on child: {e}") },
+        Ok(status) => OrchestrateStreamMsg::Exit {
+            success: status.success(),
+            code: status.code(),
+        },
+        Err(e) => OrchestrateStreamMsg::Error {
+            message: format!("failed to wait on child: {e}"),
+        },
     };
     let _ = send_orchestrate_frame(&mut socket, &exit_frame).await;
     let _ = socket.send(Message::Close(None)).await;
@@ -372,21 +414,27 @@ mod resolve_orchestrate_request_tests {
 
     #[tokio::test]
     async fn rejects_empty_project() {
-        let err = resolve_orchestrate_request("", "mission", "").await.unwrap_err();
+        let err = resolve_orchestrate_request("", "mission", "")
+            .await
+            .unwrap_err();
         assert_eq!(err.0, StatusCode::BAD_REQUEST);
         assert!(err.1.contains("project"));
     }
 
     #[tokio::test]
     async fn rejects_empty_mission() {
-        let err = resolve_orchestrate_request("SomeProj", "", "").await.unwrap_err();
+        let err = resolve_orchestrate_request("SomeProj", "", "")
+            .await
+            .unwrap_err();
         assert_eq!(err.0, StatusCode::BAD_REQUEST);
         assert!(err.1.contains("mission"));
     }
 
     #[tokio::test]
     async fn rejects_nul_byte() {
-        let err = resolve_orchestrate_request("Some\u{0}Proj", "mission", "").await.unwrap_err();
+        let err = resolve_orchestrate_request("Some\u{0}Proj", "mission", "")
+            .await
+            .unwrap_err();
         assert_eq!(err.0, StatusCode::BAD_REQUEST);
         assert!(err.1.contains("NUL"));
     }
@@ -394,7 +442,9 @@ mod resolve_orchestrate_request_tests {
     #[tokio::test]
     async fn rejects_mission_over_length_cap() {
         let too_long = "x".repeat(8001);
-        let err = resolve_orchestrate_request("SomeProj", &too_long, "").await.unwrap_err();
+        let err = resolve_orchestrate_request("SomeProj", &too_long, "")
+            .await
+            .unwrap_err();
         assert_eq!(err.0, StatusCode::BAD_REQUEST);
         assert!(err.1.contains("too long"));
     }

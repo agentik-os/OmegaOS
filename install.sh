@@ -93,6 +93,21 @@ install_binary() {
     mv -f "$dst.new" "$dst"
 }
 
+# Mirror one installer-owned directory exactly. The fallback removes the old
+# managed copy first; plain `cp -r` retained files deleted upstream forever.
+mirror_owned_dir() {
+    local src="$1" dst="$2"
+    mkdir -p "$(dirname "$dst")"
+    if command -v rsync >/dev/null 2>&1; then
+        mkdir -p "$dst"
+        rsync -a --delete "$src/" "$dst/"
+    else
+        rm -rf "$dst"
+        mkdir -p "$dst"
+        cp -a "$src/." "$dst/"
+    fi
+}
+
 # Privileged command runner — the ONE way this script touches sudo that can
 # ever PROMPT (sole exception: the system-wide rmux config block in Phase 5
 # uses raw `sudo` but self-gates on `sudo -n true`, so it never prompts). Tries
@@ -277,14 +292,29 @@ ensure_build_toolchain() {
         fi
         ok "Build toolchain installed"
     fi
-    # (2) Rust (rustup) — only reached on the source-build path.
-    if ! command -v cargo >/dev/null 2>&1; then
-        info "Rust not found. Installing via rustup..."
+    # (2) Rust (rustup) — only reached on the source-build path. Cargo merely
+    # being present is not enough: serde-saphyr is edition 2024 and an old
+    # system toolchain fails before Omega can print a useful diagnostic. Keep
+    # this in lockstep with rust-toolchain.toml and CI.
+    local rust_required="1.97.1" rust_installed="" rust_major=0 rust_minor=0
+    if command -v rustc >/dev/null 2>&1; then
+        rust_installed="$(rustc --version 2>/dev/null | awk '{print $2}')"
+        IFS=. read -r rust_major rust_minor _ <<< "$rust_installed"
+        rust_major="${rust_major:-0}"
+        rust_minor="${rust_minor:-0}"
+    fi
+    if ! command -v cargo >/dev/null 2>&1 \
+        || (( rust_major < 1 || (rust_major == 1 && rust_minor < 97) )); then
+        info "Rust ${rust_installed:-missing} cannot build this checkout; installing $rust_required via rustup..."
         command -v curl >/dev/null 2>&1 || { err "curl is required to bootstrap Rust but is missing; install curl and re-run."; exit 1; }
-        curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+        if command -v rustup >/dev/null 2>&1; then
+            rustup toolchain install "$rust_required" --profile minimal
+        else
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain "$rust_required"
+        fi
         # shellcheck disable=SC1091
         source "$HOME/.cargo/env"
-        ok "Rust installed: $(rustc --version)"
+        ok "Rust toolchain ready: $(rustc --version)"
     fi
 }
 
@@ -546,7 +576,8 @@ maybe_install_prebuilt() {
     if ! tar xzf "$tmp/$tarball" -C "$tmp" 2>/dev/null; then
         info "Prebuilt extract failed — building from source"; rm -rf "$tmp"; return 0
     fi
-    [[ -f "$tmp/omega" && -f "$tmp/rmux" && -f "$tmp/BUILD-INFO.json" ]] || {
+    [[ -f "$tmp/omega" && -f "$tmp/omega-gatewayd" && -f "$tmp/rmux" \
+        && -f "$tmp/BUILD-INFO.json" ]] || {
         info "Prebuilt missing binaries or BUILD-INFO.json — building from source"
         rm -rf "$tmp"
         return 0
@@ -563,22 +594,26 @@ maybe_install_prebuilt() {
 
     mkdir -p "$INSTALL_DIR"
     install_binary "$tmp/omega" "$INSTALL_DIR/omega" || { rm -rf "$tmp"; return 0; }
+    install_binary "$tmp/omega-gatewayd" "$INSTALL_DIR/omega-gatewayd" \
+        || { rm -rf "$tmp"; return 0; }
     install_binary "$tmp/rmux"  "$INSTALL_DIR/rmux"  || { rm -rf "$tmp"; return 0; }
     ln -sf "$INSTALL_DIR/omega" "$INSTALL_DIR/omg"
 
     # Sanity: the downloaded binaries actually run on THIS host (right libc/arch).
     # rmux is tmux-style — its version flag is `-V` (NOT --version, which exits 1).
-    if "$INSTALL_DIR/omega" --version >/dev/null 2>&1 && "$INSTALL_DIR/rmux" -V >/dev/null 2>&1; then
+    if "$INSTALL_DIR/omega" --version >/dev/null 2>&1 \
+        && "$INSTALL_DIR/omega-gatewayd" --help >/dev/null 2>&1 \
+        && "$INSTALL_DIR/rmux" -V >/dev/null 2>&1; then
         mkdir -p "$OMEGA_DIR/state"
         chmod 700 "$OMEGA_DIR/state"
         install -m 0644 "$tmp/BUILD-INFO.json" "$OMEGA_DIR/state/.installed-build-info.json.new"
         mv -f "$OMEGA_DIR/state/.installed-build-info.json.new" \
             "$OMEGA_DIR/state/installed-build-info.json"
         PREBUILT_OK=1
-        ok "Prebuilt omega + rmux installed ($tag, $triple) — skipped the source build"
+        ok "Prebuilt omega + gateway + rmux installed ($tag, $triple) — skipped the source build"
     else
         info "Prebuilt binaries did not run here — building from source"
-        rm -f "$INSTALL_DIR/omega" "$INSTALL_DIR/rmux"
+        rm -f "$INSTALL_DIR/omega" "$INSTALL_DIR/omega-gatewayd" "$INSTALL_DIR/rmux"
     fi
     rm -rf "$tmp"
     return 0
@@ -981,9 +1016,8 @@ record_install_provenance
 # --- omega-gateway (app API daemon; consumed by the omega-app mobile/desktop
 # clients — Plan 4). `cargo build --release` above builds the whole workspace
 # (crates/omega-gateway is a member), so the binary already exists here on the
-# source-build path; the PREBUILT_OK path installs only omega/rmux from GitHub
-# release assets and has no gateway artifact, so this degrades to a skip there
-# (release-pipeline follow-up, not attempted in this task).
+# source-build path; release archives carry the same gateway binary so both
+# install lanes configure the identical runtime.
 # Every line below degrades non-fatally: this block sits BEFORE the
 # deliberately-early Telegram bot install (next section) and set -euo
 # pipefail must never let a gateway hiccup abort the install and skip the
@@ -991,6 +1025,8 @@ record_install_provenance
 if [[ -x target/release/omega-gatewayd ]]; then
     install_binary target/release/omega-gatewayd "$INSTALL_DIR/omega-gatewayd" \
         || warn "omega-gatewayd binary install failed (non-fatal)"
+fi
+if [[ -x "$INSTALL_DIR/omega-gatewayd" ]]; then
     mkdir -p "$HOME/.config/systemd/user" || true
     # Unit is GENERATED from $INSTALL_DIR, not copied from
     # config/omega-gateway.service (which hardcodes %h/.local/bin) — a custom
@@ -1024,7 +1060,7 @@ EOF
         ok "omega-gateway binary installed to $INSTALL_DIR/omega-gatewayd (systemd unavailable — start manually: omega-gatewayd serve)"
     fi
 else
-    info "omega-gatewayd not built (target/release/omega-gatewayd missing) — skipping gateway install"
+    info "omega-gatewayd unavailable after build/install — skipping gateway service"
 fi
 
 # Install the Telegram command bot NOW (before the long, fragile Phase 5) so a
@@ -1210,7 +1246,7 @@ fi
 STEPPER_SKILL_DST="$OMEGA_DIR/skills/stepper-os"
 if [[ -d "$OMEGA_SRC/skills/stepper-os" ]]; then
     mkdir -p "$STEPPER_SKILL_DST" "$HOME/.claude/commands"
-    cp -rf "$OMEGA_SRC/skills/stepper-os/." "$STEPPER_SKILL_DST/"
+    mirror_owned_dir "$OMEGA_SRC/skills/stepper-os" "$STEPPER_SKILL_DST"
     for cmd in stepper-os omg-stepper-os; do
         cat > "$HOME/.claude/commands/$cmd.md" <<EOF
 # /$cmd
@@ -1281,49 +1317,12 @@ if [[ -f "$OMEGA_SRC/config/clerk-pool.sample" && ! -f "$OMEGA_DIR/provisioning/
 fi
 
 # ─── Phase 5a: Credential Migration ─────────────────────────────────────────
-# Move existing Claude/Gemini credentials into the canonical store and replace
-# their legacy paths with symlinks. Codex is deliberately excluded: choosing
-# between native and canonical Codex files requires validating last_refresh and
-# preserving the losing valid copy in the owner-only quarantine. That decision
-# belongs to omega-core, not this shell installer.
-
-migrate_creds() {
-    local provider="$1"
-    local legacy="$2"
-    local canonical="$OMEGA_DIR/credentials/${provider}.json"
-
-    # Already a symlink? Nothing to do.
-    if [ -L "$legacy" ]; then
-        ok "$provider creds: already symlinked"
-        return
-    fi
-
-    # Legacy file exists as a real file?
-    if [ -f "$legacy" ]; then
-        mkdir -p "$(dirname "$legacy")"
-        if [ -f "$canonical" ]; then
-            # Both exist — keep canonical, backup the legacy duplicate.
-            mv "$legacy" "${legacy}.pre-omega"
-            info "$provider creds: backed up legacy duplicate to ${legacy}.pre-omega"
-        else
-            mv "$legacy" "$canonical"
-            ok "$provider creds: migrated $legacy -> $canonical"
-        fi
-    fi
-
-    # Ensure parent dir of legacy exists so the symlink can be created.
-    mkdir -p "$(dirname "$legacy")"
-
-    # Create the symlink (target may not exist yet — that is fine; the LLM
-    # will write through it on first login).
-    if [ ! -e "$legacy" ] && [ ! -L "$legacy" ]; then
-        ln -s "$canonical" "$legacy"
-        ok "$provider creds: linked $legacy -> $canonical"
-    fi
-}
-
-migrate_creds "claude" "$HOME/.claude/.credentials.json"
-migrate_creds "gemini" "$HOME/.gemini/oauth_creds.json"
+# Credential conflict resolution belongs to omega-core, where freshness and
+# validity can be checked before either copy is moved. The old shell migration
+# always preferred an existing canonical file and could discard a newly rotated
+# Claude token. End-of-install `omega reconcile` now invokes the typed Claude
+# reconciler. Gemini 0.56+ stores OAuth in its native keyring/hybrid store, so
+# Omega deliberately leaves Gemini credentials under CLI ownership.
 
 # Codex may relocate its complete native home with CODEX_HOME. Preserve any
 # native/canonical split exactly as found; the installed Omega binary performs
@@ -1345,18 +1344,30 @@ if [[ ! -f "$OMEGA_DIR/config.toml" ]]; then
 else
     ok "Config already exists: $OMEGA_DIR/config.toml"
 fi
+# Always refresh a non-authoritative reference so upgrades expose new knobs
+# without overwriting operator state.
+cp config/default.toml "$OMEGA_DIR/config.toml.defaults"
+if [[ ! -f "$OMEGA_DIR/providers.toml" ]]; then
+    cp config/providers.default.toml "$OMEGA_DIR/providers.toml"
+    chmod 600 "$OMEGA_DIR/providers.toml"
+    ok "Provider config created: $OMEGA_DIR/providers.toml"
+else
+    ok "Provider config already exists: $OMEGA_DIR/providers.toml"
+fi
+cp config/providers.default.toml "$OMEGA_DIR/providers.toml.defaults"
 
 # Run the dedicated flow-aware reconciler through the newly installed binary.
 # Its JSON and exit status are authoritative. An active device login is
-# reported and preserved; an actual reconciliation failure stays visible.
+# reported and preserved; an actual reconciliation failure stays visible but
+# does not leave the rest of the installation half-applied.
 if [[ -x "$INSTALL_DIR/omega" ]]; then
     CODEX_RECONCILE_OUTPUT=""
     if CODEX_RECONCILE_OUTPUT=$(OMEGA_DIR="$OMEGA_DIR" CODEX_HOME="$CODEX_NATIVE_DIR" \
         "$INSTALL_DIR/omega" codex-reconcile --json 2>&1); then
         ok "Codex credential reconciliation: $CODEX_RECONCILE_OUTPUT"
     else
-        err "Codex credential reconciliation failed: $CODEX_RECONCILE_OUTPUT"
-        exit 1
+        warn "Codex credential reconciliation failed: $CODEX_RECONCILE_OUTPUT"
+        warn "Continuing install; repair with: omega codex-reconcile --json"
     fi
 fi
 
@@ -1424,7 +1435,7 @@ fi
 # Credentials are symlinked so OAuth still works.
 BRIDGE_CFG="$OMEGA_DIR/claude-bridge-config"
 mkdir -p "$BRIDGE_CFG"
-echo '{}' > "$BRIDGE_CFG/settings.json"
+[[ -f "$BRIDGE_CFG/settings.json" ]] || echo '{}' > "$BRIDGE_CFG/settings.json"
 # Ensure the symlink target exists so the bridge never reads through a dangling
 # link before `claude` login writes real creds (NEVER clobber an existing file).
 [[ -e "$OMEGA_DIR/credentials/claude.json" ]] || : > "$OMEGA_DIR/credentials/claude.json"
@@ -1916,12 +1927,7 @@ if [[ -d "$DI_SRC" ]]; then
         [[ -f "$skill_md" ]] || continue
         di_dir="$(dirname "$skill_md")"; di_name="$(basename "$di_dir")"
         [[ -d "$OMEGA_SRC/skills/$di_name" ]] && continue   # OmegaOS-vendored = canon, skip
-        mkdir -p "$OMEGA_DIR/skills/$di_name"
-        if command -v rsync >/dev/null 2>&1; then
-            rsync -a "$di_dir/" "$OMEGA_DIR/skills/$di_name/" 2>/dev/null || true
-        else
-            cp -r "$di_dir/." "$OMEGA_DIR/skills/$di_name/" 2>/dev/null || true
-        fi
+        mirror_owned_dir "$di_dir" "$OMEGA_DIR/skills/$di_name" 2>/dev/null || true
         find "$OMEGA_DIR/skills/$di_name" -name '*.sh' -exec chmod +x {} + 2>/dev/null || true
         : > "$OMEGA_DIR/skills/$di_name/.omega-managed" 2>/dev/null || true
         DI_N=$((DI_N + 1))
@@ -2024,8 +2030,7 @@ CBEOF
         [[ -f "$skill_md" ]] || continue
         cb_dir="$(dirname "$skill_md")"; cb_name="$(basename "$cb_dir")"
         [[ -d "$OMEGA_SRC/skills/$cb_name" ]] && continue
-        mkdir -p "$OMEGA_DIR/skills/$cb_name"
-        cp -rf "$cb_dir/." "$OMEGA_DIR/skills/$cb_name/" 2>/dev/null || true
+        mirror_owned_dir "$cb_dir" "$OMEGA_DIR/skills/$cb_name" 2>/dev/null || true
         CB_N=$((CB_N + 1))
     done
 
@@ -3235,6 +3240,11 @@ fi
 #   omega install-bindings
 mkdir -p "$OMEGA_DIR"
 if [[ -f config/rmux.conf.omega ]]; then
+    if [[ -f "$OMEGA_DIR/rmux.conf.omega" ]] \
+        && ! cmp -s config/rmux.conf.omega "$OMEGA_DIR/rmux.conf.omega"; then
+        cp -p "$OMEGA_DIR/rmux.conf.omega" "$OMEGA_DIR/rmux.conf.omega.pre-update"
+        info "Previous customized rmux config backed up to $OMEGA_DIR/rmux.conf.omega.pre-update"
+    fi
     cp config/rmux.conf.omega "$OMEGA_DIR/rmux.conf.omega"
     ok "rmux config available at $OMEGA_DIR/rmux.conf.omega (run 'omega install-bindings' to activate)"
 fi
@@ -3421,14 +3431,19 @@ if [[ -d "$OMEGA_SRC/scripts/hooks" ]]; then
         mkdir -p "$HOME/.codex"
         [[ -f "$CODEX_HOOKS" ]] || echo '{}' > "$CODEX_HOOKS"
         TMP="$(mktemp)"
-        jq --arg verify "$HOOKS_DST/stop-verify-hook.sh" \
+        jq --arg track "$HOOKS_DST/track-tool-use.sh" \
+           --arg verify "$HOOKS_DST/stop-verify-hook.sh" \
+           --arg guard "$HOOKS_DST/omega-audit-guard.sh" \
            --arg contract "$HOOKS_DST/omega-session-contract.sh" \
-           --arg scan "$HOOKS_DST/omega-prompt-scan.sh" '
+           --arg scan "$HOOKS_DST/omega-prompt-scan.sh" \
+           --arg mirror "$HOOKS_DST/omega-plan-mirror.sh" '
           .hooks = (.hooks // {})
+          | .hooks.PostToolUse = ((.hooks.PostToolUse // []) | map(select(((.hooks[0].command // "") | test("track-tool-use|omega-plan-mirror")) | not)) + [{"matcher":"*","hooks":[{"type":"command","command":$track}]},{"matcher":"TaskCreate|TaskUpdate|TodoWrite|update_plan","hooks":[{"type":"command","command":$mirror}]}])
           | .hooks.Stop = ((.hooks.Stop // []) | map(select(((.hooks[0].command // "") | test("stop-verify")) | not)) + [{"hooks":[{"type":"command","command":$verify}]}])
+          | .hooks.PreToolUse = ((.hooks.PreToolUse // []) | map(select(((.hooks[0].command // "") | test("omega-audit-guard")) | not)) + [{"matcher":"Bash","hooks":[{"type":"command","command":$guard}]}])
           | .hooks.SessionStart = ((.hooks.SessionStart // []) | map(select(((.hooks[0].command // "") | test("omega-session-contract")) | not)) + [{"hooks":[{"type":"command","command":$contract}]}])
           | .hooks.UserPromptSubmit = ((.hooks.UserPromptSubmit // []) | map(select(((.hooks[0].command // "") | test("omega-prompt-scan")) | not)) + [{"hooks":[{"type":"command","command":$scan}]}])
-        ' "$CODEX_HOOKS" > "$TMP" 2>/dev/null && mv "$TMP" "$CODEX_HOOKS" && ok "Codex hooks registered (SessionStart contract + Stop finish-guard + prompt scan)" || { rm -f "$TMP"; info "Codex hook merge skipped (jq error)"; }
+        ' "$CODEX_HOOKS" > "$TMP" 2>/dev/null && mv "$TMP" "$CODEX_HOOKS" && ok "Codex hooks registered (contract + finish-guard + prompt scan + plan mirror + audit guard + tracker)" || { rm -f "$TMP"; info "Codex hook merge skipped (jq error)"; }
     else
         info "jq not found — hooks copied to $HOOKS_DST; install jq to auto-register them in settings.json"
     fi
@@ -3446,9 +3461,17 @@ fi
 install_command_bot || true
 install_inbox_bot || true
 
-# (d) Claude Code agent binary — omega needs it to spawn agents.
+# (d) Agent binaries. Codex is OmegaOS's configured default, while Claude is
+# still used by explicit Claude sessions and optional Telegram bridge lanes.
+# A successful installer must never hand the operator a default command that
+# does not exist.
+if ! command -v codex >/dev/null 2>&1; then
+    info "Codex CLI absent — installing the OmegaOS default runtime..."
+    omega_timeout 240 "$INSTALL_DIR/omega" install codex 2>/dev/null \
+        || info "Run 'omega install codex', then authenticate with 'omega codex-login'."
+fi
 if ! command -v claude >/dev/null 2>&1; then
-    info "Claude Code CLI absent — omega needs it to spawn agents. Attempting install..."
+    info "Claude Code CLI absent — installing the supported Claude/Telegram runtime..."
     omega_timeout 180 "$INSTALL_DIR/omega" install claude 2>/dev/null || info "Run 'omega install claude' (or install Claude Code manually), then authenticate with 'claude'."
 fi
 
@@ -3724,15 +3747,8 @@ if [[ -d "$SKILLS_REPO_DIR/.git" ]]; then
             SKMIRROR_REJECTED=$((SKMIRROR_REJECTED + 1))
             continue
         fi
-        mkdir -p "$OMEGA_DIR/skills/$sk_name"
-        if command -v rsync >/dev/null 2>&1; then
-            # This directory is an SSOT mirror, not a merge surface. Remove
-            # files deleted upstream so stale nested protocols cannot survive
-            # indefinitely and later collide in the strict installed catalog.
-            rsync -a --delete "$sk_dir/" "$OMEGA_DIR/skills/$sk_name/" 2>/dev/null || true
-        else
-            cp -r "$sk_dir/." "$OMEGA_DIR/skills/$sk_name/" 2>/dev/null || true
-        fi
+        # This directory is an SSOT mirror, not a merge surface.
+        mirror_owned_dir "$sk_dir" "$OMEGA_DIR/skills/$sk_name" 2>/dev/null || true
         # Stamped AFTER the mirror, so the `--delete` pass cannot strip it.
         # See the stamping block further down for why this matters.
         : > "$OMEGA_DIR/skills/$sk_name/.omega-managed" 2>/dev/null || true
@@ -3904,7 +3920,8 @@ fi
 echo -e "  ${BOLD}Your 5-minute setup — in order:${NC}"
 echo ""
 echo -e "  ${BOLD}0.${NC} Reload your shell:        source $RC_FILE"
-echo -e "  ${BOLD}1.${NC} Connect Claude (required): claude   →  then type /login and follow the URL"
+echo -e "  ${BOLD}1.${NC} Connect Codex (default):   omega codex-login   →  approve the device URL"
+echo -e "     ${BOLD}Optional Claude:${NC}            claude auth login"
 echo -e "  ${BOLD}2.${NC} Telegram remote (recommended):"
 echo "       @BotFather → /newbot → copy the token; @userinfobot → your numeric id"
 echo "       OMEGA_TG_TOKEN=<BOT_TOKEN> omega telegram setup <YOUR_ID> --user-id <YOUR_ID>"

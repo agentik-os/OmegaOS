@@ -9,7 +9,7 @@
 
 ## 1. What OmegaOS is
 
-OmegaOS is a provider-neutral control plane for a fleet of coding agents on one box. New sessions use OpenAI Codex by default, while Claude Code, Gemini, Pi, Hermes, and GLM remain selectable. It
+OmegaOS is a provider-neutral control plane for a fleet of coding agents on one box. New sessions use OpenAI Codex by default, while Claude Code, Google Antigravity, enterprise/API-key Gemini CLI, OpenRouter/Pi, Hermes, GLM, and Kimi remain selectable. It
 turns a Linux machine (typically a VPS) into a place where you dispatch work in
 one sentence and a hierarchy of agents: the Atlas service routes, an oracle per
 project that plans, ephemeral workers that edit — executes it in parallel under
@@ -88,7 +88,7 @@ Seven tabs (cycle with arrow keys; `Tab` toggles focus between panels):
 | **Sessions** | Live session list with roles and progress; the right panel mirrors the selected pane and accepts chat input. Codex/OpenAI panes preserve ANSI color, reflow long Unicode input to the visible width, paint the real cursor row, and show the persisted provider identity. Kill, lock, rename, attach. |
 | **Projects** | Registered projects, planner creation, Telegram topic controls, open/dispatch, and guarded deletion. |
 | **OS** | The 24-product operative-system registry with static readiness evidence and MASTER prompt launch. |
-| **Menu** | Launch actions: new Claude/Codex/Gemini/Pi/Hermes/GLM/terminal session, **[N] New Project**, dispatch to an oracle, refresh, protection toggle, kill / kill-all / nuclear cleanup, restart, quit. |
+| **Menu** | Launch actions: new Claude/Codex/Gemini/Antigravity/Pi/Hermes/GLM/Kimi/terminal session, **[N] New Project**, dispatch to an oracle, refresh, protection toggle, kill / kill-all / nuclear cleanup, restart, quit. |
 | **System** | Laws, rules, agent roles, skills, and documentation. |
 | **Help** | Keybindings and usage hints. |
 | **Settings** | Theme gallery (live preview — see [docs/THEMES.md](docs/THEMES.md)), provider/model config, API keys, agent installs, the Monitor group (billing, accounts, bot status, provisioning keys wizard). |

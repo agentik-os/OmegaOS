@@ -17,7 +17,7 @@
 //! worker/team pane run in. None of the headless-only flags
 //! (`--print` / `--output-format` / `--input-format` /
 //! `--include-partial-messages`) appear here; those belong to **Lane B**
-//! (`omega-cli::claude_stream`), the Telegram Master brain with no human attach
+//! (`omega-gateway::chat_driver` / the Bun Telegram bot), with no human attach
 //! point. Wiring MCP servers therefore keeps the pane fully attachable.
 //!
 //! ## Path policy

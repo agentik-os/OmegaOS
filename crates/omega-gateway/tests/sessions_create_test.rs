@@ -25,7 +25,11 @@ async fn spawn(app: axum::Router) -> String {
 /// Writes an executable fake `omega` script that also appends its full argv
 /// (one per line) to `capture_file` — same idiom `dispatch_test.rs::
 /// install_fake_omega` uses.
-fn install_fake_omega(bin_dir: &std::path::Path, capture_file: &std::path::Path, script_body: &str) {
+fn install_fake_omega(
+    bin_dir: &std::path::Path,
+    capture_file: &std::path::Path,
+    script_body: &str,
+) {
     use std::os::unix::fs::PermissionsExt;
     let path = bin_dir.join("omega");
     let capture = capture_file.display();
@@ -40,7 +44,10 @@ fn install_fake_omega(bin_dir: &std::path::Path, capture_file: &std::path::Path,
 
 async fn app_and_token(gateway_dir: &std::path::Path) -> (axum::Router, String) {
     let (_, token) = DeviceStore::open(gateway_dir).issue("t");
-    let app = build_router(AppState::new(gateway_dir.to_path_buf(), GatewayConfig::default()));
+    let app = build_router(AppState::new(
+        gateway_dir.to_path_buf(),
+        GatewayConfig::default(),
+    ));
     (app, token)
 }
 
@@ -98,7 +105,17 @@ async fn happy_path_with_explicit_name_builds_exact_argv() {
     let argv: Vec<&str> = recorded.lines().collect();
     // Finding 5 (adversarial review round): `--prompt` is now a single
     // `=`-joined argv element, never two separate elements.
-    assert_eq!(argv, vec!["new", "--agent", agent, "--prompt=do the thing", "--", "my-session"]);
+    assert_eq!(
+        argv,
+        vec![
+            "new",
+            "--agent",
+            agent,
+            "--prompt=do the thing",
+            "--",
+            "my-session"
+        ]
+    );
 
     clear_env();
 }
@@ -119,7 +136,12 @@ async fn happy_path_with_dir_builds_exact_argv_in_order() {
     let (app, token) = app_and_token(gateway_dir.path()).await;
     let base = spawn(app).await;
 
-    let dir_str = fake_home.path().join("Station").join("Proj").display().to_string();
+    let dir_str = fake_home
+        .path()
+        .join("Station")
+        .join("Proj")
+        .display()
+        .to_string();
     let res = reqwest::Client::new()
         .post(format!("{base}/v1/sessions"))
         .bearer_auth(&token)
@@ -141,7 +163,15 @@ async fn happy_path_with_dir_builds_exact_argv_in_order() {
     let dir_flag = format!("--dir={dir_str}");
     assert_eq!(
         argv,
-        vec!["new", "--agent", agent, dir_flag.as_str(), "--prompt=hello", "--", "my-session"]
+        vec![
+            "new",
+            "--agent",
+            agent,
+            dir_flag.as_str(),
+            "--prompt=hello",
+            "--",
+            "my-session"
+        ]
     );
 
     clear_env();
@@ -175,7 +205,9 @@ async fn happy_path_with_no_name_generates_one_and_uses_it_as_the_positional() {
     assert!(name.starts_with("gw-"), "expected gw- prefix, got {name}");
     let hex_part = &name["gw-".len()..];
     assert_eq!(hex_part.len(), 12, "expected 12 hex chars, got {hex_part}");
-    assert!(hex_part.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
+    assert!(hex_part
+        .chars()
+        .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
 
     let recorded = std::fs::read_to_string(&capture_file).unwrap();
     let argv: Vec<&str> = recorded.lines().collect();
@@ -192,7 +224,11 @@ async fn unknown_agent_rejects_with_400_no_spawn() {
     let capture_dir = tempfile::tempdir().unwrap();
     let capture_file = capture_dir.path().join("argv.txt");
 
-    install_fake_omega(bin_dir.path(), &capture_file, "echo 'SHOULD NEVER RUN' >&2; exit 1");
+    install_fake_omega(
+        bin_dir.path(),
+        &capture_file,
+        "echo 'SHOULD NEVER RUN' >&2; exit 1",
+    );
 
     let (app, token) = app_and_token(gateway_dir.path()).await;
     let base = spawn(app).await;
@@ -207,7 +243,10 @@ async fn unknown_agent_rejects_with_400_no_spawn() {
     assert_eq!(res.status(), 400);
     let body: serde_json::Value = res.json().await.unwrap();
     assert!(body["error"].as_str().unwrap().contains("not-a-real-agent"));
-    assert!(!capture_file.exists(), "omega subprocess was spawned for an unknown agent");
+    assert!(
+        !capture_file.exists(),
+        "omega subprocess was spawned for an unknown agent"
+    );
 
     clear_env();
 }
@@ -221,7 +260,11 @@ async fn invalid_caller_name_leading_dash_rejects_with_400_no_spawn() {
     let capture_file = capture_dir.path().join("argv.txt");
     let agent = real_agent_name();
 
-    install_fake_omega(bin_dir.path(), &capture_file, "echo 'SHOULD NEVER RUN' >&2; exit 1");
+    install_fake_omega(
+        bin_dir.path(),
+        &capture_file,
+        "echo 'SHOULD NEVER RUN' >&2; exit 1",
+    );
 
     let (app, token) = app_and_token(gateway_dir.path()).await;
     let base = spawn(app).await;
@@ -234,7 +277,10 @@ async fn invalid_caller_name_leading_dash_rejects_with_400_no_spawn() {
         .await
         .unwrap();
     assert_eq!(res.status(), 400);
-    assert!(!capture_file.exists(), "omega subprocess was spawned for an invalid name");
+    assert!(
+        !capture_file.exists(),
+        "omega subprocess was spawned for an invalid name"
+    );
 
     clear_env();
 }
@@ -248,7 +294,11 @@ async fn invalid_caller_name_slash_rejects_with_400_no_spawn() {
     let capture_file = capture_dir.path().join("argv.txt");
     let agent = real_agent_name();
 
-    install_fake_omega(bin_dir.path(), &capture_file, "echo 'SHOULD NEVER RUN' >&2; exit 1");
+    install_fake_omega(
+        bin_dir.path(),
+        &capture_file,
+        "echo 'SHOULD NEVER RUN' >&2; exit 1",
+    );
 
     let (app, token) = app_and_token(gateway_dir.path()).await;
     let base = spawn(app).await;
@@ -261,7 +311,10 @@ async fn invalid_caller_name_slash_rejects_with_400_no_spawn() {
         .await
         .unwrap();
     assert_eq!(res.status(), 400);
-    assert!(!capture_file.exists(), "omega subprocess was spawned for an invalid name");
+    assert!(
+        !capture_file.exists(),
+        "omega subprocess was spawned for an invalid name"
+    );
 
     clear_env();
 }
@@ -275,7 +328,11 @@ async fn invalid_caller_name_nul_byte_rejects_with_400_no_spawn() {
     let capture_file = capture_dir.path().join("argv.txt");
     let agent = real_agent_name();
 
-    install_fake_omega(bin_dir.path(), &capture_file, "echo 'SHOULD NEVER RUN' >&2; exit 1");
+    install_fake_omega(
+        bin_dir.path(),
+        &capture_file,
+        "echo 'SHOULD NEVER RUN' >&2; exit 1",
+    );
 
     let (app, token) = app_and_token(gateway_dir.path()).await;
     let base = spawn(app).await;
@@ -288,7 +345,10 @@ async fn invalid_caller_name_nul_byte_rejects_with_400_no_spawn() {
         .await
         .unwrap();
     assert_eq!(res.status(), 400);
-    assert!(!capture_file.exists(), "omega subprocess was spawned for a NUL-containing name");
+    assert!(
+        !capture_file.exists(),
+        "omega subprocess was spawned for a NUL-containing name"
+    );
 
     clear_env();
 }
@@ -305,7 +365,11 @@ async fn dir_outside_home_rejects_with_400_no_spawn() {
     let agent = real_agent_name();
 
     std::env::set_var("HOME", fake_home.path());
-    install_fake_omega(bin_dir.path(), &capture_file, "echo 'SHOULD NEVER RUN' >&2; exit 1");
+    install_fake_omega(
+        bin_dir.path(),
+        &capture_file,
+        "echo 'SHOULD NEVER RUN' >&2; exit 1",
+    );
 
     let (app, token) = app_and_token(gateway_dir.path()).await;
     let base = spawn(app).await;
@@ -323,7 +387,10 @@ async fn dir_outside_home_rejects_with_400_no_spawn() {
     assert_eq!(res.status(), 400);
     let body: serde_json::Value = res.json().await.unwrap();
     assert!(body["error"].as_str().unwrap().contains("home directory"));
-    assert!(!capture_file.exists(), "omega subprocess was spawned for a dir outside home");
+    assert!(
+        !capture_file.exists(),
+        "omega subprocess was spawned for a dir outside home"
+    );
 
     clear_env();
 }
@@ -368,7 +435,10 @@ async fn prompt_starting_with_dash_reaches_argv_intact_as_a_single_element() {
 
     let recorded = std::fs::read_to_string(&capture_file).unwrap();
     let argv: Vec<&str> = recorded.lines().collect();
-    assert_eq!(argv, vec!["new", "--agent", agent, "--prompt=-x", "--", "my-session"]);
+    assert_eq!(
+        argv,
+        vec!["new", "--agent", agent, "--prompt=-x", "--", "my-session"]
+    );
 
     clear_env();
 }
@@ -389,7 +459,11 @@ async fn caller_name_that_sanitize_would_truncate_rejects_with_400_no_spawn() {
     let capture_file = capture_dir.path().join("argv.txt");
     let agent = real_agent_name();
 
-    install_fake_omega(bin_dir.path(), &capture_file, "echo 'SHOULD NEVER RUN' >&2; exit 1");
+    install_fake_omega(
+        bin_dir.path(),
+        &capture_file,
+        "echo 'SHOULD NEVER RUN' >&2; exit 1",
+    );
 
     let (app, token) = app_and_token(gateway_dir.path()).await;
     let base = spawn(app).await;
@@ -405,7 +479,10 @@ async fn caller_name_that_sanitize_would_truncate_rejects_with_400_no_spawn() {
         .await
         .unwrap();
     assert_eq!(res.status(), 400);
-    assert!(!capture_file.exists(), "omega subprocess was spawned for a name sanitize would truncate");
+    assert!(
+        !capture_file.exists(),
+        "omega subprocess was spawned for a name sanitize would truncate"
+    );
 
     clear_env();
 }
@@ -423,7 +500,11 @@ async fn caller_name_with_trailing_dash_that_sanitize_would_trim_rejects_with_40
     let capture_file = capture_dir.path().join("argv.txt");
     let agent = real_agent_name();
 
-    install_fake_omega(bin_dir.path(), &capture_file, "echo 'SHOULD NEVER RUN' >&2; exit 1");
+    install_fake_omega(
+        bin_dir.path(),
+        &capture_file,
+        "echo 'SHOULD NEVER RUN' >&2; exit 1",
+    );
 
     let (app, token) = app_and_token(gateway_dir.path()).await;
     let base = spawn(app).await;
@@ -436,7 +517,10 @@ async fn caller_name_with_trailing_dash_that_sanitize_would_trim_rejects_with_40
         .await
         .unwrap();
     assert_eq!(res.status(), 400);
-    assert!(!capture_file.exists(), "omega subprocess was spawned for a name sanitize would trim");
+    assert!(
+        !capture_file.exists(),
+        "omega subprocess was spawned for a name sanitize would trim"
+    );
 
     clear_env();
 }
@@ -462,7 +546,11 @@ async fn dir_traversal_via_nonexistent_leading_component_rejects_with_400_no_spa
     let agent = real_agent_name();
 
     std::env::set_var("HOME", fake_home.path());
-    install_fake_omega(bin_dir.path(), &capture_file, "echo 'SHOULD NEVER RUN' >&2; exit 1");
+    install_fake_omega(
+        bin_dir.path(),
+        &capture_file,
+        "echo 'SHOULD NEVER RUN' >&2; exit 1",
+    );
 
     let (app, token) = app_and_token(gateway_dir.path()).await;
     let base = spawn(app).await;
@@ -487,7 +575,10 @@ async fn dir_traversal_via_nonexistent_leading_component_rejects_with_400_no_spa
         .await
         .unwrap();
     assert_eq!(res.status(), 400);
-    assert!(!capture_file.exists(), "omega subprocess was spawned for a traversal-shaped dir");
+    assert!(
+        !capture_file.exists(),
+        "omega subprocess was spawned for a traversal-shaped dir"
+    );
 
     clear_env();
 }
@@ -501,7 +592,11 @@ async fn prompt_over_length_cap_rejects_with_400_no_spawn() {
     let capture_file = capture_dir.path().join("argv.txt");
     let agent = real_agent_name();
 
-    install_fake_omega(bin_dir.path(), &capture_file, "echo 'SHOULD NEVER RUN' >&2; exit 1");
+    install_fake_omega(
+        bin_dir.path(),
+        &capture_file,
+        "echo 'SHOULD NEVER RUN' >&2; exit 1",
+    );
 
     let (app, token) = app_and_token(gateway_dir.path()).await;
     let base = spawn(app).await;
@@ -518,7 +613,10 @@ async fn prompt_over_length_cap_rejects_with_400_no_spawn() {
     assert_eq!(res.status(), 400);
     let body: serde_json::Value = res.json().await.unwrap();
     assert!(body["error"].as_str().unwrap().contains("too long"));
-    assert!(!capture_file.exists(), "omega subprocess was spawned for an over-length prompt");
+    assert!(
+        !capture_file.exists(),
+        "omega subprocess was spawned for an over-length prompt"
+    );
 
     clear_env();
 }
@@ -559,7 +657,10 @@ async fn nonzero_exit_surfaces_stdout_and_stderr_as_502() {
     assert!(!error_text.contains("session name already in use"));
     assert!(body.get("stdout").is_none());
     assert!(body.get("stderr").is_none());
-    assert!(body.get("name").is_none(), "must never fabricate a session on failure");
+    assert!(
+        body.get("name").is_none(),
+        "must never fabricate a session on failure"
+    );
 
     clear_env();
 }
@@ -618,7 +719,10 @@ async fn concurrency_cap_returns_429_when_session_spawn_permits_exhausted() {
         .unwrap();
     assert_eq!(busy_res.status(), 429);
     let body: serde_json::Value = busy_res.json().await.unwrap();
-    assert!(body["error"].as_str().unwrap().contains("too many concurrent"));
+    assert!(body["error"]
+        .as_str()
+        .unwrap()
+        .contains("too many concurrent"));
 
     for task in in_flight {
         let status = task.await.unwrap();
@@ -654,7 +758,10 @@ async fn create_times_out_with_504_and_kills_the_whole_process_group() {
     install_fake_omega(
         bin_dir.path(),
         &capture_file,
-        &format!("bash -c 'sleep 4; touch \"{}\"' &\nwait\n", marker.display()),
+        &format!(
+            "bash -c 'sleep 4; touch \"{}\"' &\nwait\n",
+            marker.display()
+        ),
     );
 
     let (app, token) = app_and_token(gateway_dir.path()).await;
@@ -669,12 +776,18 @@ async fn create_times_out_with_504_and_kills_the_whole_process_group() {
         .unwrap();
     assert_eq!(res.status(), 504);
     let body: serde_json::Value = res.json().await.unwrap();
-    assert!(body["error"].as_str().unwrap().contains("timed out"), "body: {body}");
+    assert!(
+        body["error"].as_str().unwrap().contains("timed out"),
+        "body: {body}"
+    );
 
     // Generous buffer past the nested sleep's 4s -- if the group kill
     // missed the nested child, the marker appears around the 4s mark.
     tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-    assert!(!marker.exists(), "the nested child survived the gateway's timeout kill");
+    assert!(
+        !marker.exists(),
+        "the nested child survived the gateway's timeout kill"
+    );
 
     std::env::remove_var("OMEGA_CLI_TIMEOUT_SECS");
     clear_env();
@@ -683,7 +796,10 @@ async fn create_times_out_with_504_and_kills_the_whole_process_group() {
 #[tokio::test]
 async fn post_sessions_requires_auth() {
     let gateway_dir = tempfile::tempdir().unwrap();
-    let app = build_router(AppState::new(gateway_dir.path().to_path_buf(), GatewayConfig::default()));
+    let app = build_router(AppState::new(
+        gateway_dir.path().to_path_buf(),
+        GatewayConfig::default(),
+    ));
     let base = spawn(app).await;
 
     let res = reqwest::Client::new()

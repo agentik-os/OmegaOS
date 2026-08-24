@@ -36,7 +36,11 @@ fn install_fake_rmux(dir: &std::path::Path, capture_file: &std::path::Path) {
 fn install_fake_rmux_that_must_not_run(dir: &std::path::Path) {
     use std::os::unix::fs::PermissionsExt;
     let path = dir.join("rmux");
-    std::fs::write(&path, "#!/usr/bin/env bash\necho 'SHOULD NEVER RUN' >&2\nexit 1\n").unwrap();
+    std::fs::write(
+        &path,
+        "#!/usr/bin/env bash\necho 'SHOULD NEVER RUN' >&2\nexit 1\n",
+    )
+    .unwrap();
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
     std::env::set_var("OMEGA_RMUX_BIN", &path);
 }
@@ -50,7 +54,10 @@ async fn spawn(app: axum::Router) -> String {
 
 async fn app_and_token(gateway_dir: &std::path::Path) -> (axum::Router, String) {
     let (_, token) = DeviceStore::open(gateway_dir).issue("t");
-    let app = build_router(AppState::new(gateway_dir.to_path_buf(), GatewayConfig::default()));
+    let app = build_router(AppState::new(
+        gateway_dir.to_path_buf(),
+        GatewayConfig::default(),
+    ));
     (app, token)
 }
 
@@ -90,8 +97,15 @@ async fn happy_path_with_enter_sends_two_separate_calls() {
     assert_eq!(body["ok"], true);
 
     let calls = parse_calls(&capture_file);
-    assert_eq!(calls.len(), 2, "expected exactly two separate subprocess invocations");
-    assert_eq!(calls[0], vec!["send-keys", "-t", "oracle-Foo-1", "-l", "--", "ls -la"]);
+    assert_eq!(
+        calls.len(),
+        2,
+        "expected exactly two separate subprocess invocations"
+    );
+    assert_eq!(
+        calls[0],
+        vec!["send-keys", "-t", "oracle-Foo-1", "-l", "--", "ls -la"]
+    );
     assert_eq!(calls[1], vec!["send-keys", "-t", "oracle-Foo-1", "Enter"]);
 
     std::env::remove_var("OMEGA_RMUX_BIN");
@@ -120,8 +134,15 @@ async fn enter_false_sends_only_one_call() {
     assert_eq!(res.status(), 200);
 
     let calls = parse_calls(&capture_file);
-    assert_eq!(calls.len(), 1, "enter omitted/false must send exactly one call");
-    assert_eq!(calls[0], vec!["send-keys", "-t", "oracle-Foo-1", "-l", "--", "echo hi"]);
+    assert_eq!(
+        calls.len(),
+        1,
+        "enter omitted/false must send exactly one call"
+    );
+    assert_eq!(
+        calls[0],
+        vec!["send-keys", "-t", "oracle-Foo-1", "-l", "--", "echo hi"]
+    );
 
     std::env::remove_var("OMEGA_RMUX_BIN");
 }
@@ -155,7 +176,10 @@ async fn dash_prefixed_values_land_as_literal_after_separator() {
 
     let calls = parse_calls(&capture_file);
     assert_eq!(calls.len(), 1);
-    assert_eq!(calls[0], vec!["send-keys", "-t", "oracle-Foo-1", "-l", "--", "-N"]);
+    assert_eq!(
+        calls[0],
+        vec!["send-keys", "-t", "oracle-Foo-1", "-l", "--", "-N"]
+    );
 
     std::env::remove_var("OMEGA_RMUX_BIN");
 }
@@ -178,7 +202,11 @@ async fn path_traversal_session_name_rejects_before_any_subprocess_spawn() {
             .send()
             .await
             .unwrap();
-        assert_eq!(res.status(), 400, "expected 400 for session name {bad_name}");
+        assert_eq!(
+            res.status(),
+            400,
+            "expected 400 for session name {bad_name}"
+        );
     }
 
     std::env::remove_var("OMEGA_RMUX_BIN");
@@ -211,7 +239,10 @@ async fn oversized_data_rejects_before_any_subprocess_spawn() {
 async fn post_keys_requires_auth() {
     let _g = LOCK.lock().await;
     let gateway_dir = tempfile::tempdir().unwrap();
-    let app = build_router(AppState::new(gateway_dir.path().to_path_buf(), GatewayConfig::default()));
+    let app = build_router(AppState::new(
+        gateway_dir.path().to_path_buf(),
+        GatewayConfig::default(),
+    ));
     let base = spawn(app).await;
 
     let res = reqwest::Client::new()

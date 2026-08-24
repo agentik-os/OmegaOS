@@ -5,7 +5,8 @@
 #   omega-skills                list all native OmegaOS skills + commands
 #   omega-skills <term>         search native skills (name/desc/command)
 #   omega-skills --powerups <t> search the Power-Up library (907 paid skills)
-#   omega-skills --all <term>   search both
+#   omega-skills --cookbooks <t> search Anthropic's pinned cookbook recipes
+#   omega-skills --all <term>   search native, Power-Ups, and cookbooks
 #   omega-skills --rag "<need>" SEMANTIC retrieval by meaning (native + library)
 #   omega-skills --html         print the served catalog URL
 # ═══════════════════════════════════════════════════════════════════════════
@@ -44,15 +45,19 @@ def valid_atlas(candidate):
     if (not isinstance(candidate, dict) or candidate.get("schema_version") != 2 or
             not isinstance(candidate.get("native"), list) or
             not isinstance(candidate.get("powerups"), list) or
+            not isinstance(candidate.get("cookbooks"), list) or
             candidate.get("native_count") != len(candidate["native"]) or
             candidate.get("powerup_count") != len(candidate["powerups"]) or
-            candidate.get("total") != len(candidate["native"]) + len(candidate["powerups"])):
+            candidate.get("cookbook_count") != len(candidate["cookbooks"]) or
+            candidate.get("total") !=
+            len(candidate["native"]) + len(candidate["powerups"]) + len(candidate["cookbooks"])):
         return False
     payload = {
         "catalog_hash": candidate.get("catalog_hash"),
         "source_tree_digest": candidate.get("source_tree_digest"),
         "native": candidate["native"],
         "powerups": candidate["powerups"],
+        "cookbooks": candidate["cookbooks"],
     }
     actual = hashlib.sha256(json.dumps(
         payload, ensure_ascii=False, sort_keys=True,
@@ -206,6 +211,7 @@ fi
 SCOPE="native"; TERM=""
 case "${1:-}" in
   --powerups) SCOPE="powerups"; TERM="${2:-}";;
+  --cookbooks) SCOPE="cookbooks"; TERM="${2:-}";;
   --all)      SCOPE="all";      TERM="${2:-}";;
   "")         SCOPE="native";   TERM="";;
   *)          SCOPE="native";   TERM="$1";;
@@ -221,6 +227,9 @@ if scope in ("native","all"):
 if scope in ("powerups","all"):
     for r in atlas["powerups"]:
         rows.append((r["name"],"","(library) "+r.get("description","") ,r["source"]))
+if scope in ("cookbooks","all"):
+    for r in atlas.get("cookbooks", []):
+        rows.append((r["name"],"","(cookbook) "+r.get("description",""),"cookbook"))
 def hit(row): return not term or term in row[0].lower() or term in row[2].lower() or term in row[1].lower()
 rows=[r for r in rows if hit(r)]
 rows.sort(key=lambda r:(r[3]!="omegaos",r[0].lower()))

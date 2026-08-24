@@ -74,12 +74,19 @@ async fn not_running_sends_frame_and_never_touches_inbox() {
     std::env::set_var("HOME", fake_home.path());
 
     let (_, token) = DeviceStore::open(gateway_dir.path()).issue("t");
-    let app = build_router(AppState::new(gateway_dir.path().to_path_buf(), GatewayConfig::default()));
+    let app = build_router(AppState::new(
+        gateway_dir.path().to_path_buf(),
+        GatewayConfig::default(),
+    ));
     let base = spawn(app).await;
     let url = ws_url(&base, "/v1/master/chat", &token);
     let (mut ws, _) = connect_async(url).await.unwrap();
 
-    ws.send(tokio_tungstenite::tungstenite::Message::Text("hello master".to_string())).await.unwrap();
+    ws.send(tokio_tungstenite::tungstenite::Message::Text(
+        "hello master".to_string(),
+    ))
+    .await
+    .unwrap();
     let msg = ws.next().await.unwrap().unwrap().into_text().unwrap();
     let frame: serde_json::Value = serde_json::from_str(&msg).unwrap();
     assert_eq!(frame["type"], "not_running");
@@ -116,17 +123,27 @@ async fn running_reply_round_trip_writes_inbox_and_returns_reply() {
     tokio::spawn(async move {
         tokio::time::sleep(std::time::Duration::from_millis(150)).await;
         use std::io::Write;
-        let mut f = std::fs::OpenOptions::new().append(true).open(&log_for_growth).unwrap();
+        let mut f = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&log_for_growth)
+            .unwrap();
         writeln!(f, "AISB: hello back").unwrap();
     });
 
     let (_, token) = DeviceStore::open(gateway_dir.path()).issue("t");
-    let app = build_router(AppState::new(gateway_dir.path().to_path_buf(), GatewayConfig::default()));
+    let app = build_router(AppState::new(
+        gateway_dir.path().to_path_buf(),
+        GatewayConfig::default(),
+    ));
     let base = spawn(app).await;
     let url = ws_url(&base, "/v1/master/chat", &token);
     let (mut ws, _) = connect_async(url).await.unwrap();
 
-    ws.send(tokio_tungstenite::tungstenite::Message::Text("hello master".to_string())).await.unwrap();
+    ws.send(tokio_tungstenite::tungstenite::Message::Text(
+        "hello master".to_string(),
+    ))
+    .await
+    .unwrap();
     let msg = ws.next().await.unwrap().unwrap().into_text().unwrap();
     let frame: serde_json::Value = serde_json::from_str(&msg).unwrap();
     assert_eq!(frame["type"], "reply");
@@ -156,12 +173,19 @@ async fn running_timeout_when_log_never_grows() {
     std::env::set_var("OMEGA_AISB_POLL_ATTEMPTS", "3"); // 15ms budget, never grows
 
     let (_, token) = DeviceStore::open(gateway_dir.path()).issue("t");
-    let app = build_router(AppState::new(gateway_dir.path().to_path_buf(), GatewayConfig::default()));
+    let app = build_router(AppState::new(
+        gateway_dir.path().to_path_buf(),
+        GatewayConfig::default(),
+    ));
     let base = spawn(app).await;
     let url = ws_url(&base, "/v1/master/chat", &token);
     let (mut ws, _) = connect_async(url).await.unwrap();
 
-    ws.send(tokio_tungstenite::tungstenite::Message::Text("anyone there?".to_string())).await.unwrap();
+    ws.send(tokio_tungstenite::tungstenite::Message::Text(
+        "anyone there?".to_string(),
+    ))
+    .await
+    .unwrap();
     let msg = ws.next().await.unwrap().unwrap().into_text().unwrap();
     let frame: serde_json::Value = serde_json::from_str(&msg).unwrap();
     assert_eq!(frame["type"], "timeout");
@@ -181,14 +205,19 @@ async fn oversized_message_rejected_with_error_frame_and_inbox_untouched() {
     std::env::set_var("HOME", fake_home.path());
 
     let (_, token) = DeviceStore::open(gateway_dir.path()).issue("t");
-    let app = build_router(AppState::new(gateway_dir.path().to_path_buf(), GatewayConfig::default()));
+    let app = build_router(AppState::new(
+        gateway_dir.path().to_path_buf(),
+        GatewayConfig::default(),
+    ));
     let base = spawn(app).await;
     let url = ws_url(&base, "/v1/master/chat", &token);
     let (mut ws, _) = connect_async(url).await.unwrap();
 
     // One byte over routes_master.rs's MAX_MASTER_CHAT_MESSAGE_LEN (8000).
     let too_long = "x".repeat(8001);
-    ws.send(tokio_tungstenite::tungstenite::Message::Text(too_long)).await.unwrap();
+    ws.send(tokio_tungstenite::tungstenite::Message::Text(too_long))
+        .await
+        .unwrap();
     let msg = ws.next().await.unwrap().unwrap().into_text().unwrap();
     let frame: serde_json::Value = serde_json::from_str(&msg).unwrap();
     assert_eq!(frame["type"], "error");
@@ -205,7 +234,11 @@ async fn oversized_message_rejected_with_error_frame_and_inbox_untouched() {
     // The loop keeps serving after a rejection rather than closing — a
     // normal-length follow-up message still gets a real (NotRunning) reply
     // on the SAME socket.
-    ws.send(tokio_tungstenite::tungstenite::Message::Text("hello master".to_string())).await.unwrap();
+    ws.send(tokio_tungstenite::tungstenite::Message::Text(
+        "hello master".to_string(),
+    ))
+    .await
+    .unwrap();
     let msg2 = ws.next().await.unwrap().unwrap().into_text().unwrap();
     let frame2: serde_json::Value = serde_json::from_str(&msg2).unwrap();
     assert_eq!(frame2["type"], "not_running");
@@ -228,7 +261,10 @@ async fn concurrency_cap_returns_429_when_master_chat_permits_exhausted() {
     std::env::set_var("OMEGA_AISB_POLL_ATTEMPTS", "1000");
 
     let (_, token) = DeviceStore::open(gateway_dir.path()).issue("t");
-    let app = build_router(AppState::new(gateway_dir.path().to_path_buf(), GatewayConfig::default()));
+    let app = build_router(AppState::new(
+        gateway_dir.path().to_path_buf(),
+        GatewayConfig::default(),
+    ));
     let base = spawn(app).await;
 
     // Must match server.rs's MAX_CONCURRENT_MASTER_CHATS.
@@ -238,7 +274,11 @@ async fn concurrency_cap_returns_429_when_master_chat_permits_exhausted() {
     for i in 0..MAX_CONCURRENT_MASTER_CHATS {
         let url = ws_url(&base, "/v1/master/chat", &token);
         let (mut ws, _) = connect_async(url).await.unwrap();
-        ws.send(tokio_tungstenite::tungstenite::Message::Text(format!("turn {i}"))).await.unwrap();
+        ws.send(tokio_tungstenite::tungstenite::Message::Text(format!(
+            "turn {i}"
+        )))
+        .await
+        .unwrap();
         held.push(ws);
     }
 
@@ -257,10 +297,16 @@ async fn concurrency_cap_returns_429_when_master_chat_permits_exhausted() {
 #[tokio::test]
 async fn requires_auth() {
     let gateway_dir = tempfile::tempdir().unwrap();
-    let app = build_router(AppState::new(gateway_dir.path().to_path_buf(), GatewayConfig::default()));
+    let app = build_router(AppState::new(
+        gateway_dir.path().to_path_buf(),
+        GatewayConfig::default(),
+    ));
     let base = spawn(app).await;
     let url = format!("{}/v1/master/chat", base.replacen("http", "ws", 1));
     let err = connect_async(url).await.unwrap_err();
     let msg = err.to_string();
-    assert!(msg.contains("401") || msg.contains("Unauthorized"), "unexpected error: {msg}");
+    assert!(
+        msg.contains("401") || msg.contains("Unauthorized"),
+        "unexpected error: {msg}"
+    );
 }

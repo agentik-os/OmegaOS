@@ -1,8 +1,16 @@
 # Claude Code CLI → OmegaOS Integration
 
+> **Historical research snapshot.** Paths and feature status below describe
+> the May 2026 design, not the current runtime. Today interactive launches live
+> in `crates/omega-core/src/agents.rs`, headless chat streaming lives in
+> `crates/omega-gateway/src/chat_driver.rs`, and Telegram orchestration lives in
+> `telegram-bot/omega-tg-bot.ts`. See
+> [PROVIDER-COMPATIBILITY.md](PROVIDER-COMPATIBILITY.md) for the supported
+> contract.
+
 **Research date:** 2026-05-28
 **Claude Code reference version:** v2.1.144+ (as documented at https://code.claude.com/docs/en)
-**OmegaOS surfaces touched:** `crates/omega-cli/src/claude_stream.rs`, `crates/omega-cli/src/telegram_bridge.rs`, `crates/omega-core/src/session.rs`
+**Current OmegaOS surfaces:** `crates/omega-core/src/agents.rs`, `crates/omega-gateway/src/chat_driver.rs`, `telegram-bot/omega-tg-bot.ts`
 
 ---
 

@@ -1,8 +1,8 @@
 //! Authenticated skill catalog, detail, safe edit, and rmux delegation.
 
 use crate::protocol::{
-    CreateSessionRequest, SkillAgentRequest, SkillAgentResponse, SkillDetail, SkillDetailResponse,
-    SkillDeleteRequest, SkillEntry, SkillRenameRequest, SkillUpdateRequest, SkillsResponse,
+    CreateSessionRequest, SkillAgentRequest, SkillAgentResponse, SkillDeleteRequest, SkillDetail,
+    SkillDetailResponse, SkillEntry, SkillRenameRequest, SkillUpdateRequest, SkillsResponse,
 };
 use crate::server::AppState;
 use axum::extract::{Path, Query, State};
@@ -267,18 +267,11 @@ fn delete_at_root(root: &FsPath, name: &str, confirm_name: &str) -> anyhow::Resu
     Ok(())
 }
 
-pub async fn list(Query(params): Query<HashMap<String, String>>) -> Json<SkillsResponse> {
-    let response = tokio::task::spawn_blocking(move || {
-        let registry = match SkillRegistry::discover_default() {
-            Ok(registry) => registry,
-            Err(error) => {
-                tracing::warn!("skill discovery failed: {error}");
-                return SkillsResponse {
-                    skills: vec![],
-                    total: 0,
-                };
-            }
-        };
+pub async fn list(
+    Query(params): Query<HashMap<String, String>>,
+) -> Result<Json<SkillsResponse>, ApiError> {
+    let response = tokio::task::spawn_blocking(move || -> anyhow::Result<SkillsResponse> {
+        let registry = SkillRegistry::discover_default()?;
 
         let all = registry.list();
         let total = all.len();
@@ -319,14 +312,23 @@ pub async fn list(Query(params): Query<HashMap<String, String>>) -> Json<SkillsR
             })
             .collect();
 
-        SkillsResponse { skills, total }
+        Ok(SkillsResponse { skills, total })
     })
     .await
-    .unwrap_or(SkillsResponse {
-        skills: vec![],
-        total: 0,
-    });
-    Json(response)
+    .map_err(|error| {
+        api_error(
+            StatusCode::BAD_GATEWAY,
+            format!("skill discovery task panicked: {error}"),
+        )
+    })?
+    .map_err(|error| {
+        tracing::warn!("skill discovery failed: {error}");
+        api_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "skill catalog unavailable; run ./install.sh or omega sync",
+        )
+    })?;
+    Ok(Json(response))
 }
 
 pub async fn get(Path(name): Path<String>) -> Result<Json<SkillDetailResponse>, ApiError> {
@@ -347,6 +349,14 @@ pub async fn get(Path(name): Path<String>) -> Result<Json<SkillDetailResponse>, 
     .map_err(|error| {
         let status = if error.to_string() == "skill not found" {
             StatusCode::NOT_FOUND
+        } else if error
+            .to_string()
+            .contains("skills directory does not exist")
+            || error
+                .to_string()
+                .contains("skills root must be a real directory")
+        {
+            StatusCode::SERVICE_UNAVAILABLE
         } else {
             StatusCode::BAD_REQUEST
         };
@@ -554,7 +564,10 @@ mod tests {
 
         let registry = SkillRegistry::discover(root.path()).unwrap();
         assert!(registry.get("after").is_some(), "the new name must resolve");
-        assert!(registry.get("before").is_none(), "the old name must be gone");
+        assert!(
+            registry.get("before").is_none(),
+            "the old name must be gone"
+        );
         let content = fs::read_to_string(root.path().join("after").join("SKILL.md")).unwrap();
         assert!(content.contains("name: after"));
     }
@@ -564,7 +577,10 @@ mod tests {
         let content = "---\nname: old\ndescription: D\n---\n# Body\nname: not-frontmatter\n";
         let rewritten = rewrite_frontmatter_name(content, "new").unwrap();
         assert!(rewritten.starts_with("---\nname: new\ndescription: D\n---\n"));
-        assert!(rewritten.contains("name: not-frontmatter"), "body prose survives");
+        assert!(
+            rewritten.contains("name: not-frontmatter"),
+            "body prose survives"
+        );
         assert!(rewritten.ends_with('\n'), "the trailing newline survives");
 
         assert!(rewrite_frontmatter_name("# no frontmatter\n", "new").is_err());
@@ -689,4 +705,3 @@ mod tests {
         }
     }
 }
-

@@ -8,11 +8,20 @@ use axum::Json;
 pub async fn list() -> Json<SessionsResponse> {
     match tokio::task::spawn_blocking(crate::rmux::list_sessions).await {
         Ok(Ok(names)) => Json(SessionsResponse {
-            sessions: names.into_iter().map(|name| SessionEntry { name }).collect(),
+            sessions: names
+                .into_iter()
+                .map(|name| SessionEntry { name })
+                .collect(),
             error: None,
         }),
-        Ok(Err(e)) => Json(SessionsResponse { sessions: vec![], error: Some(e.to_string()) }),
-        Err(e) => Json(SessionsResponse { sessions: vec![], error: Some(e.to_string()) }),
+        Ok(Err(e)) => Json(SessionsResponse {
+            sessions: vec![],
+            error: Some(e.to_string()),
+        }),
+        Err(e) => Json(SessionsResponse {
+            sessions: vec![],
+            error: Some(e.to_string()),
+        }),
     }
 }
 
@@ -68,8 +77,12 @@ async fn stream_loop(mut socket: WebSocket, name: String, state: AppState, color
                     Some(StreamFrame::Frame { text })
                 }
             }
-            Ok(Err(e)) => Some(StreamFrame::Error { message: e.to_string() }),
-            Err(e) => Some(StreamFrame::Error { message: e.to_string() }),
+            Ok(Err(e)) => Some(StreamFrame::Error {
+                message: e.to_string(),
+            }),
+            Err(e) => Some(StreamFrame::Error {
+                message: e.to_string(),
+            }),
         };
         if let Some(frame) = frame {
             let text = serde_json::to_string(&frame).expect("serialize frame");
@@ -111,7 +124,8 @@ pub(crate) fn valid_session_name(name: &str) -> bool {
     if name.contains('/') || name.contains("..") || name.contains('\0') {
         return false;
     }
-    name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-' || b == b'.')
+    name.bytes()
+        .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-' || b == b'.')
 }
 
 pub async fn send_keys(
@@ -145,7 +159,10 @@ pub async fn send_keys(
             )
         })?
         .map_err(|e| {
-            (StatusCode::BAD_GATEWAY, Json(serde_json::json!({ "error": e.to_string() })))
+            (
+                StatusCode::BAD_GATEWAY,
+                Json(serde_json::json!({ "error": e.to_string() })),
+            )
         })?;
 
     if req.enter {
@@ -167,7 +184,10 @@ pub async fn send_keys(
                 )
             })?
             .map_err(|e| {
-                (StatusCode::BAD_GATEWAY, Json(serde_json::json!({ "error": e.to_string() })))
+                (
+                    StatusCode::BAD_GATEWAY,
+                    Json(serde_json::json!({ "error": e.to_string() })),
+                )
             })?;
     }
 
@@ -177,15 +197,24 @@ pub async fn send_keys(
 type ApiError = (StatusCode, Json<serde_json::Value>);
 
 fn bad_request(msg: impl Into<String>) -> ApiError {
-    (StatusCode::BAD_REQUEST, Json(serde_json::json!({ "error": msg.into() })))
+    (
+        StatusCode::BAD_REQUEST,
+        Json(serde_json::json!({ "error": msg.into() })),
+    )
 }
 
 fn too_many_requests(msg: impl Into<String>) -> ApiError {
-    (StatusCode::TOO_MANY_REQUESTS, Json(serde_json::json!({ "error": msg.into() })))
+    (
+        StatusCode::TOO_MANY_REQUESTS,
+        Json(serde_json::json!({ "error": msg.into() })),
+    )
 }
 
 fn gateway_timeout(msg: impl Into<String>) -> ApiError {
-    (StatusCode::GATEWAY_TIMEOUT, Json(serde_json::json!({ "error": msg.into() })))
+    (
+        StatusCode::GATEWAY_TIMEOUT,
+        Json(serde_json::json!({ "error": msg.into() })),
+    )
 }
 
 /// Parses `cmd_kill`'s alias-resolution line (`"[i] {name} resolved to the
@@ -254,18 +283,18 @@ pub async fn close(
     let output =
         tokio::task::spawn_blocking(move || crate::omega_cli::run(&["kill", "--", &session]))
             .await
-        .map_err(|e| {
-            (
-                StatusCode::BAD_GATEWAY,
-                Json(serde_json::json!({ "error": format!("kill task panicked: {e}") })),
-            )
-        })?
-        .map_err(|e| {
-            (
-                StatusCode::BAD_GATEWAY,
-                Json(serde_json::json!({ "error": format!("failed to spawn omega: {e}") })),
-            )
-        })?;
+            .map_err(|e| {
+                (
+                    StatusCode::BAD_GATEWAY,
+                    Json(serde_json::json!({ "error": format!("kill task panicked: {e}") })),
+                )
+            })?
+            .map_err(|e| {
+                (
+                    StatusCode::BAD_GATEWAY,
+                    Json(serde_json::json!({ "error": format!("failed to spawn omega: {e}") })),
+                )
+            })?;
 
     // Classify off the resolved name when `cmd_kill` reported one, else the
     // raw caller-supplied name — never parsed off the CLI otherwise.
@@ -273,9 +302,14 @@ pub async fn close(
     let is_oracle = omega_core::session::OmegaSession::classify(classify_name).role
         == omega_core::session::SessionRole::Oracle;
 
-    let cascaded_count =
-        output.stdout.lines().filter(|l| l.starts_with("  cascaded worker")).count() as u32;
-    let already_closed = output.stdout.contains("is already closed — nothing live to kill.");
+    let cascaded_count = output
+        .stdout
+        .lines()
+        .filter(|l| l.starts_with("  cascaded worker"))
+        .count() as u32;
+    let already_closed = output
+        .stdout
+        .contains("is already closed — nothing live to kill.");
     // M-1 (Codex cross-model review, 2026-08-11): the SUCCESS-path `message`
     // (stdout alone) is a documented contract other code/tests depend on
     // (the success/already-closed/cascaded-worker informational text) and
@@ -333,7 +367,8 @@ pub(crate) fn valid_new_session_name(name: &str) -> bool {
     if name.starts_with('-') || name.starts_with('.') {
         return false;
     }
-    name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+    name.bytes()
+        .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
 }
 
 /// `POST /v1/sessions/{name}/rename` — runs
@@ -365,7 +400,10 @@ pub async fn rename(
             )
         })?
         .map_err(|e| {
-            (StatusCode::BAD_GATEWAY, Json(serde_json::json!({ "error": e.to_string() })))
+            (
+                StatusCode::BAD_GATEWAY,
+                Json(serde_json::json!({ "error": e.to_string() })),
+            )
         })?;
 
     Ok(Json(RenameSessionResponse { name: req.new_name }))
@@ -435,7 +473,9 @@ pub(crate) fn dir_under_home(path: &str) -> Result<std::path::PathBuf, ApiError>
     use std::path::Component;
     for component in requested.components() {
         if matches!(component, Component::ParentDir) {
-            return Err(bad_request("dir must not contain a parent-directory (`..`) component"));
+            return Err(bad_request(
+                "dir must not contain a parent-directory (`..`) component",
+            ));
         }
     }
 
@@ -529,14 +569,18 @@ pub async fn create(
     // `AppState::session_spawn_permits`'s doc comment). Mirrors
     // `routes_dispatch.rs::create`'s own Step 0.
     let Ok(_permit) = state.session_spawn_permits.clone().try_acquire_owned() else {
-        return Err(too_many_requests("too many concurrent session spawns, try again shortly"));
+        return Err(too_many_requests(
+            "too many concurrent session spawns, try again shortly",
+        ));
     };
 
     // Step 1: `agent` must be a real, known agent — validated before
     // anything else touches the filesystem or a subprocess.
     let agent_check = req.agent.clone();
     let is_known = tokio::task::spawn_blocking(move || {
-        omega_core::agents::Agent::all().iter().any(|a| a.name() == agent_check)
+        omega_core::agents::Agent::all()
+            .iter()
+            .any(|a| a.name() == agent_check)
     })
     .await
     .unwrap_or(false);
@@ -589,7 +633,9 @@ pub async fn create(
             return Err(bad_request("prompt must not contain a NUL byte"));
         }
         if p.len() > MAX_PROMPT_LEN {
-            return Err(bad_request(format!("prompt too long (max {MAX_PROMPT_LEN} bytes)")));
+            return Err(bad_request(format!(
+                "prompt too long (max {MAX_PROMPT_LEN} bytes)"
+            )));
         }
     }
 
@@ -667,7 +713,11 @@ pub async fn create(
         ));
     }
 
-    Ok(Json(CreateSessionResponse { name, agent: req.agent, output: output.stdout }))
+    Ok(Json(CreateSessionResponse {
+        name,
+        agent: req.agent,
+        output: output.stdout,
+    }))
 }
 
 #[cfg(test)]
@@ -929,7 +979,12 @@ mod dir_under_home_tests {
         let _g = LOCK.lock().unwrap();
         let home = tempfile::tempdir().unwrap();
         std::env::set_var("HOME", home.path());
-        let escaping = home.path().join("Station").join("..").join("..").join("etc");
+        let escaping = home
+            .path()
+            .join("Station")
+            .join("..")
+            .join("..")
+            .join("etc");
         let err = dir_under_home(&escaping.display().to_string()).unwrap_err();
         assert_eq!(err.0, axum::http::StatusCode::BAD_REQUEST);
         std::env::remove_var("HOME");

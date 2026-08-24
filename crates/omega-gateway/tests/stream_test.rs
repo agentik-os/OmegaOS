@@ -21,14 +21,22 @@ async fn stream_sends_frame_then_only_on_change() {
     let _g = LOCK.lock().await;
     let dir = tempfile::tempdir().unwrap();
     // fake rmux: capture-pane output changes based on a counter file
-    install_fake_rmux(dir.path(), &format!(r#"
+    install_fake_rmux(
+        dir.path(),
+        &format!(
+            r#"
 counter="{}/count"
 n=$(cat "$counter" 2>/dev/null || echo 0)
 echo $((n+1)) > "$counter"
 if [ $n -lt 2 ]; then echo "SCREEN-A"; else echo "SCREEN-B"; fi"#,
-        dir.path().display()));
+            dir.path().display()
+        ),
+    );
     let (_, token) = DeviceStore::open(dir.path()).issue("t");
-    let cfg = GatewayConfig { stream_interval_ms: 50, ..GatewayConfig::default() };
+    let cfg = GatewayConfig {
+        stream_interval_ms: 50,
+        ..GatewayConfig::default()
+    };
     let app = build_router(AppState::new(dir.path().to_path_buf(), cfg));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -59,7 +67,10 @@ async fn color_query_param_passes_dash_e_to_capture_pane() {
         r#"if [[ " $* " == *" -e "* ]]; then echo "COLOR-MODE"; else echo "NO-COLOR"; fi"#,
     );
     let (_, token) = DeviceStore::open(dir.path()).issue("t");
-    let cfg = GatewayConfig { stream_interval_ms: 50, ..GatewayConfig::default() };
+    let cfg = GatewayConfig {
+        stream_interval_ms: 50,
+        ..GatewayConfig::default()
+    };
     let app = build_router(AppState::new(dir.path().to_path_buf(), cfg));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -88,7 +99,10 @@ async fn no_color_param_does_not_pass_dash_e() {
         r#"if [[ " $* " == *" -e "* ]]; then echo "COLOR-MODE"; else echo "NO-COLOR"; fi"#,
     );
     let (_, token) = DeviceStore::open(dir.path()).issue("t");
-    let cfg = GatewayConfig { stream_interval_ms: 50, ..GatewayConfig::default() };
+    let cfg = GatewayConfig {
+        stream_interval_ms: 50,
+        ..GatewayConfig::default()
+    };
     let app = build_router(AppState::new(dir.path().to_path_buf(), cfg));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -115,7 +129,10 @@ async fn capture_failure_becomes_error_frame_and_loop_survives() {
     let dir = tempfile::tempdir().unwrap();
     install_fake_rmux(dir.path(), "echo 'session not found' >&2; exit 1");
     let (_, token) = DeviceStore::open(dir.path()).issue("t");
-    let cfg = GatewayConfig { stream_interval_ms: 50, ..GatewayConfig::default() };
+    let cfg = GatewayConfig {
+        stream_interval_ms: 50,
+        ..GatewayConfig::default()
+    };
     let app = build_router(AppState::new(dir.path().to_path_buf(), cfg));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -126,7 +143,10 @@ async fn capture_failure_becomes_error_frame_and_loop_survives() {
     let msg = ws.next().await.unwrap().unwrap().into_text().unwrap();
     let frame: serde_json::Value = serde_json::from_str(&msg).unwrap();
     assert_eq!(frame["type"], "error");
-    assert!(frame["message"].as_str().unwrap().contains("session not found"));
+    assert!(frame["message"]
+        .as_str()
+        .unwrap()
+        .contains("session not found"));
     // the connection is still alive: another error frame arrives instead of a close
     let msg2 = ws.next().await.unwrap().unwrap();
     assert!(msg2.is_text());

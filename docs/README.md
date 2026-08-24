@@ -16,6 +16,7 @@ Start with the repo-root [GUIDE.md](../GUIDE.md) (the operator manual) and [READ
 - [ARCHITECTURE-V3.md](ARCHITECTURE-V3.md) — the `~/.omega/` centralized runtime layout (credentials, providers, state).
 - [MAP.md](MAP.md) — where everything lives: source repo vs installed binary vs `~/.omega/` runtime.
 - [INSTALL-AND-CREDENTIALS.md](INSTALL-AND-CREDENTIALS.md) — install flow + the credentials/OAuth system.
+- [PROVIDER-COMPATIBILITY.md](PROVIDER-COMPATIBILITY.md) — supported CLI versions, current launch contracts, model defaults, and Gemini→Antigravity migration.
 - [RELEASE.md](RELEASE.md) — CI-gated publishing, artifact provenance, and known-good-tag rollback.
 - [THEMES.md](THEMES.md) — the TUI palette gallery and contrast contract.
 - [RESET-RECOVERY.md](RESET-RECOVERY.md) — backing up and rebuilding a box (`omega backup` / restore).

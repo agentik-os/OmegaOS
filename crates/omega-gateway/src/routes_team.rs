@@ -40,15 +40,24 @@ use serde_json::json;
 type ApiError = (StatusCode, Json<serde_json::Value>);
 
 fn bad_request(msg: impl Into<String>) -> ApiError {
-    (StatusCode::BAD_REQUEST, Json(json!({ "error": msg.into() })))
+    (
+        StatusCode::BAD_REQUEST,
+        Json(json!({ "error": msg.into() })),
+    )
 }
 
 fn too_many_requests(msg: impl Into<String>) -> ApiError {
-    (StatusCode::TOO_MANY_REQUESTS, Json(json!({ "error": msg.into() })))
+    (
+        StatusCode::TOO_MANY_REQUESTS,
+        Json(json!({ "error": msg.into() })),
+    )
 }
 
 fn gateway_timeout(msg: impl Into<String>) -> ApiError {
-    (StatusCode::GATEWAY_TIMEOUT, Json(json!({ "error": msg.into() })))
+    (
+        StatusCode::GATEWAY_TIMEOUT,
+        Json(json!({ "error": msg.into() })),
+    )
 }
 
 /// Per-member string cap — generous for a `"name:prompt"` spec (the CLI
@@ -83,7 +92,9 @@ pub async fn create(
     // `AppState::session_spawn_permits`'s doc comment): a team spawn is at
     // least as heavy (up to `MAX_COUNT` sub-panes per call).
     let Ok(_permit) = state.session_spawn_permits.clone().try_acquire_owned() else {
-        return Err(too_many_requests("too many concurrent session spawns, try again shortly"));
+        return Err(too_many_requests(
+            "too many concurrent session spawns, try again shortly",
+        ));
     };
 
     // Step 1: `project` becomes a session-name COMPONENT (see this file's
@@ -118,7 +129,9 @@ pub async fn create(
     // CLI has no hard cap of its own.
     if let Some(count) = req.count {
         if !count_in_bounds(count) {
-            return Err(bad_request(format!("count must be between {MIN_COUNT} and {MAX_COUNT}")));
+            return Err(bad_request(format!(
+                "count must be between {MIN_COUNT} and {MAX_COUNT}"
+            )));
         }
     }
 
@@ -148,7 +161,9 @@ pub async fn create(
                 return Err(bad_request("member must not contain a NUL byte"));
             }
             if m.len() > MAX_MEMBER_LEN {
-                return Err(bad_request(format!("member too long (max {MAX_MEMBER_LEN} bytes)")));
+                return Err(bad_request(format!(
+                    "member too long (max {MAX_MEMBER_LEN} bytes)"
+                )));
             }
         }
     }
@@ -195,13 +210,19 @@ pub async fn create(
     })
     .await
     .map_err(|e| {
-        (StatusCode::BAD_GATEWAY, Json(json!({ "error": format!("team task panicked: {e}") })))
+        (
+            StatusCode::BAD_GATEWAY,
+            Json(json!({ "error": format!("team task panicked: {e}") })),
+        )
     })?
     .map_err(|e| {
         if crate::omega_cli::is_timeout(&e) {
             gateway_timeout(e.to_string())
         } else {
-            (StatusCode::BAD_GATEWAY, Json(json!({ "error": format!("failed to spawn omega: {e}") })))
+            (
+                StatusCode::BAD_GATEWAY,
+                Json(json!({ "error": format!("failed to spawn omega: {e}") })),
+            )
         }
     })?;
 
@@ -225,7 +246,10 @@ pub async fn create(
         ));
     }
 
-    Ok(Json(TeamResponse { session, output: output.stdout }))
+    Ok(Json(TeamResponse {
+        session,
+        output: output.stdout,
+    }))
 }
 
 #[cfg(test)]

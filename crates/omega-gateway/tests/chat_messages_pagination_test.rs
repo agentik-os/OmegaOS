@@ -19,7 +19,11 @@ fn seed(state: &AppState, id: &str, count: usize) {
     for i in 0..count {
         state.chats.append_message(
             id,
-            &ChatMessage { role: "user".to_string(), text: format!("m{i}"), ts: format!("t{i}") },
+            &ChatMessage {
+                role: "user".to_string(),
+                text: format!("m{i}"),
+                ts: format!("t{i}"),
+            },
         );
     }
 }
@@ -29,7 +33,9 @@ async fn no_before_returns_the_newest_page() {
     let dir = tempfile::tempdir().unwrap();
     let (_, token) = DeviceStore::open(dir.path()).issue("t");
     let state = AppState::new(dir.path().to_path_buf(), GatewayConfig::default());
-    let meta = state.chats.create(ChatAgent::Claude, "/tmp".to_string(), None, None);
+    let meta = state
+        .chats
+        .create(ChatAgent::Claude, "/tmp".to_string(), None, None);
     seed(&state, &meta.id, 5);
     let base = spawn(build_router(state)).await;
 
@@ -48,7 +54,10 @@ async fn no_before_returns_the_newest_page() {
     assert_eq!(messages[0]["text"], "m4", "newest first");
     assert_eq!(messages[1]["text"], "m3");
     assert_eq!(messages[2]["text"], "m2");
-    assert!(res["next_cursor"].is_u64(), "2 older messages remain -> a cursor must be present");
+    assert!(
+        res["next_cursor"].is_u64(),
+        "2 older messages remain -> a cursor must be present"
+    );
 }
 
 #[tokio::test]
@@ -56,7 +65,9 @@ async fn next_cursor_returns_the_next_older_page() {
     let dir = tempfile::tempdir().unwrap();
     let (_, token) = DeviceStore::open(dir.path()).issue("t");
     let state = AppState::new(dir.path().to_path_buf(), GatewayConfig::default());
-    let meta = state.chats.create(ChatAgent::Claude, "/tmp".to_string(), None, None);
+    let meta = state
+        .chats
+        .create(ChatAgent::Claude, "/tmp".to_string(), None, None);
     seed(&state, &meta.id, 5);
     let base = spawn(build_router(state)).await;
     let client = reqwest::Client::new();
@@ -73,7 +84,10 @@ async fn next_cursor_returns_the_next_older_page() {
     let cursor = page1["next_cursor"].as_u64().unwrap();
 
     let page2: serde_json::Value = client
-        .get(format!("{base}/v1/chats/{}/messages?before={cursor}&limit=3", meta.id))
+        .get(format!(
+            "{base}/v1/chats/{}/messages?before={cursor}&limit=3",
+            meta.id
+        ))
         .bearer_auth(&token)
         .send()
         .await
@@ -83,7 +97,11 @@ async fn next_cursor_returns_the_next_older_page() {
         .unwrap();
 
     let messages = page2["messages"].as_array().unwrap();
-    assert_eq!(messages.len(), 2, "exactly the 2 remaining older messages, no gap, no dupe");
+    assert_eq!(
+        messages.len(),
+        2,
+        "exactly the 2 remaining older messages, no gap, no dupe"
+    );
     assert_eq!(messages[0]["text"], "m1");
     assert_eq!(messages[1]["text"], "m0");
     assert!(page2["next_cursor"].is_null());
@@ -94,7 +112,9 @@ async fn fewer_messages_than_limit_returns_everything_with_null_cursor() {
     let dir = tempfile::tempdir().unwrap();
     let (_, token) = DeviceStore::open(dir.path()).issue("t");
     let state = AppState::new(dir.path().to_path_buf(), GatewayConfig::default());
-    let meta = state.chats.create(ChatAgent::Claude, "/tmp".to_string(), None, None);
+    let meta = state
+        .chats
+        .create(ChatAgent::Claude, "/tmp".to_string(), None, None);
     seed(&state, &meta.id, 1);
     let base = spawn(build_router(state)).await;
 
@@ -119,7 +139,9 @@ async fn missing_limit_defaults_to_a_sane_page_size() {
     let dir = tempfile::tempdir().unwrap();
     let (_, token) = DeviceStore::open(dir.path()).issue("t");
     let state = AppState::new(dir.path().to_path_buf(), GatewayConfig::default());
-    let meta = state.chats.create(ChatAgent::Claude, "/tmp".to_string(), None, None);
+    let meta = state
+        .chats
+        .create(ChatAgent::Claude, "/tmp".to_string(), None, None);
     seed(&state, &meta.id, 3);
     let base = spawn(build_router(state)).await;
 
@@ -134,7 +156,11 @@ async fn missing_limit_defaults_to_a_sane_page_size() {
         .unwrap();
 
     let messages = res["messages"].as_array().unwrap();
-    assert_eq!(messages.len(), 3, "3 messages all fit under the default limit");
+    assert_eq!(
+        messages.len(),
+        3,
+        "3 messages all fit under the default limit"
+    );
     assert!(res["next_cursor"].is_null());
 }
 
@@ -142,7 +168,11 @@ async fn missing_limit_defaults_to_a_sane_page_size() {
 async fn unknown_chat_id_is_404() {
     let dir = tempfile::tempdir().unwrap();
     let (_, token) = DeviceStore::open(dir.path()).issue("t");
-    let base = spawn(build_router(AppState::new(dir.path().to_path_buf(), GatewayConfig::default()))).await;
+    let base = spawn(build_router(AppState::new(
+        dir.path().to_path_buf(),
+        GatewayConfig::default(),
+    )))
+    .await;
 
     let res = reqwest::Client::new()
         .get(format!("{base}/v1/chats/0123456789abcdef/messages"))
@@ -157,7 +187,11 @@ async fn unknown_chat_id_is_404() {
 async fn invalid_chat_id_shape_is_404_not_500() {
     let dir = tempfile::tempdir().unwrap();
     let (_, token) = DeviceStore::open(dir.path()).issue("t");
-    let base = spawn(build_router(AppState::new(dir.path().to_path_buf(), GatewayConfig::default()))).await;
+    let base = spawn(build_router(AppState::new(
+        dir.path().to_path_buf(),
+        GatewayConfig::default(),
+    )))
+    .await;
 
     // "%2e%2e" decodes to "..", a path-traversal-shaped single path segment
     // that must never reach ChatStore's filesystem joins.
@@ -173,7 +207,11 @@ async fn invalid_chat_id_shape_is_404_not_500() {
 #[tokio::test]
 async fn no_auth_token_is_401() {
     let dir = tempfile::tempdir().unwrap();
-    let base = spawn(build_router(AppState::new(dir.path().to_path_buf(), GatewayConfig::default()))).await;
+    let base = spawn(build_router(AppState::new(
+        dir.path().to_path_buf(),
+        GatewayConfig::default(),
+    )))
+    .await;
 
     let res = reqwest::Client::new()
         .get(format!("{base}/v1/chats/0123456789abcdef/messages"))
