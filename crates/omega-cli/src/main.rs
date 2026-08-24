@@ -3868,11 +3868,11 @@ fn cmd_install(agent_name: &str, dry_run: bool) -> Result<()> {
             agent.display_name()
         );
     } else {
-        println!(
-            "\n[!] Installer reported success but `{}` is not on PATH yet.",
-            agent.name()
+        anyhow::bail!(
+            "installer exited successfully but `{}` is still unavailable; \
+             verify the installer output and expected binary locations, then retry",
+            agent.binary_name()
         );
-        println!("  You may need to restart your shell or add the binary directory to PATH.");
     }
 
     // Auto-sync: wire the new LLM into ~/.omega/ centralized config
@@ -13040,7 +13040,12 @@ fn cmd_update(check: bool, dir: Option<&str>) -> Result<()> {
         .env("OMEGA_FROM_SOURCE", "1")
         .status()?;
     if !status.success() {
-        anyhow::bail!("install.sh failed — your previous install is untouched");
+        anyhow::bail!(
+            "install.sh failed after the checkout was updated; some idempotent install steps may \
+             already have run. Fix the reported error, then re-run `omega update` (or \
+             `cd {} && ./install.sh`) to converge the installation",
+            src.display()
+        );
     }
 
     println!("\n✓ OmegaOS updated. Restart a running TUI (Menu → R) to pick up the new binary.");
@@ -16122,6 +16127,17 @@ async fn cmd_reconcile(report_only: bool) -> Result<()> {
         match export_rules_to(&rules_dir, false) {
             Ok(n) => println!("    [+] doctrine re-exported ({} rules)", n),
             Err(e) => needs_human.push(format!("could not re-export doctrine: {e}")),
+        }
+
+        // Provider CLIs may replace a credential symlink atomically during
+        // refresh. Reconcile through omega-core so the fresher valid Claude
+        // token wins; the retired shell migration always preferred canonical
+        // state and could restore a consumed refresh token.
+        match omega_core::credentials::CredentialStore::new()
+            .and_then(|store| store.ensure_legacy_symlink("claude"))
+        {
+            Ok(()) => println!("    [+] Claude credential topology reconciled"),
+            Err(e) => needs_human.push(format!("could not reconcile Claude credentials: {e}")),
         }
 
         // Whatever installed this binary may not have recorded which commit it

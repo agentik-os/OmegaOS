@@ -77,8 +77,8 @@ jobs:
           toolchain: 1.97.1
           targets: ${{ matrix.target }}
 
-      - name: Build omega from the pinned lockfile
-        run: cargo build --release --locked --bin omega --target ${{ matrix.target }}
+      - name: Build OmegaOS binaries from the pinned lockfile
+        run: cargo build --release --locked --bin omega --bin omega-gatewayd --target ${{ matrix.target }}
 
       - name: Resolve the exact locked rmux revision
         id: rmux
@@ -115,11 +115,12 @@ jobs:
           test "$(git -C "${{ steps.rmux.outputs.path }}" rev-parse HEAD)" = "${{ steps.rmux.outputs.rev }}"
           cargo build --release --locked --manifest-path "${{ steps.rmux.outputs.path }}/Cargo.toml" --target "${{ matrix.target }}"
 
-      - name: Package deterministic omega + rmux archive
+      - name: Package deterministic OmegaOS + rmux archive
         shell: bash
         run: |
           mkdir -p dist
           cp "target/${{ matrix.target }}/release/omega" dist/omega
+          cp "target/${{ matrix.target }}/release/omega-gatewayd" dist/omega-gatewayd
           cp "${{ steps.rmux.outputs.path }}/target/${{ matrix.target }}/release/rmux" dist/rmux
           python3 - "$GITHUB_SHA" "${{ steps.rmux.outputs.rev }}" "${{ matrix.target }}" <<'PY'
           import hashlib
@@ -151,13 +152,13 @@ jobs:
           with output.open('wb') as raw:
               with gzip.GzipFile(filename='', mode='wb', fileobj=raw, mtime=0) as zipped:
                   with tarfile.open(fileobj=zipped, mode='w', format=tarfile.USTAR_FORMAT) as archive:
-                      for name in ('omega', 'rmux', 'BUILD-INFO.json'):
+                      for name in ('omega', 'omega-gatewayd', 'rmux', 'BUILD-INFO.json'):
                           path = root / name
                           info = archive.gettarinfo(str(path), arcname=name)
                           info.uid = info.gid = 0
                           info.uname = info.gname = ''
                           info.mtime = 0
-                          info.mode = 0o755 if name in {'omega', 'rmux'} else 0o644
+                          info.mode = 0o755 if name in {'omega', 'omega-gatewayd', 'rmux'} else 0o644
                           with path.open('rb') as source:
                               archive.addfile(info, source)
           PY
