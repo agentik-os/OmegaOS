@@ -7,6 +7,20 @@ for [semantic versioning](https://semver.org) once it reaches 1.0. Until then,
 
 ## [Unreleased]
 
+## [0.1.14] — 2026-08-24
+
+### Provider compatibility and installation
+
+- Updated Codex, Claude, Hermes, Kimi, Gemini, Antigravity, GLM, Pi, and
+  OpenRouter launch contracts and current model catalogs.
+- Added streamed Codex gateway chat, provider-aware resume/resurrection,
+  version diagnostics, safe Codex 0.149 migration, and configurable hook trust.
+- Restored fresh-install parity: Codex is provisioned as the default, gateway
+  binaries ship in release archives, Rust is pinned, and managed assets prune
+  stale files without discarding operator configuration.
+- Expanded CI to the complete workspace and made gateway/project/skill tests
+  hermetic. Published the matching npm bootstrap as `omega-os@1.5.13`.
+
 ### Documentation and release operations
 
 - Aligned current operator docs with the runtime registries: 7 Laws, 52

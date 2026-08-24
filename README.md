@@ -76,7 +76,7 @@ are machine-specific and must come from your own run:
 ```
 OmegaOS doctor
 
-  [+] binary           omega 0.1.13
+  [+] binary           omega 0.1.14
   [+] doctrine         7 Laws + 52 Rules
   ... machine-specific checks follow ...
 ```
