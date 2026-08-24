@@ -109,8 +109,8 @@ while [ "$ITER" -lt "$MAX_ITER" ]; do
     fi
 
     # ─── Liveness gate ───
-    # OmegaOS is rmux-native; the old optional ~/.claude/lib helper and tmux
-    # fallback made fresh installs silently skip this gate.
+    # OmegaOS is rmux-native; the old optional provider-specific helper and
+    # tmux fallback made fresh installs silently skip this gate.
     if ! command -v omega >/dev/null 2>&1 \
         || ! omega capture "$SESSION" >/dev/null 2>&1; then
         write_halt "worker_died" "$ITER"
