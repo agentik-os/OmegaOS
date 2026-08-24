@@ -53,9 +53,54 @@ async fn get_config_on_a_fresh_box_returns_defaults_with_no_keys_set() {
     let body: serde_json::Value = res.json().await.unwrap();
     assert_eq!(body["claude"]["api_key_set"], false);
     assert_eq!(body["codex"]["api_key_set"], false);
+    assert_eq!(body["antigravity"]["dangerously_skip_permissions"], true);
+    assert_eq!(body["kimi"]["api_key_set"], false);
     // Never a raw `api_key` field on the wire at all.
     assert!(body["claude"].get("api_key").is_none());
+    assert!(body["kimi"].get("api_key").is_none());
 
+    clear_env();
+}
+
+#[tokio::test]
+async fn put_config_keeps_kimi_antigravity_and_hermes_in_cli_parity() {
+    let _g = LOCK.lock().await;
+    let gateway_dir = tempfile::tempdir().unwrap();
+    let omega_dir = tempfile::tempdir().unwrap();
+    std::env::set_var("OMEGA_DIR", omega_dir.path());
+    let (app, token) = app_and_token(gateway_dir.path()).await;
+    let base = spawn(app).await;
+    let client = reqwest::Client::new();
+
+    for (key, value) in [
+        ("kimi.provider_type", "anthropic"),
+        ("kimi.model", "k3"),
+        ("antigravity.effort", "high"),
+        ("hermes.provider", "openrouter"),
+    ] {
+        let response = client
+            .put(format!("{base}/v1/config"))
+            .bearer_auth(&token)
+            .json(&serde_json::json!({ "key": key, "value": value }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200, "{key}");
+    }
+
+    let body: serde_json::Value = client
+        .get(format!("{base}/v1/config"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(body["kimi"]["provider_type"], "anthropic");
+    assert_eq!(body["kimi"]["model"], "k3");
+    assert_eq!(body["antigravity"]["effort"], "high");
+    assert_eq!(body["hermes"]["provider"], "openrouter");
     clear_env();
 }
 

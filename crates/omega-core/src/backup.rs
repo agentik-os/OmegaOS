@@ -149,7 +149,7 @@ pub fn pre_reset_report(config: &OmegaConfig) -> PreResetReport {
     let candidates = [
         "credentials/claude.json",
         "credentials/codex.json",
-        "credentials/gemini.json",
+        "providers.toml",
         "provisioning/services.env",
         "provisioning/clerk-pool.env",
         "config/vercel-tokens.json",
