@@ -14,46 +14,69 @@ use std::path::{Path, PathBuf};
 
 use crate::session::expand_user_path;
 
+fn is_usable_dir_hint(path: &Path) -> bool {
+    !path.as_os_str().is_empty() && path.as_os_str() != "." && path.as_os_str() != "./"
+}
+
+fn same_canonical(left: &Path, right: &Path) -> bool {
+    match (left.canonicalize(), right.canonicalize()) {
+        (Ok(left), Ok(right)) => left == right,
+        _ => left == right,
+    }
+}
+
+fn join_if_relative(path: &Path, process_cwd: &Path) -> PathBuf {
+    if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        process_cwd.join(path)
+    }
+}
+
 /// Resolve the directory a worker pane must start in.
 ///
-/// `--dir` wins (tilde-expanded). Otherwise the oracle's persisted
-/// `working_dir`. Never return a relative `.` for rmux.
+/// `--dir` wins (tilde-expanded; `.` / `./` are treated as omitted so rmux
+/// never inherits the daemon `$HOME`). Then the oracle's persisted
+/// `working_dir`, unless that directory is the operator home and a registered
+/// project path exists (the live hole: oracle pane at `/Users/hacker`,
+/// project at `…/refonte-comprehension-v2`). Then the registered project
+/// path. Never return a relative `.` for rmux.
 pub fn resolve_worker_working_dir(
     dir_flag: Option<&str>,
     oracle_working_dir: Option<&Path>,
+    project_dir: Option<&Path>,
     process_cwd: &Path,
+    home_dir: Option<&Path>,
 ) -> Result<PathBuf> {
     let dir_flag = dir_flag.filter(|raw| {
         let trimmed = raw.trim();
         trimmed != "." && trimmed != "./"
     });
-    let candidate = match dir_flag {
-        Some(raw) => {
-            let expanded = expand_user_path(raw);
-            if expanded.is_absolute() {
-                expanded
-            } else {
-                process_cwd.join(expanded)
-            }
-        }
-        None => match oracle_working_dir {
-            Some(oracle_dir)
-                if !oracle_dir.as_os_str().is_empty() && oracle_dir.as_os_str() != "." =>
-            {
-                if oracle_dir.is_absolute() {
-                    oracle_dir.to_path_buf()
-                } else {
-                    process_cwd.join(oracle_dir)
-                }
-            }
-            _ => process_cwd.to_path_buf(),
-        },
+    let oracle_dir = oracle_working_dir
+        .filter(|path| is_usable_dir_hint(path))
+        .map(|path| join_if_relative(path, process_cwd));
+    let project_dir = project_dir
+        .filter(|path| is_usable_dir_hint(path))
+        .map(|path| join_if_relative(path, process_cwd));
+    let oracle_is_home = oracle_dir
+        .as_deref()
+        .is_some_and(|oracle| home_dir.is_some_and(|home| same_canonical(oracle, home)));
+    let candidate = if let Some(raw) = dir_flag {
+        join_if_relative(&expand_user_path(raw), process_cwd)
+    } else if let Some(oracle) = oracle_dir.as_ref().filter(|_| !oracle_is_home) {
+        oracle.clone()
+    } else if let Some(project) = project_dir {
+        project
+    } else if let Some(oracle) = oracle_dir {
+        oracle
+    } else {
+        process_cwd.to_path_buf()
     };
     let canon = candidate.canonicalize().map_err(|error| {
         anyhow::anyhow!(
             "worker working_dir '{}' does not exist (resolved: {}): {error}. \
              Workers must start in the project --dir / oracle working_dir.",
-            dir_flag.unwrap_or("<oracle working_dir or process cwd>"),
+            dir_flag.unwrap_or("<oracle working_dir, registered project, or process cwd>"),
             candidate.display()
         )
     })?;
@@ -142,7 +165,14 @@ mod tests {
     fn omitted_dir_uses_oracle_project_not_dot() {
         let project = tempfile::TempDir::new().unwrap();
         let home = tempfile::TempDir::new().unwrap();
-        let got = resolve_worker_working_dir(None, Some(project.path()), home.path()).unwrap();
+        let got = resolve_worker_working_dir(
+            None,
+            Some(project.path()),
+            None,
+            home.path(),
+            Some(home.path()),
+        )
+        .unwrap();
         assert_eq!(got, project.path().canonicalize().unwrap());
         assert_ne!(
             got,
@@ -155,17 +185,81 @@ mod tests {
     fn relative_dot_dir_prefers_oracle_project() {
         let project = tempfile::TempDir::new().unwrap();
         let home = tempfile::TempDir::new().unwrap();
-        let got = resolve_worker_working_dir(Some("."), Some(project.path()), home.path()).unwrap();
+        let got = resolve_worker_working_dir(
+            Some("."),
+            Some(project.path()),
+            None,
+            home.path(),
+            Some(home.path()),
+        )
+        .unwrap();
         assert_eq!(got, project.path().canonicalize().unwrap());
-        let no_oracle = resolve_worker_working_dir(Some("."), None, project.path()).unwrap();
+        let no_oracle =
+            resolve_worker_working_dir(Some("."), None, None, project.path(), Some(home.path()))
+                .unwrap();
         assert_eq!(no_oracle, project.path().canonicalize().unwrap());
+    }
+
+    #[test]
+    fn registered_project_beats_home_process_cwd() {
+        let project = tempfile::TempDir::new().unwrap();
+        let home = tempfile::TempDir::new().unwrap();
+        let got = resolve_worker_working_dir(
+            None,
+            None,
+            Some(project.path()),
+            home.path(),
+            Some(home.path()),
+        )
+        .unwrap();
+        assert_eq!(
+            got,
+            project.path().canonicalize().unwrap(),
+            "spawn-worker --project without --dir must use the registered project, not $HOME"
+        );
+    }
+
+    #[test]
+    fn registered_project_beats_home_oracle() {
+        let project = tempfile::TempDir::new().unwrap();
+        let home = tempfile::TempDir::new().unwrap();
+        let got = resolve_worker_working_dir(
+            None,
+            Some(home.path()),
+            Some(project.path()),
+            home.path(),
+            Some(home.path()),
+        )
+        .unwrap();
+        assert_eq!(
+            got,
+            project.path().canonicalize().unwrap(),
+            "an oracle parked in $HOME must not drag the worker with it"
+        );
+    }
+
+    #[test]
+    fn explicit_dir_beats_registered_project() {
+        let project = tempfile::TempDir::new().unwrap();
+        let other = tempfile::TempDir::new().unwrap();
+        let home = tempfile::TempDir::new().unwrap();
+        let got = resolve_worker_working_dir(
+            other.path().to_str(),
+            Some(project.path()),
+            Some(project.path()),
+            home.path(),
+            Some(home.path()),
+        )
+        .unwrap();
+        assert_eq!(got, other.path().canonicalize().unwrap());
     }
 
     #[test]
     fn missing_dir_is_a_hard_error() {
         let cwd = tempfile::TempDir::new().unwrap();
-        let err = resolve_worker_working_dir(Some("no-such-worker-dir"), None, cwd.path())
-            .expect_err("missing --dir must fail before spawn");
+        let err =
+            resolve_worker_working_dir(Some("no-such-worker-dir"), None, None, cwd.path(), None)
+                .expect_err("missing --dir must fail before spawn");
         assert!(err.to_string().contains("does not exist"), "{err}");
     }
 

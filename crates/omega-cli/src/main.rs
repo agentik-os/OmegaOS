@@ -8387,6 +8387,36 @@ fn worker_authority_rollback_error(
     )
 }
 
+/// Same project-path SSOT `dispatch_oracle_with_agent` uses: config, then
+/// `~/.omega/projects.json`, then `$HOME` discovery. A worker named
+/// `<project>-worker-<task>` must start in that project even when the parent
+/// pane's cwd is `$HOME`.
+fn registered_project_working_dir(
+    config: &OmegaConfig,
+    project: &str,
+) -> Option<std::path::PathBuf> {
+    let lower = project.to_lowercase();
+    if let Some(path) = config.find_project(project).map(|pc| pc.path.clone()) {
+        if path.is_dir() {
+            return Some(path);
+        }
+    }
+    let from_registry = omega_core::project_manager::ProjectRegistry::load()
+        .projects
+        .into_iter()
+        .find(|item| item.name.to_lowercase() == lower)
+        .map(|item| item.path);
+    if let Some(path) = from_registry.filter(|path| path.is_dir()) {
+        return Some(path);
+    }
+    let home = dirs::home_dir()?;
+    omega_core::projects::discover(&home)
+        .into_iter()
+        .find(|item| item.name.to_lowercase() == lower)
+        .map(|item| item.path)
+        .filter(|path| path.is_dir())
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn cmd_spawn_worker(
     task: &str,
@@ -8435,10 +8465,16 @@ async fn cmd_spawn_worker(
             .map(|state| state.working_dir)
     });
     let process_cwd = std::env::current_dir().context("resolving spawn-worker process cwd")?;
+    let registered_project_dir = project_name
+        .as_deref()
+        .and_then(|name| registered_project_working_dir(&config, name));
+    let home_dir = dirs::home_dir();
     let resolved_work_dir = omega_core::worker_spawn::resolve_worker_working_dir(
         dir,
         oracle_working_dir.as_deref(),
+        registered_project_dir.as_deref(),
         &process_cwd,
+        home_dir.as_deref(),
     )?;
     let mut work_dir = resolved_work_dir.to_string_lossy().into_owned();
     let source_work_dir = std::path::PathBuf::from(&work_dir);
