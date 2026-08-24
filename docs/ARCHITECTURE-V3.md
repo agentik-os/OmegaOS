@@ -67,9 +67,10 @@ The built-in default provider is Codex. Default models at this revision are:
 | Provider | Default model | Authentication |
 |---|---|---|
 | Claude | `opus` | OAuth or API key |
-| Codex | `gpt-5.5-codex` | ChatGPT device auth or API key |
-| Gemini | `gemini-3.1-pro` | OAuth or API key |
-| GLM | `glm-5.1` | API key |
+| Codex | `gpt-5.6` | ChatGPT device auth or API key |
+| Gemini | `auto` | Enterprise/API-key Gemini CLI |
+| Antigravity | native account default | Google sign-in/keyring |
+| GLM | `glm-5.3` | API key |
 | OpenRouter | `anthropic/claude-opus-5` | API key |
 | Pi | `anthropic/claude-opus-5` | OpenRouter configuration |
 | Hermes | `anthropic/claude-opus-5` | API key |
@@ -87,19 +88,23 @@ static model list into automation.
 model = "opus"
 
 [codex]
-model = "gpt-5.5-codex"
+model = "gpt-5.6"
 
 [gemini]
-model = "gemini-3.1-pro"
+model = "auto"
 ```
 
-The active Telegram model selection is stored under
-`~/.omega/state/telegram-active-model.json` and can be changed with `/model`.
+The global default selected through Telegram `/model` or
+`omega config activate <provider> [model]` is mirrored under
+`~/.omega/state/active-model.json`. `config.toml:agent_command` remains the
+launch authority.
 
 ## Safe migration and verification
 
-The installer migrates Claude and Gemini credentials and delegates Codex
-conflict handling to the typed reconciler. After install or provider login:
+The installer reconciles Claude credentials with freshness-aware typed code and
+delegates Codex conflicts to its flow-aware reconciler. Gemini 0.56+ and
+Antigravity retain ownership of their native keyring/hybrid credential stores.
+After install or provider login:
 
 ```bash
 omega sync

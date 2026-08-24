@@ -123,8 +123,8 @@ OmegaOS/
 ├── credentials/                       OmegaOS-owned credential copies
 │   ├── claude.json                    ← ~/.claude/.credentials.json points here
 │   ├── codex.json                     ↔ CODEX_HOME/auth.json (reconciled)
-│   ├── gemini.json                    ← ~/.gemini/oauth_creds.json points here
 │   └── accounts/                      Saved account profiles
+│   # Gemini/Antigravity OAuth stays in provider-native keyring storage
 │
 ├── rules/                             The typed doctrine (.md, synced from repo on install)
 ├── agents/                            Shared and role-specific agent prompts
@@ -165,9 +165,8 @@ $ ./install.sh
   Phase 4: Verify/install omega, falling back to a locked source build
   Phase 5: Setup ~/.omega/
            - Create credentials/, state/, logs/, accounts/
-           - migrate_creds claude → moves ~/.claude/.credentials.json
-             into ~/.omega/credentials/claude.json + symlink back
-           - migrate Claude and Gemini compatibility credentials
+           - reconcile Claude credentials with freshness-aware omega-core code
+           - leave Gemini/Antigravity native keyring credentials provider-owned
            - reconcile Codex through omega-core (CODEX_HOME-aware)
            - Copy OMEGA.md, agents/, rules/, skills/pdfgen/, skills/audits/
            - Run `omega rules export` and `omega sync`
@@ -184,7 +183,7 @@ $ ./install.sh
 | Launch TUI | `omega` or `om` |
 | Send work from Telegram | Send it in the Atlas or project topic; Atlas resolves and dispatches |
 | List sessions | `/sessions` on Telegram or `omega list` |
-| Switch model | `/model claude opus` |
+| Switch global provider/model | `/model` buttons or `omega config activate claude opus` |
 | Manage accounts | `/account` (button menu) |
 | New project | `/projects` → [+ New project] |
 | Generate PDF | `omega pdf --template=audit --send` |

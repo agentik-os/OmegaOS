@@ -6,7 +6,7 @@ A terminal control plane for running a fleet of AI coding agents in parallel, wh
 
 [![CI](https://github.com/agentik-os/OmegaOS/actions/workflows/ci.yml/badge.svg)](https://github.com/agentik-os/OmegaOS/actions/workflows/ci.yml) ![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg) ![Built with Rust](https://img.shields.io/badge/built%20with-Rust-orange.svg)
 
-OmegaOS is not a library you import. You install it on a Linux box and you get the `omega` command, a TUI for watching and killing sessions, an orchestration layer that hands work to agents, and a Telegram bridge for phone control. New sessions use OpenAI Codex by default. Claude Code, Gemini, Pi, Hermes, and GLM remain explicit choices. Every agent receives a compact, typed, role-scoped policy context compiled from the same doctrine.
+OmegaOS is not a library you import. You install it on a Linux box and you get the `omega` command, a TUI for watching and killing sessions, an orchestration layer that hands work to agents, and a Telegram bridge for phone control. New sessions use OpenAI Codex by default. Claude Code, Google Antigravity, enterprise/API-key Gemini CLI, OpenRouter/Pi, Hermes, GLM, and Kimi remain explicit choices. Every agent receives a compact, typed, role-scoped policy context compiled from the same doctrine.
 
 Current version: see [CHANGELOG.md](CHANGELOG.md) (`omega -V` on an installed box). I run it daily; expect rough edges.
 
@@ -26,7 +26,7 @@ cd OmegaOS
 ./install.sh
 ```
 
-The installer downloads prebuilt `rmux` + `omega` binaries for your platform when a release is published (verified by checksum), and falls back to building from source otherwise — so a fresh clone always reproduces the system, just faster when a binary exists. Force a source build with `OMEGA_FROM_SOURCE=1 ./install.sh`.
+The installer downloads prebuilt `rmux` + `omega` + `omega-gatewayd` binaries for your platform when a release is published (verified by checksum), and falls back to building from source otherwise — so a fresh clone always reproduces the system, just faster when a binary exists. Force a source build with `OMEGA_FROM_SOURCE=1 ./install.sh`.
 
 ## Updating
 
@@ -62,7 +62,7 @@ The stack installs itself; only the personal pieces are left. **`omega guide`
 prints the full step-by-step** (also saved at `~/.omega/GETTING-STARTED.md`,
 and shown at the end of the install). In short:
 
-1. **Connect Codex** *(required for the default runtime)*: run `codex login`, then check with `codex login status`. Claude remains optional through `claude` and `/login`.
+1. **Connect Codex** *(required for the default runtime)*: run `omega codex-login`, then check with `omega codex-login-status`. Claude remains optional through `claude auth login`.
 2. **Telegram remote** *(recommended)* — token from [@BotFather](https://t.me/BotFather), your id from [@userinfobot](https://t.me/userinfobot), then `OMEGA_TG_TOKEN=<TOKEN> omega telegram setup <ID> --user-id <ID>` (the env form keeps the token out of the process list). For one-topic-per-project: group + Topics on + bot admin → `/setupgroup` → `/sync`.
 3. **Service keys** *(optional)* — `~/.omega/provisioning/services.env` (Vercel / GitHub / Convex / Stripe / OpenAI-for-voice) powers auto-provisioning of new apps.
 4. **Add a project** — `omega` → **[N] New Project**, Telegram → *Import from GitHub*, or just drop a repo under `~/Station/<Category>/`.
@@ -295,7 +295,7 @@ I'd rather you know these going in.
 
 - **Linux-first.** Developed on a headless VPS. No Windows. macOS gets real fixes (launchd services, Homebrew path) but is less exercised.
 - The TUI assumes a 256-color terminal. On a 16-color terminal it'll be ugly.
-- The default agent runtime is OpenAI Codex, so the `codex` CLI must be logged in. Claude Code, Gemini, Pi, Hermes, and GLM are supported explicit alternatives.
+- The default agent runtime is OpenAI Codex, so the `codex` CLI must be logged in. Claude Code, Antigravity, enterprise/API-key Gemini CLI, OpenRouter/Pi, Hermes, GLM, and Kimi are supported alternatives.
 - **Single machine.** The rmux daemon is local. There's no multi-host orchestration.
 - It's 0.1.x. I use it daily, but you'll find rough edges I haven't hit yet.
 

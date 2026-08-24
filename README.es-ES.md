@@ -8,7 +8,7 @@ Un plano de control en el terminal para ejecutar en paralelo una flota de agente
 
 [![CI](https://github.com/agentik-os/OmegaOS/actions/workflows/ci.yml/badge.svg)](https://github.com/agentik-os/OmegaOS/actions/workflows/ci.yml) ![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg) ![Built with Rust](https://img.shields.io/badge/built%20with-Rust-orange.svg)
 
-OmegaOS no es una biblioteca que importas. Lo instalas en una máquina Linux y obtienes el comando `omega`, una TUI para vigilar y matar sesiones, una capa de orquestación que reparte el trabajo a los agentes y un puente de Telegram para el control desde el móvil. Las sesiones nuevas usan OpenAI Codex por defecto. Claude Code, Gemini, Pi, Hermes y GLM siguen siendo opciones explícitas. Cada agente recibe un contexto de políticas compacto, tipado y acotado al rol, compilado a partir de la misma doctrina.
+OmegaOS no es una biblioteca que importas. Lo instalas en una máquina Linux y obtienes el comando `omega`, una TUI para vigilar y matar sesiones, una capa de orquestación que reparte el trabajo a los agentes y un puente de Telegram para el control desde el móvil. Las sesiones nuevas usan OpenAI Codex por defecto. Claude Code, Google Antigravity, Gemini CLI para Enterprise/API, OpenRouter/Pi, Hermes, GLM y Kimi siguen siendo opciones explícitas. Cada agente recibe un contexto de políticas compacto, tipado y acotado al rol, compilado a partir de la misma doctrina.
 
 Versión actual: mira [CHANGELOG.md](CHANGELOG.md) (`omega -V` en una máquina ya instalada). Lo uso a diario; da por hecho que te encontrarás asperezas.
 
@@ -28,7 +28,7 @@ cd OmegaOS
 ./install.sh
 ```
 
-El instalador descarga binarios `rmux` + `omega` precompilados para tu plataforma cuando hay una versión publicada (verificados por checksum), y si no, compila desde el código fuente — así un clon nuevo siempre reproduce el sistema, solo que más rápido cuando existe un binario. Fuerza la compilación desde el código fuente con `OMEGA_FROM_SOURCE=1 ./install.sh`.
+El instalador descarga binarios `rmux` + `omega` + `omega-gatewayd` precompilados para tu plataforma cuando hay una versión publicada (verificados por checksum), y si no, compila desde el código fuente — así un clon nuevo siempre reproduce el sistema, solo que más rápido cuando existe un binario. Fuerza la compilación desde el código fuente con `OMEGA_FROM_SOURCE=1 ./install.sh`.
 
 ## Actualización
 
@@ -63,7 +63,7 @@ El stack se instala solo; lo único que queda es la parte personal. **`omega gui
 imprime el paso a paso completo** (también guardado en `~/.omega/GETTING-STARTED.md`,
 y mostrado al final de la instalación). En resumen:
 
-1. **Conecta Codex** *(obligatorio para el runtime por defecto)*: ejecuta `codex login` y luego comprueba con `codex login status`. Claude sigue siendo opcional a través de `claude` y `/login`.
+1. **Conecta Codex** *(obligatorio para el runtime por defecto)*: ejecuta `omega codex-login` y luego comprueba con `omega codex-login-status`. Claude sigue siendo opcional mediante `claude auth login`.
 2. **Control remoto por Telegram** *(recomendado)* — el token de [@BotFather](https://t.me/BotFather), tu id de [@userinfobot](https://t.me/userinfobot) y, después, `OMEGA_TG_TOKEN=<TOKEN> omega telegram setup <ID> --user-id <ID>` (la forma con variable de entorno mantiene el token fuera de la lista de procesos). Para un tema por proyecto: grupo + temas (Topics) activados + bot administrador → `/setupgroup` → `/sync`.
 3. **Claves de servicio** *(opcional)* — `~/.omega/provisioning/services.env` (Vercel / GitHub / Convex / Stripe / OpenAI para voz) alimenta el aprovisionamiento automático de aplicaciones nuevas.
 4. **Añade un proyecto** — `omega` → **[N] New Project**, Telegram → *Import from GitHub*, o basta con dejar un repo en `~/Station/<Category>/`.
@@ -246,7 +246,7 @@ Prefiero que lo sepas antes de entrar.
 
 - **Pensado para Linux.** Desarrollado en un VPS sin entorno gráfico. Sin Windows. macOS recibe correcciones de verdad (servicios launchd, ruta de Homebrew), pero está menos rodado.
 - La TUI da por hecho un terminal de 256 colores. En uno de 16 colores se verá feo.
-- El runtime de agente por defecto es OpenAI Codex, así que la CLI `codex` tiene que tener la sesión iniciada. Claude Code, Gemini, Pi, Hermes y GLM son alternativas explícitas admitidas.
+- El runtime de agente por defecto es OpenAI Codex, así que la CLI `codex` tiene que tener la sesión iniciada. Claude Code, Antigravity, Gemini CLI para Enterprise/API, OpenRouter/Pi, Hermes, GLM y Kimi son alternativas admitidas.
 - **Una sola máquina.** El daemon rmux es local. No hay orquestación multi-host.
 - Es 0.1.x. Lo uso a diario, pero encontrarás asperezas con las que yo todavía no me he topado.
 
