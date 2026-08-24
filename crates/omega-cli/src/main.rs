@@ -17712,8 +17712,16 @@ mod phase1_tests {
     #[test]
     fn bounded_capture_kills_a_setsid_descendant_and_never_reports_success() {
         let token = new_graph_process_token().unwrap();
+        let dir = TestDir::new("setsid-descendant");
+        let marker = dir.path().join("started");
         let mut command = std::process::Command::new("bash");
-        command.arg("-c").arg("setsid sh -c 'sleep 2' & exit 0");
+        command
+            .env("OMEGA_TEST_DESCENDANT_MARKER", &marker)
+            .arg("-c")
+            .arg(
+                "setsid sh -c 'printf ready > \"$OMEGA_TEST_DESCENDANT_MARKER\"; sleep 2' & \
+                 while [ ! -s \"$OMEGA_TEST_DESCENDANT_MARKER\" ]; do sleep 0.01; done; exit 0",
+            );
         let started = std::time::Instant::now();
         let (result, _, _) = run_bounded_capture_with_token(
             &mut command,
