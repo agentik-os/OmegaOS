@@ -2376,7 +2376,12 @@ impl Orchestrator {
     /// Routes through the classifier and decomposes by complexity.
     pub async fn plan(&self, mission: &Mission) -> Result<Plan> {
         let decision = classify_mission(&mission.text);
-        let agent = self.config.agent_command.clone();
+        // Configured Hermes is Home. Orchestrate must dispatch a writer
+        // (never a provider setup wizard).
+        let agent =
+            crate::external_orchestrator::resolve_mission_writer(None, &self.config.agent_command)?
+                .name()
+                .to_string();
 
         let strategy = match decision.complexity {
             Complexity::Simple => PlanStrategy::Direct,
@@ -2472,6 +2477,7 @@ impl Orchestrator {
                 task.agent
             )
         })?;
+        crate::external_orchestrator::headless_writer_launch(agent, Some(&task.prompt))?;
 
         // THE FUNNEL — inject the role-scoped Laws + operational rules. The
         // `omega orchestrate` dispatch path previously spawned oracles AND workers

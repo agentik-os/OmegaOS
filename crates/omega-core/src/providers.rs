@@ -326,7 +326,12 @@ impl_redacted_provider_debug!(
 impl_redacted_provider_debug!(
     CodexConfig,
     "CodexConfig",
-    [model, additional_writable_dirs, bypass_hook_trust, ask_for_approval_never]
+    [
+        model,
+        additional_writable_dirs,
+        bypass_hook_trust,
+        ask_for_approval_never
+    ]
 );
 impl_redacted_provider_debug!(GeminiConfig, "GeminiConfig", [model, yolo]);
 impl fmt::Debug for AntigravityConfig {

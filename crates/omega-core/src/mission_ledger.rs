@@ -4680,6 +4680,19 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn open_creates_missing_mission_engine_sqlite3() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("mission-engine-v3.sqlite3");
+        assert!(!path.exists(), "fresh state dir has no ledger");
+        drop(MissionLedger::open(&path).unwrap());
+        assert!(
+            path.is_file(),
+            "omega must create mission-engine-v3.sqlite3 instead of crashing"
+        );
+        drop(MissionLedger::open(&path).unwrap());
+    }
+
     #[cfg(unix)]
     #[test]
     fn filesystem_ledger_enforces_owner_only_database_and_sidecar_modes() {

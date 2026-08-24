@@ -180,10 +180,7 @@ fn looks_like_writer_identity(name: &str, oracle: &str) -> bool {
         return false;
     }
     let oracle = oracle.trim().to_ascii_lowercase();
-    n == oracle
-        || n.starts_with("oracle-")
-        || n.contains("-worker-")
-        || n.starts_with("worker-")
+    n == oracle || n.starts_with("oracle-") || n.contains("-worker-") || n.starts_with("worker-")
 }
 
 // ── GateResult impl ──

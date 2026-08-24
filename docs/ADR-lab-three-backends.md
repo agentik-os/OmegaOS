@@ -37,6 +37,23 @@ API is the same for all of them.
 | **Hermes** | Home only (`omega new --agent hermes`). Never `dispatch --agent hermes`, never a worker. |
 | **Cloud** | This Cursor Cloud Agent. Writer for OmegaOS itself. Not `omega dispatch`. |
 
+**Grok Bot is an external orchestrator.** Atlas/Telegram is optional. One
+oracle per project. Review is outside Omega.
+
+Grok loop (do not skip steps):
+
+1. Observe: `omega oracles`, `omega workers`, `omega status --json`,
+   `omega progress` (read-back only). Never dump a pane on `--json`.
+2. Write a plan, then `omega dispatch <PROJECT> "<MISSION>"` (default
+   Codex). Never `--agent hermes`. Never launch a provider setup wizard.
+3. The oracle plans/verifies and never edits. It calls `omega spawn-worker`
+   (claude | codex | glm only). Grok must not spawn workers.
+4. Reap finish reports. Writer `omega done` is a candidate, not a verdict.
+5. A fresh Reviewer lists reasons NOT to merge; Audit if infra/auth/secrets/CI;
+   then Afterwork. Gareth alone may `omega gate --accept`.
+6. Kill / close the mission.
+
+`omega send` / `omega attach` into a provider/OAuth wizard is forbidden.
 Grok Bot is not a fourth Omega backend and not a substitute for `omega send`.
 
 ## Launch contract

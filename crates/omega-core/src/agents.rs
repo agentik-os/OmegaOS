@@ -772,7 +772,11 @@ impl Agent {
                 };
                 // Official Pi CLI has no tool-yolo. `--approve` only skips
                 // project-trust; document that, do not invent a bypass.
-                let approve_arg = if providers.pi.approve { " --approve" } else { "" };
+                let approve_arg = if providers.pi.approve {
+                    " --approve"
+                } else {
+                    ""
+                };
                 match initial_prompt {
                     Some(p) => pane_bash(&format!(
                         "{}exec pi {}{}{} -- {}",
@@ -1262,7 +1266,11 @@ mod tests {
             Agent::Glm,
             Agent::Kimi,
         ] {
-            let cmd = launch(agent, Some("inspect the repository"), LaunchOptions::default());
+            let cmd = launch(
+                agent,
+                Some("inspect the repository"),
+                LaunchOptions::default(),
+            );
             assert!(
                 !cmd.contains("; exec bash"),
                 "{} must not fall through to bash: {cmd}",
@@ -1357,7 +1365,10 @@ mod tests {
     #[test]
     fn kimi_interactive_session_uses_auto_policy() {
         let cmd = launch(Agent::Kimi, None, LaunchOptions::default());
-        assert!(cmd.contains("kimi --auto") || cmd.contains("kimi --auto") || cmd.contains("--auto"), "{cmd}");
+        assert!(
+            cmd.contains("kimi --auto") || cmd.contains("kimi --auto") || cmd.contains("--auto"),
+            "{cmd}"
+        );
         assert!(!cmd.contains("--prompt"), "{cmd}");
     }
 

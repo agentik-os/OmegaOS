@@ -21,6 +21,7 @@ pub mod docs;
 pub mod doctor;
 pub mod done;
 pub mod executor;
+pub mod external_orchestrator;
 pub mod failover;
 pub mod formatting;
 pub mod gate;

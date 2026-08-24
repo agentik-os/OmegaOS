@@ -645,33 +645,7 @@ fn resolve_dispatch_agent(
     agent_override: Option<&str>,
     configured: &str,
 ) -> Result<crate::agents::Agent> {
-    if let Some(name) = agent_override {
-        if name.eq_ignore_ascii_case("hermes") {
-            anyhow::bail!(
-                "{}",
-                serde_json::json!({
-                    "error": "hermes_is_home",
-                    "message": "Hermes is Home (`omega new --agent hermes`). Do not dispatch --agent hermes. Use claude, codex, or glm."
-                })
-            );
-        }
-        crate::agents::Agent::from_name(name).ok_or_else(|| {
-            anyhow::anyhow!(
-                "unknown agent '{}' — expected one of: claude, codex, gemini, pi, glm, kimi, shell",
-                name
-            )
-        })
-    } else {
-        let agent = crate::agents::Agent::from_name(configured).ok_or_else(|| {
-            anyhow::anyhow!(
-                "configured agent `{configured}` is unknown; refusing to dispatch on an implicit provider"
-            )
-        })?;
-        if matches!(agent, crate::agents::Agent::Hermes) {
-            return Ok(crate::agents::Agent::Codex);
-        }
-        Ok(agent)
-    }
+    crate::external_orchestrator::resolve_mission_writer(agent_override, configured)
 }
 
 fn seed_lab_plan(state_dir: &Path, oracle_name: &str) -> Result<()> {
@@ -1541,6 +1515,7 @@ impl Dispatcher {
         // the typed provider before compiling rules so provider-only doctrine
         // cannot leak or disappear through a neutral prompt.
         let agent = resolve_dispatch_agent(agent_override, &self.config.agent_command)?;
+        crate::external_orchestrator::headless_writer_launch(agent, Some(&prompt))?;
 
         // THE FUNNEL — every dispatched agent (any LLM backend) MUST receive
         // its role-scoped Laws + operational rules via this single call.

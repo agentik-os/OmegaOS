@@ -208,14 +208,7 @@ mod tests {
     fn failed_health_is_sticky_and_visible_in_json() {
         let tmp = tempfile::TempDir::new().unwrap();
         record_launch(tmp.path(), "t-codex", "codex").unwrap();
-        let failed = observe(
-            tmp.path(),
-            "t-codex",
-            "codex",
-            true,
-            Some("bash-5.3$ "),
-        )
-        .unwrap();
+        let failed = observe(tmp.path(), "t-codex", "codex", true, Some("bash-5.3$ ")).unwrap();
         assert!(failed.is_failed());
         let revived = observe(tmp.path(), "t-codex", "codex", true, Some("✦ Codex")).unwrap();
         assert!(
