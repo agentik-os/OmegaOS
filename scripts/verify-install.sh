@@ -776,14 +776,45 @@ else
   bad "skill mirrors can retain stale or schema-invalid protocols across reinstall"
 fi
 
-# omega-gateway (app API daemon): unit shipped, a workspace member (so the
-# source-build `cargo build --release` above produces omega-gatewayd for
-# free), and installer wiring (binary install + systemd unit + enable).
+# omega-gateway (app API daemon): unit shipped, source-build wiring, AND the
+# deterministic prebuilt archive. Grepping install.sh alone used to report a
+# false pass while every prebuilt install silently omitted the daemon.
 if [ -f config/omega-gateway.service ] && grep -q "crates/omega-gateway" Cargo.toml \
-  && grep -q "omega-gatewayd" install.sh && grep -q "omega-gateway.service" install.sh; then
-  ok "omega-gateway daemon shipped + wired (unit + workspace build + install.sh)"
+  && grep -q "omega-gatewayd" install.sh && grep -q "omega-gateway.service" install.sh \
+  && grep -q "release/omega-gatewayd" .github/workflows/release.yml \
+  && grep -q "'omega-gatewayd'" .github/workflows/release.yml \
+  && grep -q '\$tmp/omega-gatewayd' install.sh; then
+  ok "omega-gateway daemon shipped in source + prebuilt lanes"
 else
-  bad "omega-gateway daemon not fully shipped/wired (unit file / workspace member / install.sh wiring)"
+  bad "omega-gateway daemon missing from source/prebuilt/install wiring"
+fi
+
+# The configured runtime default and fresh-install payload must agree.
+if grep -q 'default_agent_command().*codex\|agent_command = "codex"' config/default.toml \
+  && grep -q 'omega" install codex' install.sh; then
+  ok "fresh install provisions the default Codex runtime"
+else
+  bad "Codex is the default but install.sh does not provision it"
+fi
+
+# Provider template is non-secret, installed owner-only, and visible on a fresh
+# box instead of materializing only after the first UI mutation.
+if [ -f config/providers.default.toml ] \
+  && grep -q 'config/providers.default.toml' install.sh \
+  && grep -q 'chmod 600 "\$OMEGA_DIR/providers.toml"' install.sh; then
+  ok "providers.toml template shipped + installed owner-only"
+else
+  bad "provider config template missing or not installed owner-only"
+fi
+
+# Reproducible Rust version: CI, rust-toolchain.toml, and source installer must
+# name the same compiler floor.
+if grep -q 'channel = "1.97.1"' rust-toolchain.toml \
+  && grep -q 'rust_required="1.97.1"' install.sh \
+  && grep -q 'toolchain: 1.97.1' .github/workflows/ci.yml; then
+  ok "Rust toolchain pinned consistently (1.97.1)"
+else
+  bad "Rust toolchain pin drift between CI, installer, and rust-toolchain.toml"
 fi
 
 # ── OS suite parity: every INTEGRATED OS (a payload beyond its scaffold) must

@@ -435,7 +435,7 @@ fn agent_version_check(agent: crate::agents::Agent) -> Check {
         Check::fail(
             &name,
             format!(
-                "{version} is older than supported minimum {minimum}; update/reinstall {}",
+                "{version} is older than supported minimum {minimum}; run: omega install {} --force",
                 agent.name()
             ),
         )

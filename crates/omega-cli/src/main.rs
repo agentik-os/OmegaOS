@@ -145,6 +145,9 @@ enum Commands {
         /// Don't actually run the installer — just print the command
         #[arg(long)]
         dry_run: bool,
+        /// Run the upstream installer even when the binary already exists
+        #[arg(long, visible_alias = "upgrade")]
+        force: bool,
     },
 
     /// Open the read-only AISB Telegram conversation viewer.
@@ -1035,7 +1038,11 @@ async fn main() -> Result<()> {
         Some(Commands::Projects { json }) => cmd_projects(json),
         Some(Commands::Marketing(action)) => cmd_marketing(action),
         Some(Commands::TrustDir { dir }) => cmd_trust_dir(dir.as_deref()),
-        Some(Commands::Install { agent, dry_run }) => cmd_install(&agent, dry_run),
+        Some(Commands::Install {
+            agent,
+            dry_run,
+            force,
+        }) => cmd_install(&agent, dry_run, force),
         Some(Commands::AisbView) => cmd_aisb_view().await,
         Some(Commands::Config { action }) => cmd_config(action),
         // Two features, one command word. A bare `omega monitor` is the
@@ -3818,7 +3825,7 @@ bind-key z display-popup -E -w 100% -h 100% "omega menu"
     Ok(())
 }
 
-fn cmd_install(agent_name: &str, dry_run: bool) -> Result<()> {
+fn cmd_install(agent_name: &str, dry_run: bool, force: bool) -> Result<()> {
     let agent = omega_core::agents::Agent::from_name(agent_name)
         .ok_or_else(|| anyhow::anyhow!("Unknown agent: {}", agent_name))?;
 
@@ -3829,9 +3836,11 @@ fn cmd_install(agent_name: &str, dry_run: bool) -> Result<()> {
         )
     })?;
 
-    if agent.is_available() && !dry_run {
+    if agent.is_available() && !dry_run && !force {
         println!("[+] {} is already installed.", agent.display_name());
-        println!("  Re-run with `--dry-run` to see the install command anyway.");
+        println!(
+            "  Re-run with `--force` to update/reinstall, or `--dry-run` to inspect the command."
+        );
         return Ok(());
     }
 
