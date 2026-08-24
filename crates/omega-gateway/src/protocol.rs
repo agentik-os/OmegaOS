@@ -1150,6 +1150,7 @@ pub struct CodexConfigEntry {
     pub model: String,
     pub api_key_set: bool,
     pub base_url: String,
+    pub bypass_hook_trust: bool,
 }
 
 /// Mirrors `omega_core::providers::GeminiConfig`, `api_key` redacted.

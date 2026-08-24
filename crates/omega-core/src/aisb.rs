@@ -16,7 +16,8 @@ pub const MASTER_SESSION_NAME: &str = "aisb-master";
 /// The session is a PURE READ-ONLY VIEWER: it `tail -F`s the conversation log
 /// the brain stream writes, so the user can WATCH the live Telegram exchange
 /// in the TUI. It is NOT the brain and NOT interactive (the brain is the
-/// Telegram bot's own SDK subprocess — see `claude_stream.rs`).
+/// Telegram bot's own headless subprocess — see
+/// `omega-gateway/src/chat_driver.rs` and `telegram-bot/omega-tg-bot.ts`).
 ///
 /// Returns true if a new session was created, false if it already existed.
 pub async fn ensure_viewer(mgr: &SessionManager, working_dir: &str) -> Result<bool> {
@@ -26,7 +27,8 @@ pub async fn ensure_viewer(mgr: &SessionManager, working_dir: &str) -> Result<bo
     }
 
     // NEW MODEL (2026-05-28): the Telegram bot owns its OWN persistent
-    // Claude SDK subprocess (claude_stream.rs) with full VPS access — that
+    // Claude headless subprocess (gateway chat driver / Bun bot) with full VPS
+    // access — that
     // is the brain. The aisb-master rmux session is now a LIVE VIEWER that
     // tails the conversation log the bridge writes, so the user can WATCH
     // the Telegram chat stream in the TUI. It is no longer an interactive

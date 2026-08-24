@@ -17,6 +17,29 @@
 use std::path::Path;
 use toml_edit::{value, DocumentMut, Item, Table};
 
+fn config_path() -> std::io::Result<std::path::PathBuf> {
+    let home = dirs::home_dir()
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "no home dir"))?;
+    let codex_home = std::env::var("CODEX_HOME")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| home.join(".codex"));
+    Ok(codex_home.join("config.toml"))
+}
+
+fn write_config_atomic(cfg_path: &Path, doc: &DocumentMut, purpose: &str) -> std::io::Result<()> {
+    if let Some(parent) = cfg_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let tmp = cfg_path.with_extension(format!("toml.{purpose}-{}", std::process::id()));
+    std::fs::write(&tmp, doc.to_string())?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600));
+    }
+    std::fs::rename(&tmp, cfg_path)
+}
+
 /// Mark `dir` as trusted in `~/.codex/config.toml` (atomic temp+rename).
 ///
 /// Returns `Ok(true)` if the file was updated, `Ok(false)` if the folder was
@@ -24,12 +47,7 @@ use toml_edit::{value, DocumentMut, Item, Table};
 /// the file untouched — the worst case is the prompt showing once, never a
 /// clobbered Codex config.
 pub fn trust_dir(dir: &Path) -> std::io::Result<bool> {
-    let home = dirs::home_dir()
-        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "no home dir"))?;
-    let codex_home = std::env::var("CODEX_HOME")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|_| home.join(".codex"));
-    let cfg_path = codex_home.join("config.toml");
+    let cfg_path = config_path()?;
 
     let mut doc: DocumentMut = if cfg_path.exists() {
         std::fs::read_to_string(&cfg_path)?
@@ -68,19 +86,36 @@ pub fn trust_dir(dir: &Path) -> std::io::Result<bool> {
     }
     entry["trust_level"] = value("trusted");
 
-    if let Some(parent) = cfg_path.parent() {
-        std::fs::create_dir_all(parent)?;
+    // Atomic write: the Codex app never reads a torn config.
+    write_config_atomic(&cfg_path, &doc, "trust")?;
+    Ok(true)
+}
+
+fn migrate_retired_approval_policy_in(doc: &mut DocumentMut) -> bool {
+    if doc.get("approval_policy").and_then(Item::as_str) != Some("untrusted") {
+        return false;
     }
-    // Atomic write: temp file in the same dir + rename, so the Codex app never
-    // reads a torn config and a crash never truncates the real one.
-    let tmp = cfg_path.with_extension(format!("toml.trust-{}", std::process::id()));
-    std::fs::write(&tmp, doc.to_string())?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600));
+    // Codex 0.149 removed this public value and refuses to start while it is
+    // present. `on-request` is the upstream migration and keeps an explicit
+    // approval boundary instead of silently deleting the setting.
+    doc["approval_policy"] = value("on-request");
+    true
+}
+
+/// Migrate the approval policy removed by Codex 0.149 without round-tripping
+/// or disturbing any unrelated config owned by Codex/plugins.
+pub fn migrate_retired_approval_policy() -> std::io::Result<bool> {
+    let cfg_path = config_path()?;
+    if !cfg_path.exists() {
+        return Ok(false);
     }
-    std::fs::rename(&tmp, &cfg_path)?;
+    let mut doc: DocumentMut = std::fs::read_to_string(&cfg_path)?
+        .parse()
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+    if !migrate_retired_approval_policy_in(&mut doc) {
+        return Ok(false);
+    }
+    write_config_atomic(&cfg_path, &doc, "approval-policy")?;
     Ok(true)
 }
 
@@ -115,6 +150,7 @@ pub fn is_chatgpt_session() -> bool {
 
 #[cfg(test)]
 mod tests {
+    use super::migrate_retired_approval_policy_in;
     use toml_edit::{value, DocumentMut, Item, Table};
 
     /// The edit must add the trust entry WITHOUT disturbing the MCP servers,
@@ -159,5 +195,26 @@ mod tests {
             Some("trusted")
         );
         assert!(!out.contains("untrusted"));
+    }
+
+    #[test]
+    fn migrates_only_the_retired_top_level_approval_policy() {
+        let mut doc: DocumentMut = r#"
+approval_policy = "untrusted"
+model = "gpt-5.6"
+
+[projects."/tmp/project"]
+trust_level = "untrusted"
+"#
+        .parse()
+        .unwrap();
+        assert!(migrate_retired_approval_policy_in(&mut doc));
+        assert_eq!(doc["approval_policy"].as_str(), Some("on-request"));
+        assert_eq!(doc["model"].as_str(), Some("gpt-5.6"));
+        assert_eq!(
+            doc["projects"]["/tmp/project"]["trust_level"].as_str(),
+            Some("untrusted")
+        );
+        assert!(!migrate_retired_approval_policy_in(&mut doc));
     }
 }

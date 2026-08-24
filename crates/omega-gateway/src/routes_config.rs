@@ -94,6 +94,7 @@ fn to_response(cfg: &ProvidersConfig) -> ConfigResponse {
             model: cfg.codex.model.clone(),
             api_key_set: !cfg.codex.api_key.is_empty(),
             base_url: cfg.codex.base_url.clone(),
+            bypass_hook_trust: cfg.codex.bypass_hook_trust,
         },
         gemini: GeminiConfigEntry {
             model: cfg.gemini.model.clone(),
@@ -202,6 +203,11 @@ fn apply_config_value(cfg: &mut ProvidersConfig, key: &str, value: &str) -> Resu
         ("codex", "model") => cfg.codex.model = value.to_string(),
         ("codex", "api_key") => cfg.codex.api_key = value.to_string(),
         ("codex", "base_url") => cfg.codex.base_url = value.to_string(),
+        ("codex", "bypass_hook_trust") => {
+            cfg.codex.bypass_hook_trust = value
+                .parse()
+                .map_err(|_| "bypass_hook_trust must be 'true' or 'false'".to_string())?;
+        }
         ("gemini", "model") => cfg.gemini.model = value.to_string(),
         ("gemini", "api_key") => cfg.gemini.api_key = value.to_string(),
         ("antigravity", "model") => cfg.antigravity.model = value.to_string(),

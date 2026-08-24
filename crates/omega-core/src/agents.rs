@@ -89,7 +89,8 @@ pub struct LaunchOptions {
     // These all keep the TTY attachable (rmux pane). Emitted ONLY when
     // set, in the Agent::Claude arm. Headless-only flags (stream-json /
     // --print / --input-format / --include-partial-messages) are NOT here —
-    // they live on Lane B (claude_stream.rs) where there is no human attach.
+    // they live on Lane B (omega-gateway/chat_driver.rs) where there is no
+    // human attach.
     /// `--session-id <uuid>` — deterministic session id for resume/dedupe.
     /// Must be a valid UUID; we generate+persist one per oracle in ~/.omega/state.
     pub session_id: Option<String>,
@@ -291,10 +292,16 @@ impl Agent {
             }
             // Keep ~/.gemini/antigravity-cli and keyring credentials intact.
             Agent::Antigravity => Some("rm -f \"$(command -v agy)\""),
-            Agent::Pi => Some("rm -f $(which pi) && rm -rf ~/.pi"),
+            // Remove only the package; preserve native auth/config/session data.
+            Agent::Pi => Some(
+                "npm uninstall -g --prefix \"$HOME/.npm-global\" @earendil-works/pi-coding-agent",
+            ),
             // Shares the Pi binary; removing it here would break Pi sessions.
             Agent::OpenRouter => None,
-            Agent::Hermes => Some("rm -f $(which hermes) && rm -rf ~/.hermes"),
+            // Upstream uninstaller handles venv/FHS binaries and gateway
+            // services while preserving ~/.hermes unless the user requests a
+            // full wipe inside Hermes itself.
+            Agent::Hermes => Some("hermes uninstall"),
             // GLM shares the Claude Code binary — there is nothing GLM-specific to
             // uninstall. Removing it would wrongly delete the user's Claude Code.
             Agent::Glm => None,
@@ -368,7 +375,16 @@ impl Agent {
                     pick(&["OPENAI_API_KEY", "OPENAI_BASE_URL"])
                 }
             }
-            Agent::Gemini => pick(&["GOOGLE_API_KEY", "GEMINI_API_KEY"]),
+            // A lingering API key environment variable forces Gemini CLI away
+            // from its cached OAuth account. Protect native OAuth the same way
+            // Codex protects ChatGPT login from OPENAI_API_KEY overrides.
+            Agent::Gemini => {
+                if gemini_has_native_oauth() {
+                    Vec::new()
+                } else {
+                    pick(&["GOOGLE_API_KEY", "GEMINI_API_KEY"])
+                }
+            }
             // Antigravity authenticates through its native keyring / Google
             // sign-in flow. Never leak Gemini API-key state into that session.
             Agent::Antigravity => Vec::new(),
@@ -632,13 +648,17 @@ impl Agent {
                 // Codex >=0.147 makes --approve-for-me a complete permission
                 // preset: it sets workspace-write + on-request itself and
                 // explicitly CONFLICTS with a separate --sandbox flag. Omega
-                // owns the hooks it installs, so detached panes also bypass the
-                // otherwise-blocking one-time hook review for this invocation.
+                // installs known hooks. Detached panes bypass the otherwise
+                // blocking review by default; operators with additional
+                // untrusted hooks can disable that explicit provider setting.
                 let mut args = format!(
-                    "{}{}COLORFGBG='15;0' codex --strict-config --approve-for-me \
-                     --dangerously-bypass-hook-trust --no-alt-screen",
+                    "{}{}COLORFGBG='15;0' codex --strict-config --approve-for-me",
                     env_prefix, trust_prefix
                 );
+                if providers.codex.bypass_hook_trust {
+                    args.push_str(" --dangerously-bypass-hook-trust");
+                }
+                args.push_str(" --no-alt-screen");
                 if let Some(model) = nonempty(&providers.codex.model) {
                     args.push_str(&format!(" --model {}", shell_quote(model)));
                 }
@@ -1048,6 +1068,32 @@ fn claude_available(home: &str) -> bool {
         || std::path::Path::new(&format!("{}/.npm-global/bin/claude", home)).exists()
 }
 
+fn gemini_settings_select_oauth(raw: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(raw)
+        .ok()
+        .and_then(|value| {
+            value
+                .pointer("/security/auth/selectedType")
+                .or_else(|| value.get("selectedAuthType"))
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_ascii_lowercase)
+        })
+        .is_some_and(|selected| selected.starts_with("oauth") || selected == "login-with-google")
+}
+
+fn gemini_has_native_oauth() -> bool {
+    let Some(home) = dirs::home_dir() else {
+        return false;
+    };
+    let gemini_home = home.join(".gemini");
+    if gemini_home.join("oauth_creds.json").is_file() {
+        return true;
+    }
+    std::fs::read_to_string(gemini_home.join("settings.json"))
+        .ok()
+        .is_some_and(|raw| gemini_settings_select_oauth(&raw))
+}
+
 fn shell_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
@@ -1060,6 +1106,19 @@ mod tests {
         agent
             .launch_command_with_providers(prompt, opts, &ProvidersConfig::default())
             .unwrap()
+    }
+
+    #[test]
+    fn gemini_auth_selection_distinguishes_oauth_from_api_keys() {
+        assert!(gemini_settings_select_oauth(
+            r#"{"security":{"auth":{"selectedType":"oauth-personal"}}}"#
+        ));
+        assert!(gemini_settings_select_oauth(
+            r#"{"selectedAuthType":"login-with-google"}"#
+        ));
+        assert!(!gemini_settings_select_oauth(
+            r#"{"security":{"auth":{"selectedType":"gemini-api-key"}}}"#
+        ));
     }
 
     // The worker/oracle identity contract: when LaunchOptions.session_name is

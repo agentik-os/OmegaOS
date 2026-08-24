@@ -57,10 +57,10 @@ pub const V3_ACCEPTANCE_PENDING: &str =
 
 pub fn provider_family_for_agent(agent: Agent) -> crate::rules::ProviderFamily {
     match agent {
-        Agent::Claude => crate::rules::ProviderFamily::Claude,
+        Agent::Claude | Agent::Glm => crate::rules::ProviderFamily::Claude,
         Agent::Codex => crate::rules::ProviderFamily::Codex,
         Agent::Gemini | Agent::Antigravity => crate::rules::ProviderFamily::Gemini,
-        Agent::Pi | Agent::OpenRouter | Agent::Hermes | Agent::Glm | Agent::Kimi | Agent::Shell => {
+        Agent::Pi | Agent::OpenRouter | Agent::Hermes | Agent::Kimi | Agent::Shell => {
             crate::rules::ProviderFamily::Other
         }
     }

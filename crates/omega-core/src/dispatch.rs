@@ -1500,9 +1500,10 @@ impl Dispatcher {
             // an interactive pane waiting for the operator to accept the plan, the exact
             // friction the operator rejects). The "plan" is a working method enforced by
             // the oracle doctrine (build the todo list, finish 100%), NOT a permission
-            // gate. Leave permission_mode unset → the base command keeps
-            // --dangerously-skip-permissions, so the oracle plans-and-proceeds fully
-            // autonomously across every complexity tier.
+            // gate. Leave permission_mode unset → the base command selects
+            // Claude Code's native `auto` mode, which reviews actions without
+            // waiting for a human. Full bypass remains an explicit provider
+            // opt-in only.
             opts.permission_mode = None;
             // --brief enables the SendUserMessage agent→user tool so the oracle can
             // push a structured note to the human (oracle-only; workers stay silent).
@@ -1759,10 +1760,10 @@ impl Dispatcher {
             // passing it alongside a fresh --session-id was a silent no-op. The
             // crashed oracle's context is rebuilt from the mission brief +
             // on-disk state instead.
-            // A resurrected oracle is AUTONOMOUS exactly like a fresh dispatch
-            // (None → --dangerously-skip-permissions): never gate on the operator.
-            // ("auto" used to prompt on risky ops — the exact friction the operator
-            // rejects: every OmegaOS session must run fully bypass-permissions.)
+            // A resurrected oracle uses the same non-blocking native `auto`
+            // policy as a fresh dispatch. Full permission bypass remains an
+            // explicit provider setting, never an implicit resurrection side
+            // effect.
             opts.permission_mode = None;
             opts.exclude_dynamic_prompt_sections = true;
             opts.session_id = Some(resolve_session_id(

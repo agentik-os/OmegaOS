@@ -2134,9 +2134,9 @@ async fn run_tui_loop(
                                     continue;
                                 }
                             }
-                            // The optional viewer auto-respawns. The Telegram bridge is unaffected
-                            // (its persistent claude_stream subprocess handles
-                            // chat independently of the rmux session).
+                            // The optional viewer auto-respawns. The standalone
+                            // Bun Telegram service handles chat independently
+                            // of this rmux session.
                             if is_master && cfg.auto_spawn_master {
                                 let cwd = std::env::current_dir()
                                     .ok()
@@ -4993,6 +4993,7 @@ fn get_config_value(cfg: &omega_core::providers::ProvidersConfig, key: &str) -> 
         ("codex", "model") => cfg.codex.model.clone(),
         ("codex", "api_key") => redacted_secret(&cfg.codex.api_key),
         ("codex", "base_url") => cfg.codex.base_url.clone(),
+        ("codex", "bypass_hook_trust") => cfg.codex.bypass_hook_trust.to_string(),
         ("gemini", "model") => cfg.gemini.model.clone(),
         ("gemini", "api_key") => redacted_secret(&cfg.gemini.api_key),
         ("antigravity", "model") => cfg.antigravity.model.clone(),
@@ -5040,6 +5041,11 @@ fn set_config_value(
         ("codex", "model") => cfg.codex.model = value.to_string(),
         ("codex", "api_key") => cfg.codex.api_key = value.to_string(),
         ("codex", "base_url") => cfg.codex.base_url = value.to_string(),
+        ("codex", "bypass_hook_trust") => {
+            cfg.codex.bypass_hook_trust = value
+                .parse::<bool>()
+                .with_context(|| format!("invalid boolean {value:?}; expected true or false"))?;
+        }
         ("gemini", "model") => cfg.gemini.model = value.to_string(),
         ("gemini", "api_key") => cfg.gemini.api_key = value.to_string(),
         ("antigravity", "model") => cfg.antigravity.model = value.to_string(),
@@ -16182,6 +16188,16 @@ async fn cmd_reconcile(report_only: bool) -> Result<()> {
         {
             Ok(()) => println!("    [+] Claude credential topology reconciled"),
             Err(e) => needs_human.push(format!("could not reconcile Claude credentials: {e}")),
+        }
+
+        match omega_core::codex_trust::migrate_retired_approval_policy() {
+            Ok(true) => {
+                println!("    [+] Codex retired approval_policy migrated to on-request")
+            }
+            Ok(false) => {}
+            Err(e) => needs_human.push(format!(
+                "could not migrate Codex approval_policy removed in 0.149: {e}"
+            )),
         }
 
         // Whatever installed this binary may not have recorded which commit it

@@ -26,6 +26,11 @@ Pi/Hermes sessions. Account-scoped products may resolve an alias to a different
 eligible model; use the provider's own model-list command to verify the actual
 selection.
 
+Omega-managed Codex sessions default `codex.bypass_hook_trust = true` so
+installer-managed hooks cannot block a detached pane. This applies to every
+enabled Codex hook; set it to `false` if you keep third-party hooks that must be
+reviewed interactively.
+
 ## Google migration
 
 Google stopped serving Gemini CLI requests for free, AI Pro, and AI Ultra

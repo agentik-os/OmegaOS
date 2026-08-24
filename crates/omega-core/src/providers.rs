@@ -141,7 +141,7 @@ pub struct ClaudeConfig {
     pub dangerously_skip_permissions: bool,
 }
 
-#[derive(Clone, Default, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct CodexConfig {
     #[serde(default)]
@@ -154,6 +154,22 @@ pub struct CodexConfig {
     /// OmegaOS's state/lock directories. Values must be absolute paths.
     #[serde(default)]
     pub additional_writable_dirs: Vec<String>,
+    /// Run enabled hooks without persisted trust for Omega-managed detached
+    /// sessions. This also trusts other enabled hooks, so operators can disable
+    /// it when they prefer Codex's interactive review.
+    pub bypass_hook_trust: bool,
+}
+
+impl Default for CodexConfig {
+    fn default() -> Self {
+        Self {
+            model: String::new(),
+            api_key: String::new(),
+            base_url: String::new(),
+            additional_writable_dirs: Vec::new(),
+            bypass_hook_trust: true,
+        }
+    }
 }
 
 #[derive(Clone, Default, Serialize, Deserialize)]
@@ -254,7 +270,7 @@ impl_redacted_provider_debug!(
 impl_redacted_provider_debug!(
     CodexConfig,
     "CodexConfig",
-    [model, additional_writable_dirs]
+    [model, additional_writable_dirs, bypass_hook_trust]
 );
 impl_redacted_provider_debug!(GeminiConfig, "GeminiConfig", [model]);
 impl fmt::Debug for AntigravityConfig {

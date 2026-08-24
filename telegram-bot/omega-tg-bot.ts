@@ -1427,8 +1427,8 @@ async function runCodex(text: string, systemPrompt: string, addDir: string, who:
   const task = systemPrompt.trim() ? `${systemPrompt.trim()}\n\n---\n\n${text}` : text;
   return runAgentProc(
     codex,
-    ["exec", "--skip-git-repo-check", "--dangerously-bypass-approvals-and-sandbox", task],
-    who, cwd || addDir, timeoutMs, "codex",
+    ["exec", "--skip-git-repo-check", "--dangerously-bypass-approvals-and-sandbox", "--dangerously-bypass-hook-trust", "-"],
+    who, cwd || addDir, timeoutMs, "codex", task,
   );
 }
 
@@ -1436,11 +1436,15 @@ async function runCodex(text: string, systemPrompt: string, addDir: string, who:
 // implementation so Claude and Codex cannot drift apart on timeout handling,
 // kill escalation or empty-output diagnostics. `label` names the binary in the
 // operator-facing messages.
-async function runAgentProc(bin: string, argv: string[], who: string, cwd: string | undefined, timeoutMs: number, label: string): Promise<string> {
+async function runAgentProc(bin: string, argv: string[], who: string, cwd: string | undefined, timeoutMs: number, label: string, stdinText?: string): Promise<string> {
   try {
     const proc = Bun.spawn([bin, ...argv], {
-      cwd, env: { ...process.env, OMEGA_DIR }, stdin: "ignore", stdout: "pipe", stderr: "pipe",
+      cwd, env: { ...process.env, OMEGA_DIR }, stdin: stdinText === undefined ? "ignore" : "pipe", stdout: "pipe", stderr: "pipe",
     });
+    if (stdinText !== undefined) {
+      proc.stdin.write(stdinText);
+      proc.stdin.end();
+    }
     // Race the run against the watchdog instead of awaiting the streams after a
     // kill: a SIGTERM'd claude can leave a grandchild holding the stdout pipe,
     // which would block the drain (and the operator's reply) until IT exits.

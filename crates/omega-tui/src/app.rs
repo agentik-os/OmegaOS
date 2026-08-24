@@ -590,8 +590,8 @@ fn effort_field(config_key: &str, current: &str) -> SettingsField {
 
 /// Build a model field for a provider. When the provider has a known model
 /// list (`providers::models_for`), this is an arrow-key Select (NO typing);
-/// otherwise it falls back to a free-text field so providers without a curated
-/// list (e.g. pi/hermes) still work.
+/// otherwise it falls back to a free-text field for account-scoped catalogs
+/// such as Antigravity.
 fn model_field(provider: &str, config_key: &str, current: &str) -> SettingsField {
     let opts: Vec<String> = omega_core::providers::ProvidersConfig::models_for(provider)
         .iter()
@@ -861,6 +861,11 @@ pub fn fields_for_section(
                 config_key: "codex.base_url".to_string(),
                 current_value: c.base_url.clone(),
                 masked: false,
+            });
+            out.push(SettingsField::Toggle {
+                label: "Bypass hook trust in Omega sessions".to_string(),
+                config_key: "codex.bypass_hook_trust".to_string(),
+                current: c.bypass_hook_trust,
             });
             out.extend(install_actions_for(Agent::Codex));
         }

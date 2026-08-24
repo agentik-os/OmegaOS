@@ -211,8 +211,8 @@ fn rmux_socket_path() -> Option<std::path::PathBuf> {
     None
 }
 
-/// Claude Code hooks: scripts present under `~/.omega/hooks` AND registered in
-/// `~/.claude/settings.json` (PostToolUse track-tool-use + Stop stop-verify).
+/// Claude/Codex hooks: scripts present under `~/.omega/hooks` and registered
+/// on both provider surfaces.
 fn check_hooks(config: &OmegaConfig) -> Check {
     let hooks_dir = config
         .state_dir
@@ -228,6 +228,7 @@ fn check_hooks(config: &OmegaConfig) -> Check {
         ("omega-session-contract.sh", "omega-session-contract"),
         ("omega-prompt-scan.sh", "omega-prompt-scan"),
         ("omega-plan-mirror.sh", "omega-plan-mirror"),
+        ("omega-audit-guard.sh", "omega-audit-guard"),
         ("omega_plan_state.py", ""), // shared parser, not registered anywhere
         ("track-tool-use.sh", "track-tool-use"),
     ];
@@ -236,14 +237,22 @@ fn check_hooks(config: &OmegaConfig) -> Check {
         .map(|h| h.join(".claude/settings.json"))
         .and_then(|p| std::fs::read_to_string(p).ok())
         .unwrap_or_default();
+    let codex_hooks = dirs::home_dir()
+        .map(|home| home.join(".codex/hooks.json"))
+        .and_then(|path| std::fs::read_to_string(path).ok())
+        .unwrap_or_default();
 
     let mut missing_files = Vec::new();
-    let mut unregistered = Vec::new();
+    let mut unregistered_claude = Vec::new();
+    let mut unregistered_codex = Vec::new();
     for (file, marker) in REQUIRED {
         if !hooks_dir.join(file).exists() {
             missing_files.push(*file);
         } else if !marker.is_empty() && !settings.contains(marker) {
-            unregistered.push(*file);
+            unregistered_claude.push(*file);
+        }
+        if !marker.is_empty() && hooks_dir.join(file).exists() && !codex_hooks.contains(marker) {
+            unregistered_codex.push(*file);
         }
     }
 
@@ -257,19 +266,20 @@ fn check_hooks(config: &OmegaConfig) -> Check {
             ),
         );
     }
-    if !unregistered.is_empty() {
+    if !unregistered_claude.is_empty() || !unregistered_codex.is_empty() {
         return Check::warn(
             "hooks",
             format!(
-                "present but NOT registered in settings.json: {} (re-run install.sh; needs jq)",
-                unregistered.join(", ")
+                "present but not registered (Claude: {}; Codex: {}) — re-run install.sh; needs jq",
+                unregistered_claude.join(", "),
+                unregistered_codex.join(", ")
             ),
         );
     }
     Check::ok(
         "hooks",
         format!(
-            "{} hooks present + registered (finish-guard armed)",
+            "{} hooks present + registered for Claude and Codex (finish-guard armed)",
             REQUIRED.len()
         ),
     )
@@ -303,12 +313,16 @@ fn effective_containment(
                 )
             }
         }
-        Agent::Codex => Check::ok(
+        Agent::Codex if providers.codex.bypass_hook_trust => Check::ok(
             "agent containment",
             format!(
                 "Codex: strict config, approve-for-me preset (workspace-write + auto-review), hook-trust bypass; state+locks and {} configured extra writable root(s)",
                 providers.codex.additional_writable_dirs.len()
             ),
+        ),
+        Agent::Codex => Check::warn(
+            "agent containment",
+            "Codex hook-trust bypass disabled; a new/changed hook can block a detached pane",
         ),
         Agent::Glm => {
             if providers.glm.dangerously_skip_permissions {
