@@ -1099,7 +1099,7 @@ fn shell_quote(s: &str) -> String {
 /// before the agent binary so a crash cannot fall through to bash.
 /// Agent exit = session death. Never append `; exec bash` after the agent.
 fn pane_bash(inner: &str) -> String {
-    debug_assert!(
+    assert!(
         !inner.contains("; exec bash"),
         "agent launch must not fall through to bash: {inner}"
     );

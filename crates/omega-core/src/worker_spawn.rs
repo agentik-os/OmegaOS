@@ -83,6 +83,13 @@ pub fn resolve_worker_working_dir(
     if !canon.is_dir() {
         bail!("worker working_dir {} is not a directory", canon.display());
     }
+    if dir_flag.is_none() && home_dir.is_some_and(|home| same_canonical(&canon, home)) {
+        bail!(
+            "worker working_dir resolved to $HOME ({}). Pass --dir <project> or register \
+             the project. Workers must not inherit the rmux daemon / parent home directory.",
+            canon.display()
+        );
+    }
     Ok(canon)
 }
 
@@ -252,6 +259,17 @@ mod tests {
         )
         .unwrap();
         assert_eq!(got, other.path().canonicalize().unwrap());
+    }
+
+    #[test]
+    fn home_process_cwd_without_project_is_refused() {
+        let home = tempfile::TempDir::new().unwrap();
+        let err = resolve_worker_working_dir(None, None, None, home.path(), Some(home.path()))
+            .expect_err("a worker must not start in $HOME without --dir or a project");
+        assert!(
+            err.to_string().contains("$HOME"),
+            "refuse must name $HOME: {err}"
+        );
     }
 
     #[test]

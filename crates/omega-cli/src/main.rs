@@ -454,7 +454,8 @@ enum Commands {
         /// Files owned by this worker (scope-claim)
         #[arg(long, value_delimiter = ',')]
         files: Option<Vec<String>>,
-        /// Bypass the prompt-completeness gate (downgrade reject to a warning)
+        /// Accepted for compatibility. Does not skip R-RUBRIC (Done Criteria +
+        /// Verify Command must still be present).
         #[arg(long)]
         force: bool,
         /// Isolate the worker in its own git worktree (independent HEAD/working-tree
@@ -8499,21 +8500,11 @@ async fn cmd_spawn_worker(
             (true, false) => "Verify Command",
             (true, true) => unreachable!(),
         };
-        if force {
-            tracing::warn!(
-                "worker prompt missing {} — --force set, dispatching anyway (quality gate may fail)",
-                missing
-            );
-            eprintln!(
-                "[!] worker prompt missing {} — --force set, dispatching anyway (quality gate may fail)",
-                missing
-            );
-        } else {
-            anyhow::bail!(
-                "worker prompt missing {missing}. Add explicit \"Done Criteria:\" and a \"Verify Command:\" \
-                 to the prompt so the worker has measurable success criteria (rule R-RUBRIC), or pass --force to override."
-            );
-        }
+        anyhow::bail!(
+            "worker prompt missing {missing}. Add explicit \"Done Criteria:\" and a \"Verify Command:\" \
+             when you write the prompt (rule R-RUBRIC). --force does not skip this{}.",
+            if force { " (ignored)" } else { "" }
+        );
     }
 
     let agent = match agent_override {

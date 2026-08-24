@@ -65,8 +65,8 @@ pub fn worker_prompt_has_rubric(prompt: &str) -> bool {
 /// Ensure an oracle-authored brief includes the two R-RUBRIC fields.
 ///
 /// Human `omega spawn-worker` from a shell still refuses a missing rubric
-/// (unless `--force`). Oracle-originated briefs get the fields appended so a
-/// worker is not blocked on prompt wording.
+/// (`--force` does not skip it). Oracle-originated briefs get the fields
+/// appended so a worker is not blocked on prompt wording.
 pub fn ensure_oracle_worker_rubric(prompt: &str, task: &str) -> String {
     if worker_prompt_has_rubric(prompt) {
         return prompt.to_string();
@@ -106,6 +106,10 @@ mod tests {
         assert!(block.contains("Verify Command"));
         assert!(block.contains("spawn-worker"));
         assert!(block.contains("never dispatch"));
+        assert!(
+            block.contains("`--force`"),
+            "oracle lab block must say --force is not the R-RUBRIC path: {block}"
+        );
     }
 
     #[test]
