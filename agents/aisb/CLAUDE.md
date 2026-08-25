@@ -2,8 +2,8 @@
 
 > *"Free your mind."* — Morpheus
 >
-> 14 Matrix-themed agents incl. the Pythia watcher and the Council judge panel — ORACLE-led autonomous orchestration,
-> now fully integrated with Omega's R-18 → R-35 outcome-driven primitives.
+> 15 Matrix-themed agents incl. the Pythia watcher and the Council judge panel — ORACLE-led autonomous orchestration,
+> bound to the current named rules (R-RUBRIC, R-VERIFY, R-CITE, R-GRAPH, R-BUDGET). Retired R-18→R-35 IDs are dead.
 > v7.0: every agent owns specific Omega rules, tightened model assignments
 > for Opus 4.16 / Sonnet 4.6 / Haiku 4.5, structured outputs everywhere.
 
@@ -24,11 +24,11 @@
 | Change | Why |
 |---|---|
 | Model migration to claude-opus-4-8 / sonnet-4-6 / haiku-4-5 | Opus 4.16 era — May 2026 |
-| Each agent owns specific Omega R-XX rules | No more ambiguity about "who runs the audit chain" |
-| 13th agent: Pythia (read-only docs watcher) | Tracks Anthropic's Claude Code evolution weekly |
-| Structured outputs (R-34) for all grader agents | Eliminates silent JSON-parse failures |
-| Citations enforced (R-35) for adversarial passes | Popper rigor: every falsification cites the artifact |
-| Skip list documented (`docs/SKIPPED-RULES.md`) | R-38, R-39, R-40 explicitly NOT applicable to Omega |
+| Each agent owns specific named Omega rules | No more ambiguity about "who runs the audit chain" |
+| 15th agent: Trinity (white-hat security) | In-scope pentest / AI red-team; Pythia stays the docs watcher |
+| Structured grader output (R-VERIFY) | Eliminates silent parse failures |
+| Citations enforced (R-CITE) | Every falsification cites a runtime artifact |
+| Skip list documented (`docs/SKIPPED-RULES.md`) | Deferred / never-adopt rules stay explicit |
 | Hardened Pythia contract | Read-only, never auto-applies, refuses /account /billing scope |
 
 **Compatibility:** v6.0 invocations still work (subagent_type names unchanged).
@@ -39,39 +39,34 @@ v7.0 adds R-XX ownership and updated tooling without renaming any agent.
 ## Architecture
 
 ```
-                       USER (Telegram)
+                       USER (Telegram / Atlas)
                             |
                        Project topic
                             |
                             v
                     Project ORACLE (rmux session)
-              owns R-13 close coherence, R-14 prod gate
+              owns close-coherence (L4) + ship gate
                             |
               Agent(subagent_type=...) for sub-tasks:
                             |
             +-----+----+----+----+----+-----+
             |     |    |    |    |    |     |
-        MORPHEUS NIOBE KEYMAKER SERAPH SMITH NEO
-        (R-18  (R-32 (R-26)   (R-21  (R-25 (watchdog)
-         R-33)  R-27)          R-30   R-31)
-                                R-34
-                                R-35)
+        MORPHEUS NIOBE KEYMAKER SERAPH SMITH TRINITY
+        (R-GRAPH (research) (R-RUBRIC) (R-VERIFY (lessons) (R-SEC /
+         R-SCOPE)                    R-CITE)            R-CITE)
             |
             v
         Workers (rmux sub-sessions)
-        owns scope-claim (R-16) + done.json (R-7)
+        owns R-SCOPE file claims + done.json
             |
             v
-        oracle-mark-done.sh
-        owns R-19 outcome embed + R-27 ingest +
-             R-25 lessons + R-28 cost
+        omega done <session> done_clean
             |
             v
         done.json events
             |
             v
-         LINK (webhook bridge)
-        owns R-20 HMAC delivery
+         LINK (webhook / Telegram)
             |
             v
          Telegram report → user
@@ -81,10 +76,10 @@ v7.0 adds R-XX ownership and updated tooling without renaming any agent.
 
 ```
 1. ROUTE    → ORACLE classifies intent, picks agents
-2. PLAN     → KEYMAKER builds outcome rubric + DAG (R-19, R-26)
-3. EXECUTE  → MORPHEUS dispatches workers (R-18, R-33)
-4. AUDIT    → SERAPH runs multi-grader + adversarial (R-21, R-30)
-5. LEARN    → SMITH extracts lessons + runs dreams pass (R-25, R-31)
+2. PLAN     → KEYMAKER builds outcome rubric + DAG (R-RUBRIC, R-GRAPH)
+3. EXECUTE  → MORPHEUS dispatches workers (R-GRAPH, R-SCOPE)
+4. AUDIT    → SERAPH runs multi-grader + adversarial (R-VERIFY, R-CITE)
+5. LEARN    → SMITH extracts lessons + runs dreams pass
 ```
 
 ORACLE skips steps not needed. Simple fix = step 1+3. Research = step 1 + NIOBE.
@@ -96,26 +91,27 @@ Full build with quality gate = all 5 steps.
 
 | # | Codename | subagent_type | Model | Pipeline | Owns Omega rules |
 |---|----------|---------------|-------|----------|------------------|
-| 1 | **ORACLE** | `oracle` | claude-opus-5 | Brain | R-13 close coherence, R-18 dispatch decision |
-| 2 | **MORPHEUS** | `morpheus` | claude-opus-5 | Execute | R-18 hybrid dispatch, R-33 batch dispatch, R-24 autonomous fixer |
-| 3 | **SERAPH** | `seraph` | claude-sonnet-4-6 | Audit | R-21 multi-grader, R-22 regression, R-29 confidence, R-30 adversarial, R-34 schema, R-35 citations |
-| 4 | **KEYMAKER** | `keymaker` | claude-sonnet-4-6 | Plan | R-19 rubric, R-23 deps-graph, R-26 mission DAG |
-| 5 | **NIOBE** | `niobe` | claude-sonnet-4-6 | Research | audit-selector.py, Pythia gap-analysis collaboration |
-| 6 | **SMITH** | `smith` | claude-sonnet-4-6 | Learn | R-25 lessons, R-31 dreams, R-27 registry analytics |
-| 7 | **ARCHITECT** | `architect` | claude-sonnet-4-6 | Analyze | R-XX proposal review, system design |
+| 1 | **ORACLE** | `oracle` | claude-opus-5 | Brain | Close coherence (L4), R-GRAPH dispatch decision |
+| 2 | **MORPHEUS** | `morpheus` | claude-opus-5 | Execute | R-GRAPH hybrid dispatch, R-SCOPE, autonomous fixer |
+| 3 | **SERAPH** | `seraph` | claude-sonnet-4-6 | Audit | R-VERIFY multi-grader, R-CITE, regression + adversarial |
+| 4 | **KEYMAKER** | `keymaker` | claude-sonnet-4-6 | Plan | R-RUBRIC, R-GRAPH mission DAG |
+| 5 | **NIOBE** | `niobe` | claude-sonnet-4-6 | Research | Code/web research, Pythia gap-analysis collaboration |
+| 6 | **SMITH** | `smith` | claude-sonnet-4-6 | Learn | Lessons + dreams pass, registry analytics |
+| 7 | **ARCHITECT** | `architect` | claude-sonnet-4-6 | Analyze | Rule-proposal review, system design |
 | 8 | **MEROVINGIAN** | `merovingian` | claude-haiku-4-5-20251001 | Knowledge | lessons-learned.md persistence, outcomes.db reads |
 | 9 | **NEO** | `neo` | claude-haiku-4-5-20251001 | Monitor | oracle-watchdog, oracle-progress-verifier, worker-stall-detector |
-| 10 | **ZION** | `zion` | claude-haiku-4-5-20251001 | Dashboard | R-28 cost tracking surface, R-27 registry stats |
-| 11 | **LINK** | `link` | claude-haiku-4-5-20251001 | Communicate | R-20 webhook bridge, notify-bot.sh, Telegram reports |
-| 12 | **CONSTRUCT** | `construct` | claude-haiku-4-5-20251001 | Design | R-32 skill-search BM25, audit-gather/* |
-| 13 | **PYTHIA** | (cron-only, no subagent_type) | claude-opus-5 | Watch | Weekly Anthropic docs + GitHub diff, R-XX gap analysis |
-| 14 | **COUNCIL** | `council` | claude-opus-5 | Multi-model council | R-COUNCIL: 4 Claude models -> blind peer-review -> Opus president, recorded dissent (Claude-native, no API keys) |
+| 10 | **ZION** | `zion` | claude-haiku-4-5-20251001 | Dashboard | R-BUDGET cost surface, registry stats |
+| 11 | **LINK** | `link` | claude-haiku-4-5-20251001 | Communicate | Webhook bridge, Telegram reports |
+| 12 | **CONSTRUCT** | `construct` | claude-haiku-4-5-20251001 | Design | Skill-search + audit-gather/* |
+| 13 | **PYTHIA** | (cron-only, no subagent_type) | claude-opus-5 | Watch | Weekly Anthropic docs + GitHub diff, gap analysis |
+| 14 | **COUNCIL** | `council` | claude-opus-5 | Multi-model council | R-VERIFY: 4 Claude models → blind peer-review → Opus president, recorded dissent |
+| 15 | **TRINITY** | `trinity` | claude-opus-5 | Security | R-SEC + R-CITE: in-scope pentest / AI red-team |
 
 ### Model Tiers (May 2026)
 
 | Tier | Model | Agents | Why |
 |------|-------|--------|-----|
-| **Critical** | claude-opus-5 | ORACLE, MORPHEUS, PYTHIA (analysis runs), COUNCIL | Brain + code implementation + system-evolution proposals — quality matters most |
+| **Critical** | claude-opus-5 | ORACLE, MORPHEUS, PYTHIA (analysis runs), COUNCIL, TRINITY | Brain + code implementation + security + system-evolution — quality matters most |
 | **Reasoning** | claude-sonnet-4-6 | SERAPH, KEYMAKER, NIOBE, SMITH, ARCHITECT | Analysis, planning, research, audit |
 | **Utility** | claude-haiku-4-5-20251001 | MEROVINGIAN, NEO, ZION, LINK, CONSTRUCT | Structured tasks, data formatting, simple routing |
 
@@ -153,7 +149,7 @@ The proactive-agent behaviours below are conceptual roles those patrols (and on-
 
 ### On-demand only
 
-ORACLE, MORPHEUS, SERAPH, KEYMAKER, NIOBE, ARCHITECT, MEROVINGIAN, CONSTRUCT.
+ORACLE, MORPHEUS, SERAPH, KEYMAKER, NIOBE, ARCHITECT, MEROVINGIAN, CONSTRUCT, TRINITY.
 Spawned via `Agent(subagent_type=...)` from project oracles or other agents.
 
 ---
@@ -161,24 +157,22 @@ Spawned via `Agent(subagent_type=...)` from project oracles or other agents.
 ## Telegram interaction patterns (v7.0)
 
 The Telegram bot routes to project oracles based on topic_id. Project oracles
-internally invoke AISB team agents via the `Agent` tool when needed. **There
-are NO new `/<agentname>` commands** in v7.0 — that would conflict with the
-sacred `/account` `/billing` `/push` `/prod` namespace.
+internally invoke AISB team agents via the `Agent` tool when needed. There are
+no `/<agentname>` slash commands for Matrix roles — talk through Atlas, a
+project topic, or a linked agent bot.
 
-Existing Telegram surface (untouched in v7.0):
+Published Telegram MENU (see `telegram-bot/omega-tg-bot.ts`):
 
 | Command/route | What happens |
 |---|---|
 | Topic message | Routes to project oracle (`oracle-{Project}`) |
-| DM keyword (project name) | Same routing |
-| `/dent`, `/causio`, `/loumna`, etc. | Direct project oracle dispatch |
-| `/account`, `/billing` | **PROTECTED — Multi-account auth (DO NOT touch)** |
-| `/push`, `/prod` | Ship pipeline |
-| `/aisb [task]` | Smart orchestration — ORACLE decides which agents |
-| `/aisb full [task]` | Force COMPLEX+ pipeline |
-| `/aisb status` | ZION digest |
-| `/aisb monitor` | NEO health check |
-| `/team` | TeamCreate (multi-agent split-pane) |
+| `/<project>` | Direct project oracle dispatch (dynamic, up to Telegram's 100-command cap) |
+| `/agents` | List the 15 Matrix agents; link Nova / Trinity / librarian bots |
+| `/council` | Convene the judge panel for a high-stakes call |
+| `/dispatch` | Dispatch a mission to a project oracle |
+| `/account` | Account / billing / accounts |
+| `/status` `/sessions` `/projects` `/skills` | Live ops |
+| Natural language to Atlas | Orchestration — Atlas picks the manager / oracle |
 
 When user posts in a project topic, the project oracle can:
 1. Classify intent itself (it's already a CTO-level Opus session)
@@ -201,8 +195,9 @@ project oracle, not a parallel orchestration layer. One brain (project oracle)
 | Fix Linear feedback | 8-step protocol → MORPHEUS sequential per ticket |
 | Research a topic | NIOBE (1-3 parallel) |
 | Plan implementation | KEYMAKER builds rubric + DAG |
-| Build a feature | KEYMAKER → MORPHEUS → SERAPH (R-21 multi-grader) → SMITH (R-25 lessons) |
-| Audit code | SERAPH (R-21 + R-30 + R-34 + R-35) |
+| Build a feature | KEYMAKER → MORPHEUS → SERAPH (R-VERIFY) → SMITH (lessons) |
+| Audit code | SERAPH (R-VERIFY + R-CITE) |
+| In-scope security | TRINITY (R-SEC + R-CITE) |
 | Full build | KEYMAKER → MORPHEUS → SERAPH → SMITH → MEROVINGIAN |
 | Cross-department | C-level → AISB specialists |
 | **Anthropic docs change** | PYTHIA detects → ARCHITECT reviews → ORACLE classifies SAFE_ADDITIVE / REQUIRES_REVIEW / SKIP |
@@ -211,17 +206,17 @@ project oracle, not a parallel orchestration layer. One brain (project oracle)
 
 ## Quality Architecture (v7.0 hardened)
 
-**SERAPH defaults to FAIL** — quality is earned through evidence (R-21 + R-30).
+**SERAPH defaults to FAIL** — quality is earned through evidence (R-VERIFY + R-CITE).
 
-`oracle-mark-done.sh` enforces the 6-condition quality gate before any mission
+`omega done` / the quality gate enforces these conditions before any mission
 can be marked `done_clean`:
 
-1. `outcome.final_verdict == "satisfied"` (R-19)
-2. `consensus_score >= 2` (R-21 — at least 2/3 graders satisfied)
-3. `adversarial_pass.result == "passed"` (R-30 + R-35 — Popper rigor with citations)
-4. `regressions.length == 0` (R-22 — no criterion went x → ~)
-5. `cost.alert != "EXPENSIVE"` (R-28)
-6. `ship.result in [ok, skipped]` (R-14 prod gate)
+1. `outcome.final_verdict == "satisfied"` (R-RUBRIC)
+2. `consensus_score >= 2` (R-VERIFY — at least 2/3 graders satisfied)
+3. `adversarial_pass.result == "passed"` (R-VERIFY + R-CITE — Popper rigor with citations)
+4. `regressions.length == 0` (no criterion went x → ~)
+5. `cost.alert != "EXPENSIVE"` (R-BUDGET)
+6. `ship.result in [ok, skipped]` (ship gate)
 
 If any fails → `status: pending` with reason in `pending_actions[]`.
 
@@ -232,16 +227,16 @@ If any fails → `status: pending` with reason in `pending_actions[]`.
 ```
 ~/.omega/state/memory/project/{name}/
   lessons-learned.md           # MEROVINGIAN curates, SMITH appends
-  lessons-learned.dreamed.md   # SMITH dreams pass output (R-31), review-then-apply
+  lessons-learned.dreamed.md   # SMITH dreams pass output, review-then-apply
   lessons-v{date}.md           # immutable snapshots before each dream pass
   lessons-pre-dream-{date}.md  # backup taken at --apply time
 
 ~/.omega/state/outcomes/
-  outcomes.db                  # R-27 sqlite: missions, criteria, graders, challenges
-  {oracle}.rubric.md           # R-19 outcome contract
-  {oracle}.iter-N.{grader}.json  # per-grader output (R-21)
+  outcomes.db                  # sqlite: missions, criteria, graders, challenges
+  {oracle}.rubric.md           # R-RUBRIC outcome contract
+  {oracle}.iter-N.{grader}.json  # per-grader output (R-VERIFY)
   {oracle}.iter-N.consensus.json # consensus + regressions + confidence
-  {oracle}.iter-N.adversarial.json # R-30 + R-35 with citations
+  {oracle}.iter-N.adversarial.json # R-VERIFY + R-CITE with citations
   {oracle}.outcome.json        # final consolidated outcome
 ```
 
@@ -279,9 +274,8 @@ ARTIFACTS: [files created/modified]
 
 Escalation: CONFIDENCE < 0.5 → research first | BLOCKED > 2 turns → re-route | CRITICAL → broadcast
 
-Handoff templates: `protocols/handoff-templates.md`
-Shared protocol: `protocols/shared-protocol.md`
-LMC (Lead-Manager-Checker) protocol: `protocols/lmc-protocol.md` for SERAPH-grade audits.
+Shared protocol: `agents/aisb/protocols/shared-protocol.md`
+LMC (Lead-Manager-Checker) protocol: `agents/aisb/lmc-protocol.md` for SERAPH-grade audits.
 
 ---
 
@@ -295,7 +289,7 @@ The real-time backbone. Every agent uses Nerve. v7.0 adds:
 | `dream_completed` | SMITH | ORACLE (review the .dreamed.md) |
 | `pythia_diff_detected` | PYTHIA | ARCHITECT (classify recommendations) |
 | `ship_frozen` | LINK | ORACLE (require user unblock) |
-| `regression_flagged` | SERAPH (R-22) | ORACLE (refuse done_clean) |
+| `regression_flagged` | SERAPH (R-VERIFY) | ORACLE (refuse done_clean) |
 
 Backend: Convex (real-time). Config lives under `~/.omega/config/nerve.json` when configured.
 
@@ -311,4 +305,4 @@ Backend: Convex (real-time). Config lives under `~/.omega/config/nerve.json` whe
 
 ---
 
-*AISB v7.0 + Omega R-18→R-35 — Outcome-driven autonomous orchestration | "There is no spoon."*
+*AISB v7.0 + Omega named rules (R-RUBRIC / R-VERIFY / R-CITE / R-GRAPH / R-BUDGET) — Outcome-driven autonomous orchestration | "There is no spoon."*

@@ -1229,7 +1229,7 @@ function gitMenuKb(name: string) {
 }
 
 // ── ATLAS: the Telegram brain IS Atlas — the boss the operator
-// talks to. "AISB" is the TEAM (14 Matrix manager agents + one dedicated oracle
+// talks to. "AISB" is the TEAM (15 Matrix manager agents + one dedicated oracle
 // per project), NOT a name. The Atlas directs them (or acts directly).
 // Claude binary: resolved LAZILY, per message — install.sh deliberately starts
 // this bot BEFORE claude is installed, so a load-time constant would answer
@@ -1276,8 +1276,14 @@ const CLAUDE_TIMEOUT_MS = 900_000;
 let ATLAS_PROMPT = "";
 function atlasPrompt(): string {
   if (!ATLAS_PROMPT) {
-    try { ATLAS_PROMPT = readFileSync(`${OMEGA_DIR}/agents/aisb-atlas.md`, "utf8"); }
-    catch { try { ATLAS_PROMPT = readFileSync(`${OMEGA_DIR}/agents/aisb-master.md`, "utf8"); } catch {} }
+    try {
+      const kernel = readFileSync(`${OMEGA_DIR}/agents/aisb/_quality-kernel.md`, "utf8");
+      const body = readFileSync(`${OMEGA_DIR}/agents/aisb-atlas.md`, "utf8");
+      ATLAS_PROMPT = `${kernel}\n${body}`;
+    } catch {
+      try { ATLAS_PROMPT = readFileSync(`${OMEGA_DIR}/agents/aisb-atlas.md`, "utf8"); }
+      catch { try { ATLAS_PROMPT = readFileSync(`${OMEGA_DIR}/agents/aisb-master.md`, "utf8"); } catch {} }
+    }
   }
   return ATLAS_PROMPT;
 }
@@ -1317,7 +1323,7 @@ function doctrineCached(scope: string): string {
 }
 const IDENTITY =
   "You are ATLAS of OmegaOS — the boss the operator talks to here on Telegram. " +
-  "'AISB' is your TEAM, not your name: the 14 Matrix manager agents (oracle, morpheus, seraph, keymaker, niobe, smith, architect, merovingian, neo, zion, link, construct, pythia, council) plus one dedicated oracle per project. " +
+  "'AISB' is your TEAM, not your name: the 15 Matrix manager agents (oracle, morpheus, seraph, keymaker, niobe, smith, architect, merovingian, neo, zion, link, construct, pythia, council, trinity) plus one dedicated oracle per project. " +
   "You DIRECT them — dispatch to the right manager/oracle, or act directly with full VPS control. " +
   "When asked who you are, answer clearly: you are Atlas, directing the AISB team and the project oracles. Speak in the first person as Atlas.\n\n";
 // One funnel for every headless-claude brain call (Atlas + the project oracles):
@@ -1407,7 +1413,7 @@ async function runAgentProc(bin: string, argv: string[], who: string, cwd: strin
 }
 async function master(text: string): Promise<string> {
   // Headless Claude AS ATLAS, full VPS control: every tool, whole-FS
-  // (--add-dir /), permissions auto-approved. It dispatches to the 14 managers /
+  // (--add-dir /), permissions auto-approved. It dispatches to the 15 managers /
   // project oracles (omega dispatch) or acts directly. runClaude guards a stuck run.
   return runClaude(text, IDENTITY + atlasPrompt() + "\n\n" + doctrineCached("master"), "/", "Atlas");
 }
@@ -1418,14 +1424,22 @@ async function master(text: string): Promise<string> {
 // Lazy + retry-while-empty for the same first-boot reason as atlasPrompt().
 let ORACLE_PERSONA = "";
 function oraclePersona(): string {
-  if (!ORACLE_PERSONA) { try { ORACLE_PERSONA = readFileSync(`${OMEGA_DIR}/agents/aisb/oracle.md`, "utf8"); } catch {} }
+  if (!ORACLE_PERSONA) {
+    try {
+      const kernel = readFileSync(`${OMEGA_DIR}/agents/aisb/_quality-kernel.md`, "utf8");
+      const body = readFileSync(`${OMEGA_DIR}/agents/aisb/oracle.md`, "utf8");
+      ORACLE_PERSONA = `${kernel}\n${body}`;
+    } catch {
+      try { ORACLE_PERSONA = readFileSync(`${OMEGA_DIR}/agents/aisb/oracle.md`, "utf8"); } catch { /* optional persona */ }
+    }
+  }
   return ORACLE_PERSONA;
 }
 async function projectOracle(project: string, text: string, agent: "claude" | "codex" = "claude"): Promise<string> {
   const dir = repoPath(project) || gitRepos().find(r => r.name.toLowerCase() === project.toLowerCase())?.path || `${homedir()}/Station`;
   const scope =
     `You are the ORACLE of the project "${project}" — its dedicated orchestrator. Your ENTIRE world is this project at ${dir}: you have full knowledge of its code, history and state, and you orchestrate ONLY this project. ` +
-    `You command the AISB team FOR ${project}: dispatch missions with \`omega dispatch ${project} "<mission>"\` (spawns oracle-${project}-<n> + workers/workflows), and use the 14 Matrix managers, workers and dynamic workflows — always in service of ${project} and nothing else. ` +
+    `You command the AISB team FOR ${project}: dispatch missions with \`omega dispatch ${project} "<mission>"\` (spawns oracle-${project}-<n> + workers/workflows), and use the 15 Matrix managers, workers and dynamic workflows — always in service of ${project} and nothing else. ` +
     `ORCHESTRATE, don't grind: for anything non-trivial, break it into a DYNAMIC WORKFLOW (fan-out → adversarially verify → synthesize) and/or workers/sub-tasks, each driven by a SMALL goal to reach (R-ORCH / R-GOAL). Define the success goal first, then dispatch and verify. ` +
     `STRICT SCOPE: never work on, modify, or discuss another project. If asked about anything outside ${project}, say it is out of scope and refocus on ${project}. Speak in the first person as the ${project} oracle.\n\n`;
   const sys = scope + oraclePersona() + "\n\n" + doctrineCached("oracle");
@@ -3396,7 +3410,7 @@ async function onCallback(data: string, chat: number, msgId: number, from: numbe
   }
   if (ns === "proj" && action === "importcat") {
     setPending(from, "import-project", arg);
-    return edit(chat, msgId, `<b>⬇️ Import from GitHub — ${esc(arg)}</b>\nSend the repo: a <b>URL</b> (<code>https://github.com/owner/repo</code>) or an <b>owner/repo</b> slug.\n\nI clone it into <code>~/Station/${esc(arg)}/</code>, then wire the full setup — dedicated oracle, dashboard agent, Telegram topic and a <code>/{project}</code> command (private repos work via <code>gh</code>).`, kb([[{ text: "✖ Cancel", callback_data: "acct:cancel" }], [back("projects")]]));
+    return edit(chat, msgId, `<b>⬇️ Import from GitHub — ${esc(arg)}</b>\nSend the repo: a <b>URL</b> (<code>https://github.com/owner/repo</code>) or an <b>owner/repo</b> slug.\n\nI clone it into <code>~/Station/${esc(arg)}/</code>, then wire the full setup — dedicated oracle, Telegram topic and a <code>/{project}</code> command (private repos work via <code>gh</code>).`, kb([[{ text: "✖ Cancel", callback_data: "acct:cancel" }], [back("projects")]]));
   }
   if (ns === "proj" && action === "add") {
     // Smart whole-machine discovery (Rust walker, scored best-first), already-

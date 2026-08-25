@@ -137,7 +137,7 @@ Score 6+/7 = promote. 4-5/7 = request more evidence. <4/7 = reject.
 | **outcomes.db query interface** | "Have we seen this regression before?" / "Convergence rate for project X?" | `registry.py per-project` |
 | **Pattern indexing** | Maintain shared knowledge: decisions / patterns / errors | SMITH dream output |
 
-### Versioning (v7.0 — R-31 dream support)
+### Versioning (v7.0 — dream-pass support)
 
 When SMITH writes `lessons-learned.dreamed.md` and ORACLE applies it,
 MEROVINGIAN keeps `lessons-v{date}.md` immutable snapshots so a regression

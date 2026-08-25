@@ -4502,6 +4502,10 @@ enum RulesAction {
         /// mission text mentions their topic. Omit to print the full block.
         #[arg(long)]
         mission: Option<String>,
+        /// Harness overlay: claude | codex | gemini | hermes | opencode | pi | …
+        /// (default: neutral — same kernel, generic Other overlay)
+        #[arg(long)]
+        provider: Option<String>,
     },
 }
 
@@ -8684,16 +8688,8 @@ async fn cmd_spawn_worker(
     // like Dispatcher::dispatch_worker_with_context. Without this, a worker
     // spawned via the CLI (the live path oracles use) gets NO doctrine.
     let mut full_prompt = prompt.to_string();
-    // SESSION IDENTITY — a worker must know its own deterministic name: it is the
-    // join key for its rmux session, its Claude conversation (--name, resumable),
-    // and every state file the engine polls (worker-<name>.done.json etc.). Without
-    // this a worker only knows its name if the oracle happened to paste it.
-    full_prompt.push_str(&format!(
-        "\n\n## SESSION IDENTITY\nYou are worker `{worker_name}` — this exact string is your rmux session name, \
-         your Claude conversation name (resumable via `claude --resume {worker_name}`), and the key for your \
-         state files in ~/.omega/state/. Use it verbatim in every `omega done {worker_name} …` / \
-         `omega progress {worker_name} …` call — never a paraphrase.\n"
-    ));
+    // SESSION IDENTITY — rmux + Omega state key. Resume flags are provider-specific.
+    full_prompt.push_str(&omega_core::rules::worker_session_identity_block(&worker_name));
     // Surface an unresolved git drift to the worker so it reconciles BEFORE
     // editing instead of working blind on a stale/diverged checkout.
     if let Some(warning) = &git_sync_warning {
@@ -8711,9 +8707,10 @@ async fn cmd_spawn_worker(
         full_prompt.push_str(&shape);
     }
 
-    let agent_ctx = omega_core::rules::agent_context_block_for_mission(
+    let agent_ctx = omega_core::orchestration::policy_context_for_agent(
         omega_core::rules::RuleScope::Worker,
         &full_prompt,
+        agent,
     );
     if !agent_ctx.is_empty() {
         full_prompt.push_str("\n\n");
@@ -12951,17 +12948,24 @@ async fn send_pdf_telegram(pdf_path: &str, caption: Option<&str>) -> Result<()> 
 fn cmd_rules(action: RulesAction) -> Result<()> {
     use omega_core::rules;
     match action {
-        RulesAction::Context { scope, mission } => {
+        RulesAction::Context {
+            scope,
+            mission,
+            provider,
+        } => {
             let s = match scope.to_lowercase().as_str() {
                 "master" | "atlas" | "director" => rules::RuleScope::Master,
                 "worker" => rules::RuleScope::Worker,
                 _ => rules::RuleScope::Oracle,
             };
-            if let Some(m) = mission {
-                print!("{}", rules::agent_context_block_for_mission(s, &m));
-                return Ok(());
-            }
-            print!("{}", rules::agent_context_block(s));
+            let family = provider
+                .as_deref()
+                .map(omega_core::orchestration::provider_family_from_name)
+                .unwrap_or(rules::ProviderFamily::Neutral);
+            print!(
+                "{}",
+                rules::agent_context_for_provider(s, mission.as_deref(), family)
+            );
             return Ok(());
         }
         RulesAction::List => {
@@ -17028,6 +17032,68 @@ fn prune_dangling_omega_links(dir: &std::path::Path, omega_dir: &std::path::Path
     }
 }
 
+fn link_policy_kernel(
+    dest: &std::path::Path,
+    src: &std::path::Path,
+    label: &str,
+) -> Result<()> {
+    if let Some(parent) = dest.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let is_stale_link = std::fs::read_link(dest)
+        .map(|target| target != src)
+        .unwrap_or(false);
+    if is_stale_link {
+        let _ = std::fs::remove_file(dest);
+    }
+    if !dest.exists() {
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(src, dest)?;
+        println!(
+            "[+] {label}: {} → {} (compact policy kernel)",
+            dest.display(),
+            src.display()
+        );
+    }
+    Ok(())
+}
+
+fn upsert_marked_file(
+    path: &std::path::Path,
+    begin: &str,
+    end: &str,
+    body: &str,
+) -> Result<()> {
+    let block = format!("{begin}\n{body}\n{end}");
+    let existing = std::fs::read_to_string(path).unwrap_or_default();
+    let updated = match (existing.find(begin), existing.find(end)) {
+        (Some(start), Some(finish)) if finish > start => {
+            let mut out = String::with_capacity(existing.len() + block.len());
+            out.push_str(&existing[..start]);
+            out.push_str(&block);
+            out.push_str(&existing[finish + end.len()..]);
+            out
+        }
+        _ => {
+            let mut out = existing;
+            if !out.is_empty() && !out.ends_with('\n') {
+                out.push('\n');
+            }
+            if !out.is_empty() {
+                out.push('\n');
+            }
+            out.push_str(&block);
+            out.push('\n');
+            out
+        }
+    };
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(path, updated)?;
+    Ok(())
+}
+
 fn cmd_sync() -> Result<()> {
     let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/tmp"));
     let omega_dir = omega_core::config::omega_dir();
@@ -17130,6 +17196,18 @@ fn cmd_sync() -> Result<()> {
                 }
             }
             println!("[+] Agents synced to {}", agents_dst.display());
+            let proto_src = agents_src.join("aisb").join("protocols");
+            if proto_src.is_dir() {
+                let proto_dst = agents_dst.join("aisb").join("protocols");
+                std::fs::create_dir_all(&proto_dst)?;
+                for proto in std::fs::read_dir(&proto_src).into_iter().flatten() {
+                    let proto = proto?;
+                    if proto.file_name().to_string_lossy().ends_with(".md") {
+                        std::fs::copy(proto.path(), proto_dst.join(proto.file_name()))?;
+                    }
+                }
+                println!("[+] AISB protocols synced to {}", proto_dst.display());
+            }
         }
     }
 
@@ -17302,6 +17380,34 @@ fn cmd_sync() -> Result<()> {
             );
         }
     }
+
+    // OpenCode reads ~/.config/opencode/AGENTS.md globally. Same compact
+    // kernel as Codex — OpenCode is not a finish-guard writer, but Home
+    // sessions still need the Laws.
+    link_policy_kernel(
+        &home.join(".config").join("opencode").join("AGENTS.md"),
+        &agents_full_dst,
+        "OpenCode",
+    )?;
+
+    // Hermes loads AGENTS.md from CWD, not ~/.hermes/. Stamp a pointer into
+    // SOUL.md (identity slot) so Home Hermes still sees OmegaOS doctrine.
+    let hermes_home = home.join(".hermes");
+    if hermes_home.is_dir() {
+        upsert_marked_file(
+            &hermes_home.join("SOUL.md"),
+            "<!-- OMEGAOS-KERNEL:START -->",
+            "<!-- OMEGAOS-KERNEL:END -->",
+            "You run under OmegaOS. Follow `~/.omega/AGENTS.md` (Laws L0–L6 + named rules). \
+             Durable state is `omega progress` / `omega done`. Use Hermes native tools — \
+             do not invent Claude TaskCreate, `/goal`, or Codex `update_plan`.",
+        )?;
+        println!("[+] Hermes: OmegaOS kernel pointer in ~/.hermes/SOUL.md");
+    }
+
+    // Pi / Kimi / OpenRouter Home panes pick up project AGENTS.md or the
+    // compact kernel already written to ~/.omega/AGENTS.md. Do not overwrite
+    // ~/AGENTS.md.
 
     // Codex SessionStart injects every skill under ~/.agents/skills.
     // Dumping the full catalog (90+) exceeds the skills context budget

@@ -375,6 +375,47 @@ if ! grep -q "/home/hacker" skills/linear/RULES.md skills/linear/SKILL.md; then 
 # fresh install does not depend on the user's personal /vision /prd. The
 # new-project skill must delegate to the /omg-* versions, not the bare ones.
 if [ -f skills/vision/SKILL.md ] && [ -f skills/prd/SKILL.md ] && grep -q "omg-\$psk" install.sh; then ok "/omg-vision + /omg-prd shipped (pipeline self-contained)"; else bad "vision/prd not shipped as /omg-* (fresh install pipeline would break)"; fi
+if [ -f skills/product-development-system/SKILL.md ] && grep -q "product-development-system" install.sh; then ok "product-development-system skill shipped + wired"; else bad "product-development-system missing from install.sh (fresh install would not get it)"; fi
+# AISB doctrine: 15 Matrix agents, quality kernel, shipped shared protocol,
+# no retired numeric IDs in live prompts, no maintainer-home leaks.
+if [ -f agents/aisb/_quality-kernel.md ] && [ -f agents/aisb/trinity.md ] && [ -f agents/aisb/protocols/shared-protocol.md ]; then
+  ok "AISB quality kernel + Trinity + shared-protocol shipped"
+else
+  bad "AISB quality kernel, Trinity prompt, or shared-protocol.md missing"
+fi
+if grep -q "15 MATRIX MANAGERS" agents/aisb-atlas.md && grep -q "trinity" agents/aisb-atlas.md && grep -q "15 Matrix manager agents" telegram-bot/omega-tg-bot.ts; then
+  ok "Atlas + Telegram advertise 15 Matrix agents including Trinity"
+else
+  bad "Atlas/Telegram still advertise a stale Matrix roster (need 15 + trinity)"
+fi
+if grep -q "aisb/protocols" install.sh && grep -q "_quality-kernel.md" telegram-bot/omega-tg-bot.ts; then
+  ok "install.sh copies AISB protocols; Telegram Atlas/oracle prepend the quality kernel"
+else
+  bad "install.sh or Telegram bot missing quality-kernel / protocols wiring"
+fi
+if grep -q "fn provider_harness_block" crates/omega-core/src/rules.rs \
+   && grep -q "fn policy_context_for_agent" crates/omega-core/src/orchestration.rs \
+   && grep -q 'opencode' crates/omega-core/src/orchestration.rs \
+   && grep -q 'link_policy_kernel' crates/omega-cli/src/main.rs \
+   && grep -q 'OpenCode' crates/omega-cli/src/main.rs \
+   && grep -q 'OMEGAOS-KERNEL:START' crates/omega-cli/src/main.rs \
+   && grep -q 'AISB protocols synced' crates/omega-cli/src/main.rs \
+   && grep -q 'provider: Option<String>' crates/omega-cli/src/main.rs; then
+  ok "provider harness overlay + OpenCode/Hermes/AISB-protocol sync wiring present"
+else
+  bad "rules are not mapped per-harness (Claude/Codex/OpenCode/Hermes) or omega sync misses OpenCode/Hermes"
+fi
+aisb_dead_ids=$(grep -RlnE '\*\*R-(18|19|21|28|35)\*\*|owns R-(18|19|21|28|35)' agents/aisb --include='*.md' | grep -v '_quality-kernel.md' | grep -v 'protocols/shared-protocol.md' | grep -v 'CLAUDE.md' || true)
+if [ -z "$aisb_dead_ids" ]; then
+  ok "AISB prompts do not own retired R-18/R-19/R-21/R-28/R-35 IDs"
+else
+  bad "AISB prompts still teach retired numeric rule IDs: $aisb_dead_ids"
+fi
+if ! grep -qE '/home/hacker|/VibeCoding/' agents/aisb/*.md skills/brand-identity/SKILL.md skills/audits/_shared/AUDIT-VERIFICATION-CONTRACT.md; then
+  ok "shipped AISB + brand-identity + audit contract have no maintainer-home leaks"
+else
+  bad "shipped AISB/skills still leak /home/hacker or /VibeCoding/"
+fi
 if grep -qE '^[0-9]\. .*/omg-vision' skills/new-project/SKILL.md && grep -qE '^[0-9]\. .*/omg-prd' skills/new-project/SKILL.md; then ok "new-project pipeline delegates to /omg-vision + /omg-prd"; else bad "new-project still calls bare /vision or /prd"; fi
 # OmegaOS slash commands are /omg-* namespaced (no collision with other commands).
 if ! grep -q '"\$OMG_CMD_DST/planner.md"' install.sh && ! grep -q '/planner.md"' install.sh; then ok "no bare /planner stub (uses /omg-planner — no collision)"; else bad "install.sh still writes a bare /planner stub (collides)"; fi

@@ -1042,22 +1042,14 @@ fn build_team_member_prompt(
         config.session_name,
         member.name,
     );
-    let compiled = crate::rules::compile_rule_context_for_provider(
+    let compiled = crate::orchestration::policy_context_for_agent(
         crate::rules::RuleScope::Worker,
-        Some(&prompt),
-        crate::orchestration::provider_family_for_agent(agent),
-    )
-    .map_err(|error| {
-        anyhow::anyhow!(
-            "cannot compile policy context for team member {} using {}: {}",
-            member.name,
-            agent.name(),
-            error
-        )
-    })?;
-    if !compiled.markdown.is_empty() {
+        &prompt,
+        agent,
+    );
+    if !compiled.is_empty() {
         prompt.push_str("\n\n");
-        prompt.push_str(&compiled.markdown);
+        prompt.push_str(&compiled);
     }
     Ok(prompt)
 }

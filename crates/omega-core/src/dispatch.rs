@@ -1526,21 +1526,14 @@ impl Dispatcher {
         // Narrowed to THIS mission (rules::agent_context_block_for_mission):
         // universal rules + Laws in full, domain rules indexed unless the
         // mission mentions their topic. Nothing is hidden, only un-inlined.
-        let compiled = crate::rules::compile_rule_context_for_provider(
+        let compiled = crate::orchestration::policy_context_for_agent(
             crate::rules::RuleScope::Oracle,
-            Some(&prompt),
-            crate::orchestration::provider_family_for_agent(agent),
-        )
-        .map_err(|error| {
-            anyhow::anyhow!(
-                "cannot compile oracle policy context for {}: {}",
-                agent.name(),
-                error
-            )
-        })?;
-        if !compiled.markdown.is_empty() {
+            &prompt,
+            agent,
+        );
+        if !compiled.is_empty() {
             prompt.push_str("\n\n");
-            prompt.push_str(&compiled.markdown);
+            prompt.push_str(&compiled);
         }
         prompt.push_str(&crate::lab::oracle_lab_block_for_mission(mission));
 
@@ -1856,21 +1849,14 @@ impl Dispatcher {
         // Narrowed to THIS mission (rules::agent_context_block_for_mission):
         // universal rules + Laws in full, domain rules indexed unless the
         // mission mentions their topic. Nothing is hidden, only un-inlined.
-        let compiled = crate::rules::compile_rule_context_for_provider(
+        let compiled = crate::orchestration::policy_context_for_agent(
             crate::rules::RuleScope::Oracle,
-            Some(&prompt),
-            crate::orchestration::provider_family_for_agent(agent),
-        )
-        .map_err(|error| {
-            anyhow::anyhow!(
-                "cannot compile resurrected oracle policy context for {}: {}",
-                agent.name(),
-                error
-            )
-        })?;
-        if !compiled.markdown.is_empty() {
+            &prompt,
+            agent,
+        );
+        if !compiled.is_empty() {
             prompt.push_str("\n\n");
-            prompt.push_str(&compiled.markdown);
+            prompt.push_str(&compiled);
         }
 
         let work_dir = state.working_dir.to_string_lossy().to_string();

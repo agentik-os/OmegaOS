@@ -89,30 +89,33 @@ This skill creates a **complete, interactive Brand Identity System** deployed as
 
 ## CRITICAL: PROJECT DIRECTORY CONVENTION
 
-**ALWAYS ASK the user: "Is this a personal/AgentikOS project or a client project?"**
+**ALWAYS ASK the user: "Is this a personal project or a client project?"**
+
+Resolve `<projects_dir>` from `~/.omega/config.toml` (`projects_dir`). Never
+hardcode `~/VibeCoding` or a maintainer home path.
 
 | Answer | Directory | Example |
 |--------|-----------|---------|
-| **Personal / AgentikOS** | `/home/hacker/VibeCoding/work/[ProjectName]/` | `work/Atma/` |
-| **Client** | `/home/hacker/VibeCoding/clients/[ProjectName]/` | `clients/Resonant/` |
+| **Personal** | `<projects_dir>/side-business/[ProjectName]/` (fallback: existing `work/`) | `side-business/Atma/` |
+| **Client** | `<projects_dir>/customers/[ProjectName]/` (fallback: existing `clients/`) | `customers/Resonant/` |
 
 This question is asked during Phase 1 intake. NEVER assume — always ask.
 
 ```bash
-# Personal/AgentikOS project
-/home/hacker/VibeCoding/work/Atma/
+# Personal project
+$PROJECTS_DIR/side-business/Atma/
 
 # Client project
-/home/hacker/VibeCoding/clients/Resonant/
+$PROJECTS_DIR/customers/Resonant/
 
 # The brand book Next.js project goes INSIDE
-/home/hacker/VibeCoding/[work|clients]/[ProjectName]/brand-book/
+$PROJECTS_DIR/<category>/[ProjectName]/brand-book/
 ```
 
 ### Directory Structure
 
 ```
-/home/hacker/VibeCoding/work/[ProjectName]/
+$PROJECTS_DIR/<category>/[ProjectName]/
 ├── brand-book/                   # Next.js brand book site (deployed to Vercel)
 │   ├── src/
 │   ├── public/
@@ -1788,7 +1791,7 @@ Generate **12+ specific anti-patterns** organized by category:
 
 ```bash
 # ALWAYS in the project's brand-book subdirectory
-/home/hacker/VibeCoding/work/[ProjectName]/brand-book/
+$PROJECTS_DIR/<category>/[ProjectName]/brand-book/
 ```
 
 ### Tech Stack
@@ -2059,7 +2062,7 @@ The variant switcher is the **hero interaction:**
 ### Step 7.1: Build Check
 
 ```bash
-cd /home/hacker/VibeCoding/work/[ProjectName]/brand-book
+cd "$PROJECTS_DIR/<category>/[ProjectName]/brand-book"
 npm run build
 # Must have 0 TypeScript errors
 # Must have 0 build errors
@@ -2135,7 +2138,7 @@ Quick reference card saved to `[ProjectDir]/docs/BRAND-SORT.md`:
 They click between variants → explore colors, typography, voice, everything.
 When they choose → you have design tokens ready for development.
 
-**Project location:** /home/hacker/VibeCoding/work/[ProjectName]/
+**Project location:** $PROJECTS_DIR/<category>/[ProjectName]/
 **Brand book:** /brand-book/ (deployed)
 **Strategy docs:** /docs/ (6 files)
 **Dev exports:** /exports/ (design tokens, Tailwind config, CLAUDE.md section)
@@ -2172,7 +2175,7 @@ When they choose → you have design tokens ready for development.
 # Name not decided (triggers Phase 0)
 /brand-identity --needs-name
 
-# Specific project name (creates in VibeCoding/work/[name]/)
+# Specific project name (creates under $PROJECTS_DIR/<category>/[name]/)
 /brand-identity --project Atma
 ```
 
@@ -2371,7 +2374,7 @@ Before delivering:
 - [ ] URL is shareable and loads correctly
 - [ ] All export files generated in /exports/
 - [ ] BRAND-SORT.md generated
-- [ ] Project in correct directory: VibeCoding/work/[ProjectName]/
+- [ ] Project in correct directory: $PROJECTS_DIR/<category>/[ProjectName]/
 
 ---
 

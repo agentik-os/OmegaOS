@@ -7,6 +7,17 @@ for [semantic versioning](https://semver.org) once it reaches 1.0. Until then,
 
 ## [Unreleased]
 
+- Restored agent-pane colors when rmux inherits Cursor's `NO_COLOR`.
+- Separated Pi (standalone) from OpenRouter. AISB doctrine is 15 agents
+  including Trinity, with named rules (`R-RUBRIC` / `R-VERIFY` / `R-CITE`)
+  and a shared quality kernel.
+- Mapped Laws/Rules per harness: Claude, Codex, Gemini, and Other
+  (Hermes / OpenCode / Pi / Kimi) share the same kernel and get a native-tool
+  overlay. `omega sync` now writes `~/.config/opencode/AGENTS.md`, a Hermes
+  `SOUL.md` pointer, and AISB protocols. `omega rules context --provider`
+  previews the overlay. Oracle briefs no longer assume TaskCreate / `/goal`.
+- Published the matching npm bootstrap as `omega-os@1.5.15`.
+
 - Published the matching npm bootstrap as `omega-os@1.5.14` so `npx omega-os`
   clones `main` with worker project cwd, record-only Verify Command, and the
   Codex `--sandbox` / `--ask-for-approval never` launch pair.

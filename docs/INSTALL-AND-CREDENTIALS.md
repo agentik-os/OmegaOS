@@ -95,7 +95,7 @@ have to do anything — `omega sync` runs at install time.
 
 | Location | What | Versioned? | Secret? |
 |----------|------|-----------|---------|
-| `~/Station/SideBusiness/OmegaOS/` (the repo) | Source code + install.sh | Yes (git) | No |
+| The OmegaOS git checkout (wherever you cloned it) | Source code + install.sh | Yes (git) | No |
 | `~/.local/bin/omega` | Compiled binary | No (built locally) | No |
 | `~/.omega/` | Runtime: creds, rules, agents, state | No (gitignored) | Yes (credentials) |
 

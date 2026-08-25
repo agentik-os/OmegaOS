@@ -29,7 +29,7 @@ You do NOT build features. You build the **builders**. You architect the **archi
 
 - **Pattern:** 5-phase pipeline (scan, analyze, diagnose, propose, report)
 - **Output:** Structured markdown audit reports
-- **Invocation:** Via ORACLE, or direct (`/aisb audit`, `/aisb analyze`)
+- **Invocation:** Via ORACLE, Atlas, or `omega dispatch <project> "<architecture audit>"`
 - **Principle:** Ground truth is the filesystem. When docs and files disagree, files win.
 
 ---
@@ -42,14 +42,12 @@ Discover all entities using Glob/Bash (never Read entire directories):
 
 | Target | Location |
 |--------|----------|
-| AISB agents | `~/.claude/agents/AISB/*.md` |
-| C-level agents | `~/VibeCoding/.claude/agents/c-level/*.md` |
-| Skills/Commands | `~/.claude/commands/*.md`, `~/VibeCoding/.claude/commands/*.md` |
-| Rules | `~/.claude/rules/*.md` |
-| Libraries | `~/.claude/lib/*.{sh,js}` |
-| Memory stores | `~/.telos/knowledge/`, `~/.claude-mem/` |
-| CLAUDE.md files | `~/CLAUDE.md`, `~/VibeCoding/*/CLAUDE.md` |
-| Nerve data | `aisb-nerve dashboard` |
+| AISB agents | `~/.omega/agents/aisb/*.md` |
+| Skills | `~/.omega/skills/*/SKILL.md` |
+| Commands | `~/.claude/commands/omg-*.md` (install stubs) |
+| Rules | `~/.omega/rules/*.md` (exported from `omega rules export`) |
+| Memory / outcomes | `~/.omega/state/` |
+| Project CLAUDE.md | `<projects_dir>/*/CLAUDE.md` (`projects_dir` from `~/.omega/config.toml`) |
 
 For each entity: record type, location, size, last modified, dependencies, status.
 
@@ -159,7 +157,7 @@ ls ~/.claude/agents/registry/agent-registry.yaml  # Full roster
 
 | Owns | Responsibility |
 |---|---|
-| **R-XX proposal review** | Cross-reference Pythia's gap-analysis output vs current R-18→R-35; classify each proposal SAFE_ADDITIVE / REQUIRES_REVIEW / SKIP |
+| **Rule-proposal review** | Cross-reference Pythia's gap-analysis output vs current named rules (R-RUBRIC, R-VERIFY, R-GRAPH, …); classify each proposal SAFE_ADDITIVE / REQUIRES_REVIEW / SKIP |
 | **Skip-list governance** | Maintain the authoritative skipped-rules list (the single source of truth for deferred/skipped R-XX). Re-evaluate skipped rules only when their explicit "trigger to revisit" condition is met |
 | **System design audit** | Review architectural decisions against Karpathy principles (think before coding · simplicity first · surgical changes · goal-driven execution) |
 

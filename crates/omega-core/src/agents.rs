@@ -183,7 +183,7 @@ impl Agent {
             Agent::Gemini => "Gemini (Google)",
             Agent::Antigravity => "Antigravity (Google)",
             Agent::Pi => "Pi (earendil-works)",
-            Agent::OpenRouter => "OpenRouter (via Pi)",
+            Agent::OpenRouter => "OpenRouter",
             Agent::Hermes => "Hermes (Nous Research)",
             Agent::Glm => "GLM (Z.AI / Zhipu)",
             Agent::Kimi => "Kimi (Moonshot AI)",
@@ -418,17 +418,19 @@ impl Agent {
                 ));
                 selected
             }
-            // Pi and Hermes both route through OpenRouter — they need the
-            // OpenRouter key/base-url. Pi additionally honors its own api_key
-            // (stored as pi.api_key) as the OpenRouter key when set.
+            // Pi is standalone. Only inject OpenRouter credentials when the
+            // operator explicitly set `pi.provider = "openrouter"`.
             Agent::Pi => {
-                let mut s = pick(&["OPENROUTER_API_KEY", "OPENROUTER_BASE_URL"]);
-                if !cfg.pi.api_key.is_empty() {
-                    // pi.api_key wins as the OpenRouter credential for the Pi pane.
-                    s.retain(|(key, _)| key != "OPENROUTER_API_KEY");
-                    s.push(("OPENROUTER_API_KEY".to_string(), cfg.pi.api_key.clone()));
+                if cfg.pi.provider.trim() == "openrouter" {
+                    let mut s = pick(&["OPENROUTER_API_KEY", "OPENROUTER_BASE_URL"]);
+                    if !cfg.pi.api_key.is_empty() {
+                        s.retain(|(key, _)| key != "OPENROUTER_API_KEY");
+                        s.push(("OPENROUTER_API_KEY".to_string(), cfg.pi.api_key.clone()));
+                    }
+                    s
+                } else {
+                    Vec::new()
                 }
-                s
             }
             Agent::OpenRouter => pick(&["OPENROUTER_API_KEY", "OPENROUTER_BASE_URL"]),
             Agent::Hermes => {
@@ -758,23 +760,12 @@ impl Agent {
                 }
             }
             Agent::Pi => {
-                // (b) Use the CONFIGURED pi.provider + pi.model; fall back to the
-                // catalog defaults only when unset (was hardcoded
-                // `--provider openrouter --model anthropic/claude-sonnet-4.6`).
-                let provider = if providers.pi.provider.is_empty() {
-                    "openrouter"
-                } else {
-                    providers.pi.provider.as_str()
-                };
-                let model = if providers.pi.model.is_empty() {
-                    ProvidersConfig::default_model("pi").to_string()
-                } else {
-                    providers.pi.model.clone()
-                };
-                let pi_args = format!(
-                    "--provider {} --model {}",
-                    shell_quote(provider),
-                    shell_quote(&model)
+                // Standalone Pi. Empty provider/model → omit the flags so the
+                // CLI uses its own default (Google, `pi --help`). Never pin
+                // OpenRouter onto Pi; that lane is Agent::OpenRouter.
+                let pi_args = pi_provider_model_flags(
+                    providers.pi.provider.trim(),
+                    providers.pi.model.trim(),
                 );
                 let resume_arg = if opts.resume_conversation {
                     " --continue"
@@ -1017,6 +1008,19 @@ impl Agent {
 
 fn nonempty(value: &str) -> Option<&str> {
     (!value.trim().is_empty()).then_some(value)
+}
+
+/// Pi / OpenRouter share the `pi` binary, but the flags must not leak
+/// across. Empty provider or model is omitted (Pi's native defaults).
+fn pi_provider_model_flags(provider: &str, model: &str) -> String {
+    let mut args = String::new();
+    if !provider.is_empty() {
+        args.push_str(&format!(" --provider {}", shell_quote(provider)));
+    }
+    if !model.is_empty() {
+        args.push_str(&format!(" --model {}", shell_quote(model)));
+    }
+    args
 }
 
 fn claude_permission_args(requested: Option<&str>, explicit_bypass: bool) -> Result<String> {
@@ -1300,6 +1304,30 @@ mod tests {
         assert!(
             !hermes_prompt.contains("inspect the repository"),
             "hermes chat has no positional prompt (unrecognized arguments): {hermes_prompt}"
+        );
+    }
+
+    #[test]
+    fn pi_home_is_standalone_and_openrouter_is_its_own_lane() {
+        let pi = launch(Agent::Pi, None, LaunchOptions::default());
+        assert!(
+            !pi.contains("--provider openrouter"),
+            "Pi must not inherit the OpenRouter provider: {pi}"
+        );
+        assert!(
+            !pi.contains("anthropic/claude-opus-5"),
+            "Pi must not pin an OpenRouter model by default: {pi}"
+        );
+        let openrouter = launch(Agent::OpenRouter, None, LaunchOptions::default());
+        assert!(
+            openrouter.contains("--provider openrouter"),
+            "OpenRouter Home must pin its own provider: {openrouter}"
+        );
+        assert!(
+            Agent::OpenRouter.display_name() == "OpenRouter"
+                && !Agent::OpenRouter.display_name().contains("via Pi"),
+            "{}",
+            Agent::OpenRouter.display_name()
         );
     }
 

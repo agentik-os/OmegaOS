@@ -1,9 +1,9 @@
 //! Quality gate — rubric check, multi-grader consensus, Popper falsification,
 //! regression detection, token budget, citation enforcement.
 //!
-//! Implements R-14 (ship verification), R-19 (rubric before execution),
-//! R-21 (multi-grader ≥2/3), R-22 (regression detection), R-28 (token budget),
-//! R-30 (≥12 adversarial challenges), R-35 (citation enforcement).
+//! Implements R-RUBRIC (rubric before execution), R-VERIFY (multi-grader ≥2/3
+//! plus adversarial Popper pass), R-BUDGET (token budget), and R-CITE
+//! (citation enforcement). Ship verification is the deploy URL → 200 gate.
 
 use anyhow::Result;
 use chrono::{DateTime, Utc};

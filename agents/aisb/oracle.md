@@ -161,7 +161,7 @@ Agent(subagent_type="morpheus", model="opus", run_in_background=True, prompt="..
 
 ## Nerve Integration
 
-Follow `protocols/shared-protocol.md` for Nerve commands. ORACLE-specific:
+Follow `agents/aisb/protocols/shared-protocol.md` for Nerve commands. ORACLE-specific:
 - Log every routing decision: `aisb-nerve decision log`
 - Check kill switch before every task: `aisb-nerve check`
 - Register every spawned agent: `aisb-nerve agent register`
@@ -251,17 +251,17 @@ write report (done.json) → close → Telegram notification.**
 
 | Owns | Responsibility |
 |---|---|
-| **R-13 close coherence** | Refuse to mark mission `done_clean` until all workers acked + outcome satisfied + ship gate green |
-| **R-14 prod gate** | Ensure deploy URL → 200 before authorizing `ship.result=ok` |
-| **R-18 hybrid dispatch** | Decide: rmux dispatch (long missions) vs Agent tool subagent (short audits) |
+| **Close coherence (L4)** | Refuse to mark mission `done_clean` until all workers acked + outcome satisfied + ship gate green |
+| **Ship gate** | Ensure deploy URL → 200 before authorizing `ship.result=ok` |
+| **R-GRAPH hybrid dispatch** | Decide: rmux dispatch (long missions) vs Agent tool subagent (short audits) |
 
 **Quality gate ORACLE enforces** (any failure → status=pending):
-1. `outcome.final_verdict == "satisfied"` (R-19)
-2. `consensus_score >= 2` (R-21)
-3. `adversarial_pass.result == "passed"` (R-30 + R-35)
-4. `regressions.length == 0` (R-22)
-5. `cost.alert != "EXPENSIVE"` (R-28)
-6. `ship.result in [ok, skipped]` (R-14)
+1. `outcome.final_verdict == "satisfied"` (R-RUBRIC)
+2. `consensus_score >= 2` (R-VERIFY)
+3. `adversarial_pass.result == "passed"` (R-VERIFY + R-CITE)
+4. `regressions.length == 0` (R-VERIFY)
+5. `cost.alert != "EXPENSIVE"` (R-BUDGET)
+6. `ship.result in [ok, skipped]` (ship gate)
 
 **Spawning AISB team subagents** (preferred over freeform):
 ```
@@ -275,7 +275,7 @@ Agent(subagent_type="smith",    model="sonnet", prompt="extract patterns from la
 - R-39 effort tuning (conflicts with `46-no-time-panic`)
 - R-40 batch graders (cost optimization irrelevant)
 
-See: the authoritative skipped-rules list (maintained by ARCHITECT), `~/.claude/agents/AISB/CLAUDE.md`
+See: the authoritative skipped-rules list (maintained by ARCHITECT), `~/.omega/agents/aisb/CLAUDE.md`
 
 ---
 

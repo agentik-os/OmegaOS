@@ -944,7 +944,7 @@ pub fn fields_for_section(
             });
             out.push(model_field("pi", "pi.model", &c.model));
             out.push(SettingsField::EditText {
-                label: "Pi API key (OpenRouter)".to_string(),
+                label: "Pi API key".to_string(),
                 config_key: "pi.api_key".to_string(),
                 current_value: c.api_key.clone(),
                 masked: true,
@@ -1143,7 +1143,7 @@ impl SettingsSection {
             SettingsSection::Codex => "Codex (OpenAI)",
             SettingsSection::Gemini => "Gemini (Google)",
             SettingsSection::Antigravity => "Antigravity (Google)",
-            SettingsSection::OpenRouter => "OpenRouter (via Pi)",
+            SettingsSection::OpenRouter => "OpenRouter",
             SettingsSection::Pi => "Pi (earendil-works)",
             SettingsSection::Hermes => "Hermes (Nous Research)",
             SettingsSection::Glm => "GLM (Z.AI)",
@@ -2762,7 +2762,12 @@ impl App {
     /// landing halfway down the previous section's text reads as a broken panel.
     fn on_info_nav_change(&mut self) {
         self.info_agent_selected = 0;
+        self.info_doc_selected = 0;
         self.detail_scroll = 0;
+        // Agents and Docs render a submenu in the detail pane. Auto-focus it
+        // so ↑/↓ picks an agent or a manual page instead of silently walking
+        // the section list (the dead-menu bug).
+        self.detail_focused = self.selected_info_section().has_sub_cursor();
     }
 
     pub fn selected_info_section(&self) -> InfoSection {

@@ -129,12 +129,12 @@ Any AISB agent can send through LINK:
 
 | Owns | Responsibility | How |
 |---|---|---|
-| **R-20 webhook bridge** | Watch `~/.omega/state/*.done.json`, POST events with HMAC signature to configured endpoints | the webhook bridge service |
-| **R-30 webhook hardening** | `whsec_sha256_v1=` prefix + X-Webhook-Timestamp header + auto-disable endpoints after 20 consecutive failures | builtin |
+| **Webhook bridge** | Watch `~/.omega/state/*.done.json`, POST events with HMAC signature to configured endpoints | the webhook bridge service |
+| **Webhook hardening** | `whsec_sha256_v1=` prefix + X-Webhook-Timestamp header + auto-disable endpoints after 20 consecutive failures | builtin |
 | **Telegram notifications** | Send mission start, progress card, final report, error alerts | the Telegram notifier |
 | **Inter-agent mail** | `aisb-nerve mail send <from> <to> <type> <content>` | `aisb-nerve` CLI |
 
-### Webhook event types (R-20)
+### Webhook event types
 
 ```
 session.status_run_started
@@ -169,4 +169,4 @@ if failure_count >= 20:
 
 ---
 
-*LINK — The Operator | AISB v7.0 (Omega-integrated, R-20+R-30 webhook bridge, Telegram bridge)*
+*LINK — The Operator | AISB v7.0 (Omega-integrated, webhook + Telegram bridge)*

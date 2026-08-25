@@ -3157,10 +3157,16 @@ mod tests {
         // Up from the first section wraps to the last.
         handle_key(&mut app, up);
         assert_eq!(app.info_section_selected, last);
-        handle_key(&mut app, down);
+        // Last section is Docs: landing auto-focuses the manual list, so Down
+        // would move a document, not wrap. [ / ] (or Tab) leave the submenu.
+        assert!(
+            app.detail_focused,
+            "Docs submenu must take ↑/↓ so the manual is not a dead list"
+        );
+        handle_key(&mut app, press(']'));
         assert_eq!(
             app.info_section_selected, 0,
-            "down from the last wraps home"
+            "] from the last section wraps home"
         );
     }
 
