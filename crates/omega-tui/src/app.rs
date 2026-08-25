@@ -1191,7 +1191,6 @@ pub enum MonitorAction {
     TelegramDisconnect,
     ProvisioningSetup,
     RefreshBilling,
-    OpenDashboard,
     UpdateOmega,
 }
 
@@ -1203,7 +1202,6 @@ impl MonitorAction {
             MonitorAction::TelegramDisconnect,
             MonitorAction::ProvisioningSetup,
             MonitorAction::RefreshBilling,
-            MonitorAction::OpenDashboard,
             MonitorAction::UpdateOmega,
         ]
     }
@@ -1214,7 +1212,6 @@ impl MonitorAction {
             MonitorAction::TelegramDisconnect => "Disconnect Telegram bot",
             MonitorAction::ProvisioningSetup => "Set up project provisioning keys   (Vercel/Convex/GitHub/Stripe)",
             MonitorAction::RefreshBilling => "Refresh billing now   (live OAuth usage check)",
-            MonitorAction::OpenDashboard => "Open Dashboard   (OmegaMC Telegram dashboard — replaces aisb-master)",
             MonitorAction::UpdateOmega => "Update OmegaOS now   (pull + rebuild + reinstall — your ~/.omega state is preserved)",
         }
     }
@@ -1225,74 +1222,9 @@ impl MonitorAction {
             MonitorAction::TelegramDisconnect => "D",
             MonitorAction::ProvisioningSetup => "P",
             MonitorAction::RefreshBilling => "B",
-            MonitorAction::OpenDashboard => "O",
             MonitorAction::UpdateOmega => "U",
         }
     }
-    /// Resolve the "Open Dashboard" action against the real filesystem.
-    ///
-    /// OmegaMC (the Telegram-controlled web dashboard, `agentik-os/agentik-telegram`)
-    /// is installed by `install.sh` Phase 6.95 into `$OMEGA_DIR/repos/omega-mc` — a
-    /// best-effort clone that may be absent (private repo / `OMEGA_SKIP_DASHBOARD=1`).
-    ///
-    /// Present → launch through `omega-mc-up` (the caller turns this into
-    /// `Action::RunShellCommand`, the same mechanism the Settings
-    /// install/uninstall actions use). A raw `docker compose up -d` is NOT
-    /// enough: omega-mc-up first generates `.env` from live OmegaOS state (bot
-    /// token, Claude OAuth, DOCKER_GID, one-time vault passphrase), ensures
-    /// config/omega-mc.yaml, and builds the three LOCAL images that are never
-    /// published to GHCR — on a fresh install compose alone fails on the
-    /// missing .env/images. It's idempotent, so it's also the right re-launch
-    /// path. Absent → return the honest install instructions.
-    pub fn resolve_open_dashboard() -> DashboardLaunch {
-        let dir = omega_core::config::omega_dir()
-            .join("repos")
-            .join("omega-mc");
-        let dir_str = dir.to_string_lossy().to_string();
-        // The directory alone isn't proof of a usable clone; require the .git
-        // marker install.sh checks (a failed clone is `rm -rf`'d, but a partial
-        // manual copy could leave a bare dir). Runtime truth over assumption.
-        if dir.join(".git").is_dir() {
-            // install.sh symlinks omega-mc-up onto PATH; fall back to the
-            // installed copy in $OMEGA_DIR/bin for shells that miss the link.
-            let fallback = omega_core::config::omega_dir()
-                .join("bin")
-                .join("omega-mc-up.sh");
-            DashboardLaunch::Launch {
-                command: format!(
-                    "echo '── Starting OmegaMC dashboard (omega-mc-up) ──' && {{ command -v omega-mc-up >/dev/null 2>&1 && omega-mc-up || {fb}; }} && echo && echo 'Dashboard up. Local URL: http://localhost:8080 (see {dir}/docker-compose.yml for the published port; AISB agents in config/omega-aisb.yaml).'",
-                    fb = shell_quote(&fallback.to_string_lossy()),
-                    dir = shell_quote(&dir_str),
-                ),
-                message: format!(
-                    "▶ Starting OmegaMC dashboard via omega-mc-up ({dir_str}) — watch the spawned session; URL printed there once containers are up."
-                ),
-            }
-        } else {
-            DashboardLaunch::NotInstalled {
-                message: format!(
-                    "OmegaMC dashboard not installed. Install it with: git clone https://github.com/agentik-os/agentik-telegram.git {dir_str} && omega-mc-up"
-                ),
-            }
-        }
-    }
-}
-
-/// Result of resolving the Monitor "Open Dashboard" action against the
-/// filesystem. Mapped to an `Action` by the input layer (kept Action-free here
-/// so `app.rs` stays decoupled from `input.rs`).
-#[derive(Debug, Clone)]
-pub enum DashboardLaunch {
-    /// OmegaMC is installed — launch it in a session via the given shell command.
-    Launch { command: String, message: String },
-    /// OmegaMC is absent — show honest install instructions, no command run.
-    NotInstalled { message: String },
-}
-
-/// Single-quote a string for safe interpolation into a `bash -c` command. Wraps
-/// in single quotes and escapes embedded single quotes the POSIX way (`'\''`).
-fn shell_quote(s: &str) -> String {
-    format!("'{}'", s.replace('\'', "'\\''"))
 }
 
 pub struct App {

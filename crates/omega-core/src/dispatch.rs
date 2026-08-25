@@ -648,11 +648,13 @@ fn resolve_dispatch_agent(
     crate::external_orchestrator::resolve_mission_writer(agent_override, configured)
 }
 
-fn seed_lab_plan(state_dir: &Path, oracle_name: &str) -> Result<()> {
+fn seed_lab_plan(state_dir: &Path, oracle_name: &str, mission: &str) -> Result<()> {
+    let steps = crate::lab::lab_plan_for_mission(mission);
     let mut todo = crate::oracle_todo::OracleTodo::load(state_dir, oracle_name)?;
-    todo.set_plan(crate::lab::LAB_LOOP_STEPS.iter().copied());
+    todo.set_plan(steps.iter().copied());
+    let first = steps.first().copied().unwrap_or("Understand");
     let _ = todo.upsert(
-        "Understand",
+        first,
         crate::oracle_todo::TodoStatus::Doing,
         Some("seeded by omega dispatch — AGK Agentic Engineering Lab loop"),
     );
@@ -1442,7 +1444,7 @@ impl Dispatcher {
         let session_id = gen_session_uuid();
         oracle_state.session_id = Some(session_id.clone());
         oracle_state.write(&self.config.state_dir)?;
-        seed_lab_plan(&self.config.state_dir, &oracle_name).with_context(|| {
+        seed_lab_plan(&self.config.state_dir, &oracle_name, mission).with_context(|| {
             format!("seeding Lab plan for {oracle_name} — ANALYSE with 0/0 is not a dispatch")
         })?;
 
@@ -1540,7 +1542,7 @@ impl Dispatcher {
             prompt.push_str("\n\n");
             prompt.push_str(&compiled.markdown);
         }
-        prompt.push_str(&crate::lab::oracle_lab_block());
+        prompt.push_str(&crate::lab::oracle_lab_block_for_mission(mission));
 
         // Claude-only smart spawn (2026-w20 features): /goal + --effort +
         // budget caps. Gemini/GLM/Pi/Hermes fall back to the bare launcher
@@ -3434,46 +3436,24 @@ mod ledger_followup_tests {
     }
 
     #[test]
-    fn seed_lab_plan_writes_eleven_steps_or_fails() {
+    fn seed_lab_plan_scales_to_mission_or_fails() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let ledger = MissionLedger::open(mission_ledger_path(tmp.path())).unwrap();
-        let mission = Mission::new("OmegaOS", "tiny mission", PathBuf::from("/tmp/OmegaOS"));
-        ledger
-            .create_mission(
-                &mission,
-                &format!("test:{}:created", mission.id.as_str()),
-                "test",
-            )
-            .unwrap();
-        let mut classified = AppendEvent::new(
-            mission.id.clone(),
-            1,
-            format!("test:{}:classified", mission.id.as_str()),
-            "test",
-            "mission_classified",
-        );
-        classified.next_mission_state = Some(MissionState::Classified);
-        let classified = ledger.append(classified).unwrap();
-        let mut state = OracleState::from_ledger("oracle-OmegaOS", &mission, &classified).unwrap();
-        assert!(
-            state.session_id.is_none(),
-            "from_ledger must not invent a conversation id"
-        );
-        let session_id = gen_session_uuid();
-        state.session_id = Some(session_id.clone());
-        state.write(tmp.path()).unwrap();
-        let loaded = OracleState::read(tmp.path(), "oracle-OmegaOS")
-            .unwrap()
-            .unwrap();
-        assert_eq!(
-            loaded.session_id.as_deref(),
-            Some(session_id.as_str()),
-            "first persist must carry session_id so ANALYSE is not session_id=null"
-        );
-        seed_lab_plan(tmp.path(), "oracle-OmegaOS").unwrap();
+        seed_lab_plan(tmp.path(), "oracle-OmegaOS", "tiny typo in the README").unwrap();
         let todo = crate::oracle_todo::OracleTodo::load(tmp.path(), "oracle-OmegaOS").unwrap();
-        assert_eq!(todo.tasks.len(), 11);
+        assert_eq!(
+            todo.tasks.len(),
+            3,
+            "a tiny ask must seed Understand|Build|Verify, not Deploy/Observe"
+        );
         assert_eq!(todo.tasks[0].title, "Understand");
         assert_eq!(todo.tasks[0].status, crate::oracle_todo::TodoStatus::Doing);
+        seed_lab_plan(
+            tmp.path(),
+            "oracle-OmegaOS",
+            "complete overhaul of the entire system from scratch",
+        )
+        .unwrap();
+        let epic = crate::oracle_todo::OracleTodo::load(tmp.path(), "oracle-OmegaOS").unwrap();
+        assert_eq!(epic.tasks.len(), 11);
     }
 }

@@ -1749,12 +1749,7 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
                     match app.selected_monitor_section() {
                         MonitorSection::Actions => {
                             let action = app.selected_monitor_action();
-                            // OpenDashboard needs `&mut App` → its own handler.
-                            if matches!(action, MonitorAction::OpenDashboard) {
-                                open_dashboard_action(app)
-                            } else {
-                                execute_monitor_action(action)
-                            }
+                            execute_monitor_action(action)
                         }
                         // Account & billing → the OAuth re-login engine. Context-
                         // aware: once the authorize URL is captured, Enter opens
@@ -2013,9 +2008,6 @@ Statut actuel: {status}.",
         }
         KeyCode::Char('B') if app.tab == Tab::Settings && app.settings_on_monitor() => {
             Action::RefreshBilling
-        }
-        KeyCode::Char('O') if app.tab == Tab::Settings && app.settings_on_monitor() => {
-            open_dashboard_action(app)
         }
         KeyCode::Char('U') if app.tab == Tab::Settings && app.settings_on_monitor() => {
             execute_monitor_action(MonitorAction::UpdateOmega)
@@ -2430,11 +2422,6 @@ fn execute_monitor_action(action: MonitorAction) -> Action {
         MonitorAction::TelegramDisconnect => Action::TelegramDisconnect,
         MonitorAction::ProvisioningSetup => Action::ProvisioningSetup,
         MonitorAction::RefreshBilling => Action::RefreshBilling,
-        // OpenDashboard needs the `&mut App` to surface the honest "not
-        // installed" status when OmegaMC is absent, so the Enter/letter
-        // handlers route through `open_dashboard_action(app)` directly. This
-        // arm is unreachable in practice but keeps the match total.
-        MonitorAction::OpenDashboard => Action::None,
         // Update runs as a DETACHED session (same reason the General-section
         // update does): `omega update` rebuilds the very binary this TUI runs
         // from and the build takes minutes, so spawning it keeps the UI alive
@@ -2444,28 +2431,6 @@ fn execute_monitor_action(action: MonitorAction) -> Action {
             label: "OmegaOS update".to_string(),
             command: "omega update".to_string(),
         },
-    }
-}
-
-/// Resolve + dispatch the Monitor "Open Dashboard" action. When OmegaMC is
-/// installed (`$OMEGA_DIR/repos/omega-mc/.git`), launch it via
-/// `Action::RunShellCommand` (`omega-mc-up` — see `resolve_open_dashboard`
-/// for why raw compose isn't enough) — the same session-spawning mechanism
-/// the Settings install/uninstall actions use. When absent, set an honest
-/// install message and dispatch nothing.
-fn open_dashboard_action(app: &mut App) -> Action {
-    match MonitorAction::resolve_open_dashboard() {
-        crate::app::DashboardLaunch::Launch { command, message } => {
-            app.status_message = Some(message);
-            Action::RunShellCommand {
-                label: "OmegaMC dashboard".to_string(),
-                command,
-            }
-        }
-        crate::app::DashboardLaunch::NotInstalled { message } => {
-            app.status_message = Some(message);
-            Action::None
-        }
     }
 }
 

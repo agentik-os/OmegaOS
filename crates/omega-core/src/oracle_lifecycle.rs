@@ -1334,7 +1334,7 @@ impl OraclePromptGenerator {
         // same generic advice and both defaulted to doing the work themselves
         // instead of spawning and supervising workers.
         prompt.push_str(&crate::mission_patterns::orchestration_block(mission));
-        prompt.push_str(&crate::lab::oracle_lab_block());
+        prompt.push_str(&crate::lab::oracle_lab_block_for_mission(mission));
         prompt.push_str("\n---\n\n");
 
         // Layer 2 — the shared v2 identity/protocol template.

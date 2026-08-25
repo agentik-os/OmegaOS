@@ -138,7 +138,7 @@ omega_sudo() {
 # Portable timeout: GNU coreutils `timeout` is guaranteed on Linux; macOS only
 # grew a native /usr/bin/timeout in macOS 13, and older boxes have at best
 # brew's `gtimeout`. Exit code 127 from a missing binary silently disabled the
-# claude auto-install + the Agentik-Skills/OmegaMC clones on such Macs (the
+# claude auto-install + the Agentik-Skills clone on such Macs (the
 # `||`/`elif` guards turned it into misleading "no auth?" skip messages).
 # Fallback: run un-timed — strictly better than not running at all (git is
 # already prompt-proofed via GIT_TERMINAL_PROMPT=0, so clones fail fast).
@@ -1290,7 +1290,7 @@ fi
 step "Phase 5: Configuring OmegaOS"
 
 # Single OmegaOS home. Defined sub-dirs so future installs land in the RIGHT
-# place (see docs/ARCHITECTURE.md): repos/ = cloned github repos (e.g. omega-mc),
+# place (see docs/ARCHITECTURE.md): repos/ = cloned github repos (e.g. Agentik-Skills),
 # tools/ = third-party tools/binaries an agent installs, prompts/ = runtime
 # prompt scratch, lib/ + bin/ = audit runtime. No dual ~/.aisb home.
 mkdir -p "$OMEGA_DIR"/{state,logs,locks,repos,tools,prompts,lib,bin}
@@ -3673,23 +3673,13 @@ else
     info "Nova personal-assistant layer deferred (needs its own bot token + NOVA_CHAT_ID). Add: OMEGA_WITH_NOVA=1 ./install.sh"
 fi
 
-# ─── Phase 6.95: Telegram interface → OmegaMC (Agentik-Telegram, Go + Docker) ───
-# OmegaMC (agentik-os/agentik-telegram) is the OmegaOS Telegram control plane: it
-# routes Telegram messages to named AISB agents — each running Claude Code in its
-# own Docker container — with @agent routing + a Mission Control web UI. This is
-# the "talk to your agents from your phone" layer (RESTORES the powerful Go+Docker
-# OmegaMC; supersedes the interim single-session Bun bot). The heavy image builds
-# (chromium + embedding model) are DEFERRED to connect-time, exactly like the
-# browser stack: cloning is cheap; `omega-mc-up` builds the three local images and
-# `docker compose up -d` on demand (the images are not published to GHCR because
-# the agent image bundles the Claude Code binary, so we build from source). The
-# bring-up reads the bot token from ~/.omega/telegram.toml and the Claude OAuth
-# token from ~/.omega/credentials/claude.json. Skip entirely: OMEGA_SKIP_DASHBOARD=1.
+# ─── Phase 6.95: Agentik-Skills library (canonical SSOT) ───
 # Agentik-Skills — the canonical SSOT skills library (agentik-os/Agentik-Skills).
 # Skills here mirror into ~/.omega/skills/<name>/ and `omega sync` symlinks them
 # into every LLM (Claude ~/.claude/skills, Gemini/Codex via OMEGA.md). Private repo
-# → needs gh/git auth; best-effort, like the dashboard.
-step "Phase 6.95: Telegram interface (OmegaMC)"
+# → needs gh/git auth; best-effort. Telegram phone control is the command bot
+# (omega-tg-up), not a separate web dashboard.
+step "Phase 6.95: Agentik-Skills library"
 SKILLS_REPO_DIR="$OMEGA_DIR/repos/Agentik-Skills"
 mkdir -p "$OMEGA_DIR/repos"
 if [[ -d "$SKILLS_REPO_DIR/.git" ]]; then
@@ -3852,37 +3842,11 @@ if [[ -x "$INSTALL_DIR/omega" ]]; then
         || info "post-mirror provider sync had warnings (re-run: omega sync)"
 fi
 
-if [[ "${OMEGA_SKIP_DASHBOARD:-0}" != "1" ]]; then
-    MC_DIR="$OMEGA_DIR/repos/omega-mc"
-    mkdir -p "$OMEGA_DIR/repos"
-    if [[ -d "$MC_DIR/.git" ]]; then
-        ok "OmegaMC present ($MC_DIR — update: git -C $MC_DIR pull && omega-mc-up --rebuild)"
-    elif omega_timeout 120 git clone --depth 1 https://github.com/agentik-os/agentik-telegram.git "$MC_DIR" >/dev/null 2>&1; then
-        ok "OmegaMC cloned → $MC_DIR"
-    else
-        rm -rf "$MC_DIR" 2>/dev/null || true
-        info "OmegaMC clone skipped — repo unreachable (no git auth?). Later: git clone https://github.com/agentik-os/agentik-telegram.git $MC_DIR"
-    fi
-    # Ship the bring-up helper (generates .env from OmegaOS state → builds images
-    # → docker compose up) onto the omega bin PATH.
-    if [[ -f "$OMEGA_SRC/scripts/omega-mc-up.sh" ]]; then
-        cp -f "$OMEGA_SRC/scripts/omega-mc-up.sh" "$OMEGA_DIR/bin/omega-mc-up.sh"
-        chmod +x "$OMEGA_DIR/bin/omega-mc-up.sh"
-        # symlink onto PATH ($INSTALL_DIR is added to PATH above) so `omega-mc-up` just works
-        ln -sf "$OMEGA_DIR/bin/omega-mc-up.sh" "$INSTALL_DIR/omega-mc-up" 2>/dev/null || true
-    fi
-    # Seed the AISB 13-agent roster as the active config if absent.
-    if [[ -d "$MC_DIR/config" && ! -f "$MC_DIR/config/omega-mc.yaml" && -f "$MC_DIR/config/omega-aisb.yaml" ]]; then
-        cp "$MC_DIR/config/omega-aisb.yaml" "$MC_DIR/config/omega-mc.yaml"
-    fi
-    if [[ -d "$MC_DIR/.git" ]]; then
-        # OmegaMC is the OPTIONAL multi-agent backend (Claude-per-container + Mission
-        # Control web UI). It is NOT auto-started: it would poll the same bot token as
-        # the command bot (Phase c), and Telegram allows ONE poller per token. Run it
-        # on a SEPARATE bot token, or stop omega-tg-bot first, then: omega-mc-up.
-        info "OmegaMC (optional multi-agent backend) installed → $MC_DIR. It needs its OWN bot token (don't share the command bot's). Bring up the dashboard (no token needed — the command bot owns Telegram): omega-mc-up  (needs Docker)"
-    fi
-fi
+# Retired Mission Control web UI (separate Docker stack). Telegram stays the
+# phone control plane via omega-tg-up. Drop leftover launchers so a previous
+# install cannot start the dead stack. Do not delete ~/.omega/repos/omega-mc —
+# that tree may hold a .env with tokens.
+rm -f "$OMEGA_DIR/bin/omega-mc-up.sh" "$INSTALL_DIR/omega-mc-up" 2>/dev/null || true
 
 # ─── Done ─────────────────────────────────────────────────────────────────────
 

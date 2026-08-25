@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Ferme les tunnels cloudflared + serveurs mosh détachés des users de dev (vibe, lab).
-# PROTÈGE toujours : la connexion courante (root), l'infra (omega-mc, bots Telegram,
+# PROTÈGE toujours : la connexion courante (root), l'infra (Telegram bots,
 # daemons sécurité agentik-*, tailscaled, sshd, systemd). Usage: close-sessions.sh [--dry]
 #
 # ═══ RÈGLE ABSOLUE (opérateur, 2026-08-11, après incident) ═════════════════════
@@ -39,4 +39,4 @@ for p in $(pgrep -x cloudflared 2>/dev/null); do act "$p"; done
 echo "== Serveurs mosh détachés (vibe + lab ; root/connexion courante protégés) =="
 for p in $(pgrep -x mosh-server -U vibe 2>/dev/null; pgrep -x mosh-server -U lab 2>/dev/null); do act "$p"; done
 
-echo "(claude, rmux, root, infra omega-mc/bots/sécurité/tailscale/sshd : JAMAIS touchés)"
+echo "(claude, rmux, root, infra bots/sécurité/tailscale/sshd : JAMAIS touchés)"
