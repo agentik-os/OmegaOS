@@ -8689,7 +8689,9 @@ async fn cmd_spawn_worker(
     // spawned via the CLI (the live path oracles use) gets NO doctrine.
     let mut full_prompt = prompt.to_string();
     // SESSION IDENTITY — rmux + Omega state key. Resume flags are provider-specific.
-    full_prompt.push_str(&omega_core::rules::worker_session_identity_block(&worker_name));
+    full_prompt.push_str(&omega_core::rules::worker_session_identity_block(
+        &worker_name,
+    ));
     // Surface an unresolved git drift to the worker so it reconciles BEFORE
     // editing instead of working blind on a stale/diverged checkout.
     if let Some(warning) = &git_sync_warning {
@@ -17032,11 +17034,7 @@ fn prune_dangling_omega_links(dir: &std::path::Path, omega_dir: &std::path::Path
     }
 }
 
-fn link_policy_kernel(
-    dest: &std::path::Path,
-    src: &std::path::Path,
-    label: &str,
-) -> Result<()> {
+fn link_policy_kernel(dest: &std::path::Path, src: &std::path::Path, label: &str) -> Result<()> {
     if let Some(parent) = dest.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -17058,12 +17056,7 @@ fn link_policy_kernel(
     Ok(())
 }
 
-fn upsert_marked_file(
-    path: &std::path::Path,
-    begin: &str,
-    end: &str,
-    body: &str,
-) -> Result<()> {
+fn upsert_marked_file(path: &std::path::Path, begin: &str, end: &str, body: &str) -> Result<()> {
     let block = format!("{begin}\n{body}\n{end}");
     let existing = std::fs::read_to_string(path).unwrap_or_default();
     let updated = match (existing.find(begin), existing.find(end)) {

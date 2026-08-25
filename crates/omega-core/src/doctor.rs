@@ -222,9 +222,9 @@ fn check_rmux_color_env() -> Check {
         }
     };
     let text = String::from_utf8_lossy(&output.stdout);
-    let no_color = text.lines().any(|line| {
-        line == "NO_COLOR" || line.starts_with("NO_COLOR=") && line != "NO_COLOR="
-    });
+    let no_color = text
+        .lines()
+        .any(|line| line == "NO_COLOR" || line.starts_with("NO_COLOR=") && line != "NO_COLOR=");
     let force_off = text
         .lines()
         .any(|line| line == "FORCE_COLOR=0" || line.eq_ignore_ascii_case("FORCE_COLOR=false"));
