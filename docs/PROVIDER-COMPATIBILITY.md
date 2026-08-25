@@ -16,7 +16,7 @@ omega install <provider> --force
 | Gemini CLI | 0.31.0 | `--prompt-interactive --yolo`, Enterprise/API-key accounts |
 | Antigravity (`agy`) | 1.1.8 | native Google auth, prompt-interactive |
 | Pi / OpenRouter | 0.84.3 | explicit provider/model, `--approve` (no tool-yolo on official CLI) |
-| Hermes | 0.20.0 | Home TUI: `hermes chat --yolo`. Never `-q` in a pane. Never `dispatch --agent hermes`. |
+| Hermes | 0.20.0 | Home TUI: `hermes chat --yolo` with `HERMES_HOME`. `install.sh` installs the CLI. `omega sync` wires `~/.hermes` (SOUL, AGENTS.md, skills, `/omegaos` bundle). Never `-q` in a pane. Never `dispatch --agent hermes`. |
 | Kimi Code | 0.38.0 | `--auto` on interactive and `--prompt` launches |
 | GLM | Claude Code 2.1.219 | Claude adapter pointed at Z.AI Anthropic endpoint |
 
@@ -57,8 +57,12 @@ omega new home --agent hermes
 omega dispatch MyProject "mission" --agent codex
 ```
 
-Hermes is Home. Cloud (Cursor Cloud Agent) is the Cursor-side writer for
-OmegaOS itself — it is not `omega dispatch`. See
+Hermes is Home. `./install.sh` installs the Hermes CLI when missing, then
+`omega sync` creates `~/.hermes` even before the first `hermes chat`. The
+messaging gateway (`hermes gateway`) is a user service managed by
+`omega hermes-gateway {install,setup,start,status}`. It must not share a
+Telegram bot token with Omega Atlas. Cloud (Cursor Cloud Agent) is the
+Cursor-side writer for OmegaOS itself — it is not `omega dispatch`. See
 `docs/ADR-lab-three-backends.md`.
 
 The active global selection is mirrored in

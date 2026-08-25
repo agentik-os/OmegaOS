@@ -1,10 +1,11 @@
 # Third-party skill collections (superpowers + gstack)
 
 OmegaOS vendors two MIT-licensed third-party skill collections at pinned commit
-SHAs. They install ALWAYS-ON during `./install.sh` (Phase 6.91) and are fully
-reproducible: a fresh `git clone OmegaOS && ./install.sh` provisions the exact
-same skills every time. The installer is additive by construction and never
-regresses an existing skill or hook. Opt out with `OMEGA_SKIP_THIRD_PARTY=1`.
+SHAs. They are **opt-in** during `./install.sh` (Phase 6.91): a default fresh
+install does not clone them. Add them with `OMEGA_WITH_THIRD_PARTY=1 ./install.sh`
+(or run `bash scripts/install-third-party-skills.sh` later). The installer is
+additive by construction and never regresses an existing skill or hook.
+`OMEGA_SKIP_THIRD_PARTY=1` still skips the step if both flags are set.
 
 Installer script: `scripts/install-third-party-skills.sh`.
 
@@ -106,7 +107,8 @@ verify-install gate enforces that.
 
 ## 5. Opt-out and removal
 
-Opt out of the whole step: set `OMEGA_SKIP_THIRD_PARTY=1` before `./install.sh`.
+Default `./install.sh` skips this step. Opt in with `OMEGA_WITH_THIRD_PARTY=1`.
+`OMEGA_SKIP_THIRD_PARTY=1` still skips even when the opt-in flag is set.
 
 To remove after install:
 

@@ -31,6 +31,8 @@ pub mod graph;
 pub mod graph_executor;
 pub mod graph_risk;
 pub mod guardian;
+pub mod hermes_gateway;
+pub mod hermes_sync;
 pub mod inbox;
 pub mod intent;
 pub mod lab;

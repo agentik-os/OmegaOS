@@ -280,7 +280,7 @@ impl Agent {
                 "if command -v npm >/dev/null 2>&1; then mkdir -p \"$HOME/.npm-global\" && npm install -g --prefix \"$HOME/.npm-global\" @earendil-works/pi-coding-agent; elif [ -x \"$HOME/.bun/bin/bun\" ]; then \"$HOME/.bun/bin/bun\" add -g @earendil-works/pi-coding-agent; else echo 'Need Node.js or bun first (run: curl -fsSL https://bun.sh/install | bash)'; exit 1; fi",
             ),
             Agent::Hermes => Some(
-                "T=$(mktemp) || exit $?; curl -fsSL https://hermes-agent.nousresearch.com/install.sh -o \"$T\" && bash \"$T\"; R=$?; rm -f \"$T\"; exit $R",
+                "T=$(mktemp) || exit $?; curl -fsSL https://hermes-agent.nousresearch.com/install.sh -o \"$T\" && CI=1 bash \"$T\" --skip-setup --skip-browser --skip-computer-use --non-interactive; R=$?; rm -f \"$T\"; exit $R",
             ),
             Agent::Kimi => Some(
                 "T=$(mktemp) && curl -fsSL https://code.kimi.com/kimi-code/install.sh -o \"$T\" && bash \"$T\"; R=$?; rm -f \"$T\"; exit $R",
@@ -502,7 +502,9 @@ impl Agent {
         // `omega` in ~/.local/bin or ~/.bun/bin can be "command not found", and a
         // dispatched oracle drops to a bare shell instead of running its mission.
         // Prepend the user bin dirs so every launched agent + tool always resolves.
-        let path_prefix = format!("{home}/.local/bin:{home}/.bun/bin:{home}/.npm-global/bin");
+        let path_prefix = format!(
+            "{home}/.local/bin:{home}/.hermes/bin:{home}/.hermes/hermes-agent/venv/bin:{home}/.bun/bin:{home}/.npm-global/bin"
+        );
         // Cursor (and other agent hosts) start the rmux daemon with
         // NO_COLOR=1 FORCE_COLOR=0. Every pane inherits that, and Claude /
         // Codex / Hermes then emit dim/bold only — no 38;2. Measured
@@ -858,13 +860,23 @@ impl Agent {
                 } else {
                     ""
                 };
+                let hermes_home = format!(
+                    "export HERMES_HOME={}; ",
+                    shell_quote(&format!("{home}/.hermes"))
+                );
                 // Hermes chat has no positional prompt (unrecognized arguments →
                 // exit). `-q` is a one-shot that also exits. Home/TUI panes stay
                 // on interactive `chat`; callers inject the first message after
                 // the TUI is up.
                 pane_bash(&format!(
-                    "{}{}exec hermes chat{}{}{}{}",
-                    env_prefix, yolo_env, provider_arg, hermes_args, yolo_arg, resume_arg
+                    "{}{}{}exec hermes chat{}{}{}{}",
+                    env_prefix,
+                    hermes_home,
+                    yolo_env,
+                    provider_arg,
+                    hermes_args,
+                    yolo_arg,
+                    resume_arg
                 ))
             }
             Agent::Glm => {
@@ -1296,6 +1308,8 @@ mod tests {
             hermes.contains("HERMES_YOLO_MODE=1 exec hermes chat"),
             "{hermes}"
         );
+        assert!(hermes.contains(".hermes/bin"), "{hermes}");
+        assert!(hermes.contains("HERMES_HOME="), "{hermes}");
         let hermes_prompt = launch(
             Agent::Hermes,
             Some("inspect the repository"),
@@ -1491,8 +1505,18 @@ mod tests {
         assert!(cmd.contains("openrouter"), "{cmd}");
         assert!(cmd.contains("--yolo"), "{cmd}");
         assert!(cmd.contains("HERMES_YOLO_MODE=1"), "{cmd}");
+        assert!(cmd.contains("HERMES_HOME="), "{cmd}");
         assert!(!cmd.contains(" -q "), "{cmd}");
         assert!(!cmd.contains("; exec bash"), "{cmd}");
+    }
+
+    #[test]
+    fn hermes_install_is_non_interactive() {
+        let cmd = Agent::Hermes.install_command().expect("hermes installer");
+        assert!(cmd.contains("--skip-setup"), "{cmd}");
+        assert!(cmd.contains("--skip-browser"), "{cmd}");
+        assert!(cmd.contains("--skip-computer-use"), "{cmd}");
+        assert!(cmd.contains("--non-interactive"), "{cmd}");
     }
 
     #[test]

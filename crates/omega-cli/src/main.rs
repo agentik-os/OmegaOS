@@ -237,6 +237,13 @@ enum Commands {
         action: TelegramAction,
     },
 
+    /// Manage the Hermes messaging gateway (Telegram/Discord/… — not omega-gateway)
+    #[command(name = "hermes-gateway")]
+    HermesGateway {
+        #[command(subcommand)]
+        action: HermesGatewayAction,
+    },
+
     /// Generate a PDF report (whitepaper, audit, marketing, doc)
     Pdf {
         /// Template: whitepaper, audit, marketing, doc
@@ -1078,6 +1085,7 @@ async fn main() -> Result<()> {
             }
         },
         Some(Commands::Telegram { action }) => cmd_telegram(action).await,
+        Some(Commands::HermesGateway { action }) => cmd_hermes_gateway(action),
         Some(Commands::Pdf {
             template,
             data,
@@ -3940,6 +3948,18 @@ fn cmd_install(agent_name: &str, dry_run: bool, force: bool) -> Result<()> {
     println!("\nSyncing OmegaOS config...");
     let _ = cmd_sync();
 
+    if agent == omega_core::agents::Agent::Hermes {
+        if let Some(home) = dirs::home_dir() {
+            match omega_core::hermes_gateway::install_unit(&home, false) {
+                Ok(()) => println!("[+] Hermes messaging gateway service unit installed"),
+                Err(error) => println!(
+                    "[!] Hermes gateway unit not installed yet: {error} \
+                     (run omega hermes-gateway install after hermes setup)"
+                ),
+            }
+        }
+    }
+
     Ok(())
 }
 
@@ -4631,6 +4651,121 @@ enum AuditAction {
         #[arg(short, long, default_value = ".")]
         dir: String,
     },
+}
+
+#[derive(Subcommand)]
+enum HermesGatewayAction {
+    /// Show CLI, configured platforms, service, and Atlas token collision
+    Status,
+    /// Install the native hermes-gateway user service (systemd / launchd)
+    Install {
+        /// Reinstall the unit even if it already exists
+        #[arg(long)]
+        force: bool,
+    },
+    /// Start the gateway (refuses if it shares the Omega Atlas Telegram token)
+    Start,
+    /// Stop the gateway
+    Stop,
+    /// Restart the gateway
+    Restart,
+    /// Interactive platform wizard (`hermes gateway setup`)
+    Setup,
+}
+
+fn cmd_hermes_gateway(action: HermesGatewayAction) -> Result<()> {
+    let home = dirs::home_dir().context("HOME is required for Hermes gateway")?;
+    match action {
+        HermesGatewayAction::Status => {
+            let report = omega_core::hermes_gateway::inspect(&home);
+            match report.cli {
+                Some(path) => println!("[+] hermes CLI: {}", path.display()),
+                None => println!("[!] hermes CLI missing — run omega install hermes"),
+            }
+            if report.platforms.is_empty() {
+                println!("[!] no messaging platform configured — omega hermes-gateway setup");
+            } else {
+                println!("[+] platforms: {}", report.platforms.join(", "));
+            }
+            if report.telegram_collision {
+                println!(
+                    "[x] TELEGRAM_BOT_TOKEN matches the Omega Atlas bot. \
+                     Create a second @BotFather token — two pollers on one token fight."
+                );
+            }
+            match report.service {
+                omega_core::hermes_gateway::GatewayService::Running => {
+                    println!("[+] service: running")
+                }
+                omega_core::hermes_gateway::GatewayService::Stopped => {
+                    println!("[!] service: stopped — omega hermes-gateway start")
+                }
+                omega_core::hermes_gateway::GatewayService::Missing => {
+                    println!("[!] service: not installed — omega hermes-gateway install")
+                }
+            }
+            println!(
+                "    HERMES_HOME={}  (omega is on the gateway PATH)",
+                report.home.display()
+            );
+            Ok(())
+        }
+        HermesGatewayAction::Install { force } => {
+            let _ = cmd_sync();
+            omega_core::hermes_gateway::install_unit(&home, force)?;
+            println!("[+] hermes-gateway user service installed");
+            let report = omega_core::hermes_gateway::inspect(&home);
+            if report.telegram_collision {
+                println!(
+                    "[x] refused to start: Hermes Telegram token equals Omega Atlas. \
+                     Use a different bot."
+                );
+            } else if report.configured() {
+                println!("    platforms ready — start with: omega hermes-gateway start");
+            } else {
+                println!("    next: omega hermes-gateway setup");
+            }
+            Ok(())
+        }
+        HermesGatewayAction::Start => {
+            omega_core::hermes_gateway::start(&home)?;
+            println!("[+] hermes gateway started");
+            Ok(())
+        }
+        HermesGatewayAction::Stop => {
+            omega_core::hermes_gateway::stop(&home)?;
+            println!("[+] hermes gateway stopped");
+            Ok(())
+        }
+        HermesGatewayAction::Restart => {
+            omega_core::hermes_gateway::restart(&home)?;
+            println!("[+] hermes gateway restarted");
+            Ok(())
+        }
+        HermesGatewayAction::Setup => {
+            println!("Launching hermes gateway setup (interactive)…");
+            println!("Use a DIFFERENT Telegram bot than Omega Atlas (`omega telegram setup`).");
+            let bin = omega_core::hermes_gateway::find_hermes(&home)
+                .context("hermes CLI not found — run omega install hermes")?;
+            let status = std::process::Command::new(bin)
+                .args(["gateway", "setup"])
+                .env("HERMES_HOME", omega_core::hermes_sync::hermes_home(&home))
+                .env(
+                    "PATH",
+                    format!(
+                        "{}:{}",
+                        omega_core::hermes_gateway::gateway_path(&home),
+                        std::env::var("PATH").unwrap_or_default()
+                    ),
+                )
+                .status()
+                .context("hermes gateway setup")?;
+            if !status.success() {
+                anyhow::bail!("hermes gateway setup exited {status}");
+            }
+            Ok(())
+        }
+    }
 }
 
 #[derive(Subcommand)]
@@ -17056,37 +17191,6 @@ fn link_policy_kernel(dest: &std::path::Path, src: &std::path::Path, label: &str
     Ok(())
 }
 
-fn upsert_marked_file(path: &std::path::Path, begin: &str, end: &str, body: &str) -> Result<()> {
-    let block = format!("{begin}\n{body}\n{end}");
-    let existing = std::fs::read_to_string(path).unwrap_or_default();
-    let updated = match (existing.find(begin), existing.find(end)) {
-        (Some(start), Some(finish)) if finish > start => {
-            let mut out = String::with_capacity(existing.len() + block.len());
-            out.push_str(&existing[..start]);
-            out.push_str(&block);
-            out.push_str(&existing[finish + end.len()..]);
-            out
-        }
-        _ => {
-            let mut out = existing;
-            if !out.is_empty() && !out.ends_with('\n') {
-                out.push('\n');
-            }
-            if !out.is_empty() {
-                out.push('\n');
-            }
-            out.push_str(&block);
-            out.push('\n');
-            out
-        }
-    };
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    std::fs::write(path, updated)?;
-    Ok(())
-}
-
 fn cmd_sync() -> Result<()> {
     let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/tmp"));
     let omega_dir = omega_core::config::omega_dir();
@@ -17383,19 +17487,15 @@ fn cmd_sync() -> Result<()> {
         "OpenCode",
     )?;
 
-    // Hermes loads AGENTS.md from CWD, not ~/.hermes/. Stamp a pointer into
-    // SOUL.md (identity slot) so Home Hermes still sees OmegaOS doctrine.
-    let hermes_home = home.join(".hermes");
-    if hermes_home.is_dir() {
-        upsert_marked_file(
-            &hermes_home.join("SOUL.md"),
-            "<!-- OMEGAOS-KERNEL:START -->",
-            "<!-- OMEGAOS-KERNEL:END -->",
-            "You run under OmegaOS. Follow `~/.omega/AGENTS.md` (Laws L0–L6 + named rules). \
-             Durable state is `omega progress` / `omega done`. Use Hermes native tools — \
-             do not invent Claude TaskCreate, `/goal`, or Codex `update_plan`.",
-        )?;
-        println!("[+] Hermes: OmegaOS kernel pointer in ~/.hermes/SOUL.md");
+    // Hermes Home: create ~/.hermes if missing, stamp SOUL.md, link AGENTS.md,
+    // point skills.external_dirs at ~/.omega/skills, write /omegaos bundle.
+    match omega_core::hermes_sync::sync_hermes_home(&home, &omega_dir, &agents_full_dst) {
+        Ok(report) => println!(
+            "[+] Hermes: SOUL + AGENTS.md + {} core skills + /omegaos bundle → {}",
+            report.skills_linked,
+            report.home.display()
+        ),
+        Err(error) => println!("[!] Hermes sync skipped: {error}"),
     }
 
     // Pi / Kimi / OpenRouter Home panes pick up project AGENTS.md or the
