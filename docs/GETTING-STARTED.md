@@ -147,8 +147,6 @@ local chat), and `omega attach -t <session>` (jump into any live agent).
 
 ## Optional extras
 
-- **Mission Control dashboard** (web UI, one container per agent — needs
-  Docker): `omega-mc-up`, then open `http://<host>:8080`.
 - **More CLI agents**:
   `omega install claude|antigravity|gemini|openrouter|pi|hermes|glm|kimi`
   (or

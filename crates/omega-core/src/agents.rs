@@ -527,7 +527,7 @@ impl Agent {
                     providers.claude.dangerously_skip_permissions,
                 )?;
                 let mut args = format!(
-                    "{}{}exec CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1 claude{}",
+                    "{}{}CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1 exec claude{}",
                     env_prefix, trust_prefix, permission_args
                 );
                 if let Some(ref sys_file) = opts.system_prompt_file {
@@ -670,7 +670,7 @@ impl Agent {
                     "--sandbox workspace-write --ask-for-approval on-request"
                 };
                 let mut args = format!(
-                    "{}{}exec COLORFGBG='15;0' codex --strict-config {}",
+                    "{}{}COLORFGBG='15;0' exec codex --strict-config {}",
                     env_prefix, trust_prefix, approval
                 );
                 if providers.codex.bypass_hook_trust {
@@ -819,10 +819,9 @@ impl Agent {
                 }
             }
             Agent::Hermes => {
-                // Hermes has required an explicit `chat` subcommand for
-                // one-shot prompts since before v0.20. A bare positional prompt
-                // is parsed as an invalid subcommand. Keep no-prompt sessions
-                // interactive and use the documented query lane for dispatch.
+                // Hermes requires the `chat` subcommand. A bare positional prompt
+                // is an unrecognized argument and kills the pane. Keep sessions
+                // interactive; never `-q` (one-shot exit).
                 let hermes_provider = if !providers.hermes.provider.trim().is_empty() {
                     Some(providers.hermes.provider.trim())
                 } else if !providers.hermes.api_key.is_empty()
@@ -850,27 +849,21 @@ impl Agent {
                 // blocking a detached pane. Never `-q`: that is a one-shot
                 // query that exits and used to drop the pane to bash.
                 let yolo_arg = if providers.hermes.yolo { " --yolo" } else { "" };
+                // Assignments MUST precede `exec`. `exec HERMES_YOLO_MODE=1 hermes`
+                // is `exec` of a command named HERMES_YOLO_MODE=1 → pane dies.
                 let yolo_env = if providers.hermes.yolo {
                     "HERMES_YOLO_MODE=1 "
                 } else {
                     ""
                 };
-                match initial_prompt {
-                    Some(p) => pane_bash(&format!(
-                        "{}exec {}hermes chat{}{}{}{} {}",
-                        env_prefix,
-                        yolo_env,
-                        provider_arg,
-                        hermes_args,
-                        yolo_arg,
-                        resume_arg,
-                        shell_quote(p)
-                    )),
-                    None => pane_bash(&format!(
-                        "{}exec {}hermes chat{}{}{}{}",
-                        env_prefix, yolo_env, provider_arg, hermes_args, yolo_arg, resume_arg
-                    )),
-                }
+                // Hermes chat has no positional prompt (unrecognized arguments →
+                // exit). `-q` is a one-shot that also exits. Home/TUI panes stay
+                // on interactive `chat`; callers inject the first message after
+                // the TUI is up.
+                pane_bash(&format!(
+                    "{}{}exec hermes chat{}{}{}{}",
+                    env_prefix, yolo_env, provider_arg, hermes_args, yolo_arg, resume_arg
+                ))
             }
             Agent::Glm => {
                 // GLM (Z.AI/Zhipu) = Claude Code redirected to Z.AI's Anthropic-
@@ -899,7 +892,7 @@ impl Agent {
                 };
                 match initial_prompt {
                     Some(p) => pane_bash(&format!(
-                        "{} {}exec CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1 claude{}{}{} {}",
+                        "{} {}CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1 exec claude{}{}{} {}",
                         env_prefix,
                         trust_prefix,
                         perms,
@@ -908,7 +901,7 @@ impl Agent {
                         shell_quote(p)
                     )),
                     None => pane_bash(&format!(
-                        "{} {}exec CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1 claude{}{}{}",
+                        "{} {}CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1 exec claude{}{}{}",
                         env_prefix, trust_prefix, perms, model_arg, resume_arg
                     )),
                 }
@@ -1216,7 +1209,9 @@ mod tests {
                 && cmd.contains("never")
                 && !cmd.contains("--approve-for-me")
                 && !cmd.contains("; exec bash")
-                && cmd.contains("exec COLORFGBG=")
+                && cmd.contains("COLORFGBG=")
+                && cmd.contains(" exec codex ")
+                && !cmd.contains("exec COLORFGBG=")
                 && cmd.contains("--add-dir")
                 && cmd.contains("--dangerously-bypass-hook-trust")
                 && cmd.contains("--no-alt-screen"),
@@ -1250,6 +1245,46 @@ mod tests {
         assert_eq!(
             tui, cli,
             "omega new --agent codex must use the same command as TUI New Codex"
+        );
+    }
+
+    #[test]
+    fn exec_does_not_swallow_environment_assignments() {
+        // Live 2026-08-25: `exec VAR=value cmd` → bash: exec: VAR=value: not found
+        // (exit 127). Every Home pane (Claude / Codex / Hermes) died on launch.
+        for agent in [Agent::Claude, Agent::Codex, Agent::Hermes, Agent::Glm] {
+            let cmd = launch(agent, None, LaunchOptions::default());
+            assert!(
+                !cmd.contains("exec CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN="),
+                "bash exec cannot take env assignments: {cmd}"
+            );
+            assert!(
+                !cmd.contains("exec COLORFGBG="),
+                "bash exec cannot take env assignments: {cmd}"
+            );
+            assert!(
+                !cmd.contains("exec HERMES_YOLO_MODE="),
+                "bash exec cannot take env assignments: {cmd}"
+            );
+        }
+        let claude = launch(Agent::Claude, None, LaunchOptions::default());
+        assert!(
+            claude.contains("CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1 exec claude"),
+            "{claude}"
+        );
+        let hermes = launch(Agent::Hermes, None, LaunchOptions::default());
+        assert!(
+            hermes.contains("HERMES_YOLO_MODE=1 exec hermes chat"),
+            "{hermes}"
+        );
+        let hermes_prompt = launch(
+            Agent::Hermes,
+            Some("inspect the repository"),
+            LaunchOptions::default(),
+        );
+        assert!(
+            !hermes_prompt.contains("inspect the repository"),
+            "hermes chat has no positional prompt (unrecognized arguments): {hermes_prompt}"
         );
     }
 

@@ -189,7 +189,16 @@ if grep -q "function fanout" telegram-bot/inbox-bot.ts && grep -q "SECRETISH" te
 # have to remember a tag for a file to be reachable), and the boxes must be hard
 # links so N boxes cost one file's disk, not N.
 if grep -q "function boxesFor" telegram-bot/inbox-bot.ts && grep -q "linkSync" telegram-bot/inbox-bot.ts; then ok "deposit boxes wired (untagged → all boxes, hard-linked)"; else bad "deposit named boxes missing/not hard-linked in inbox-bot.ts"; fi
-if [ -f scripts/omega-mc-up.sh ] && grep -q "omega-mc-up.sh" install.sh && grep -q "agentik-telegram" install.sh; then ok "OmegaMC optional multi-agent backend shipped + wired (omega-mc-up + agentik-telegram clone)"; else bad "OmegaMC (omega-mc-up.sh / agentik-telegram clone) not shipped/wired in install.sh"; fi
+# Mission Control (separate Docker web UI) is retired. Telegram command bot stays.
+if [ -f scripts/omega-mc-up.sh ]; then
+  bad "retired omega-mc-up.sh still in the repo"
+elif grep -qE 'git clone.*agentik-telegram' install.sh; then
+  bad "install.sh still clones the retired Mission Control repo"
+elif grep -qE 'cp -f .*omega-mc-up' install.sh; then
+  bad "install.sh still copies the retired Mission Control launcher"
+else
+  ok "OmegaMC retired (no launcher, no clone, no copy — Telegram command bot remains)"
+fi
 if ls scripts/hooks/*.sh >/dev/null 2>&1 && grep -q "scripts/hooks" install.sh; then ok "tracking + verify hooks shipped + installed"; else bad "hooks not shipped/wired"; fi
 if [ -f agents/identity/SOUL.template.md ] && grep -q "SOUL.template" install.sh; then ok "SOUL identity template shipped + installed"; else bad "SOUL template not shipped/wired"; fi
 if grep -q "usage --check" install.sh; then ok "native billing cron (omega usage --check) scheduled"; else bad "native billing cron missing from install.sh"; fi

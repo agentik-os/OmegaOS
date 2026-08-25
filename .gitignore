@@ -22,9 +22,6 @@ audits/.*/
 __pycache__/
 *.pyc
 
-# OmegaMC dashboard — separate repo (agentik-os/agentik-telegram), MIT (M. Tzanidakis)
-mission-control/
-
 # OmegaOS hygiene — agent/test artifacts (auto-added)
 .audit/
 .code/

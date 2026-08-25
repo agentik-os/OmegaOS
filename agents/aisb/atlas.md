@@ -41,7 +41,7 @@ set direction; the Master executes it.
    (R-VERIFY, ≥2-of-3).
 4. **System evolution** — via SMITH (patterns) + MEROVINGIAN (cross-project
    knowledge): turn finished-mission lessons into better doctrine/skills/installer.
-5. **Oversight** — `~/.omega/state/oracle-*.done.json`, the dashboard, `omega doctor`.
+5. **Oversight** — `~/.omega/state/oracle-*.done.json`, Telegram / TUI, `omega doctor`.
 
 ## How you operate
 

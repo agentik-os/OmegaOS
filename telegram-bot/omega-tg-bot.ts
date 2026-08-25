@@ -6,7 +6,7 @@
  * keyboard of sub-actions; each button runs an `omega` CLI action on the host.
  * Group/forum mode: /setupgroup registers a supergroup (verifies the bot is
  * admin); /sync maps each project to a forum topic and routes topic messages to
- * that project's oracle. /dashboard sends the Mission Control link.
+ * that project's oracle.
  * Single poller per bot token. config ← ~/.omega/telegram.toml.
  */
 import { $ } from "bun";
@@ -35,7 +35,6 @@ import { randomUUID } from "node:crypto";
 
 const OMEGA_DIR = process.env.OMEGA_DIR || `${homedir()}/.omega`;
 const TG_TOML = `${OMEGA_DIR}/telegram.toml`;
-const MC_ENV = `${OMEGA_DIR}/repos/omega-mc/.env`;
 const GROUPS_FILE = `${OMEGA_DIR}/telegram-groups.json`;
 const OMEGA = process.env.OMEGA_BIN || `${homedir()}/.local/bin/omega`;
 const READY_FILE = process.env.OMEGA_TG_READY_FILE || "";
@@ -354,8 +353,7 @@ function saveReconciledJson<T extends object>(
 
 // ── Conversation history: persisted per chat+topic so Atlas, the project oracles,
 // and the agent-bots all have FULL access to the running conversation (not stateless
-// per-message). Stored as JSONL in ~/.omega/state/tg-history/ and mirrored to the
-// OmegaMC dashboard (mcMirror) so the dashboard stays in sync with Telegram.
+// per-message). Stored as JSONL in ~/.omega/state/tg-history/.
 const HIST_DIR = `${OMEGA_DIR}/state/tg-history`;
 const histKey = (chat: number, thread?: number) => `${chat}${thread ? `-t${thread}` : ""}`;
 const histPath = (chat: number, thread?: number) => `${HIST_DIR}/${histKey(chat, thread)}.jsonl`;
@@ -365,7 +363,6 @@ function histAppend(chat: number, thread: number | undefined, role: "operator" |
     const line = JSON.stringify({ ts: new Date().toISOString(), role, text: String(text).slice(0, 8000) }) + "\n";
     const p = histPath(chat, thread);
     writeFileSync(p, (existsSync(p) ? readFileSync(p, "utf8") : "") + line);
-    mcMirror(project || "atlas", role, text).catch(() => {});
   } catch {}
 }
 // Last N turns as a plain transcript, to prepend to a brain/dispatch prompt.
@@ -376,35 +373,15 @@ function histContext(chat: number, thread?: number, n = 12): string {
     return turns.length ? `## Recent history of this conversation (for context)\n${turns.join("\n")}\n\n` : "";
   } catch { return ""; }
 }
-// Mirror a turn into the OmegaMC dashboard store (best-effort) so the dashboard's
-// per-agent conversation stays in sync with Telegram. Auto-disables after a failure
-// (e.g. the MC build has no message-ingest endpoint yet) so it never spams.
-let MC_MIRROR_OK = true;
-async function mcMirror(agent: string, role: string, text: string) {
-  if (!MC_MIRROR_OK) return;
-  try {
-    const pw = MC_PW; if (!pw) { MC_MIRROR_OK = false; return; }
-    // Atlas's dashboard agent is "director" (there is no "atlas" agent in MC).
-    const id = (agent.toLowerCase() === "atlas" ? "director" : agent.toLowerCase()).replace(/[^a-z0-9_-]/g, "-");
-    const r = await fetch(`http://localhost:8080/api/agents/definitions/${id}/messages`, {
-      method: "POST",
-      headers: { "content-type": "application/json", authorization: "Basic " + Buffer.from(":" + pw).toString("base64") },
-      body: JSON.stringify({ role: role === "operator" ? "user" : "assistant", content: String(text).slice(0, 8000), source: "telegram" }),
-    });
-    if (!r.ok) MC_MIRROR_OK = false; // endpoint absent (GET-only build) → stop trying
-  } catch { MC_MIRROR_OK = false; }
-}
-
 function readKV(path: string, re: RegExp): Record<string, string> {
   const out: Record<string, string> = {};
   try { for (const l of readFileSync(path, "utf8").split("\n")) { const m = l.match(re); if (m) out[m[1]] = m[2].replace(/^"|"$/g, ""); } } catch {}
   return out;
 }
-// Voice input: an OpenAI key (provisioning/services.env or the MC .env) enables
-// Whisper transcription so you can TALK to Atlas. Empty → voice messages are ignored.
+// Voice input: an OpenAI key (provisioning/services.env) enables Whisper
+// transcription so you can TALK to Atlas. Empty → voice messages are ignored.
 const OPENAI_KEY =
-  readKV(`${OMEGA_DIR}/provisioning/services.env`, /^\s*export\s+([A-Z_]+)\s*=\s*"?([^"]*)"?\s*$/).OPENAI_API_KEY ||
-  readKV(MC_ENV, /^([A-Z_]+)=(.*)$/).OPENAI_API_KEY || "";
+  readKV(`${OMEGA_DIR}/provisioning/services.env`, /^\s*export\s+([A-Z_]+)\s*=\s*"?([^"]*)"?\s*$/).OPENAI_API_KEY || "";
 // Whisper AUTO-DETECTS the language — we never pass one, so a mixed FR/EN operator
 // is transcribed correctly either way. `verbose_json` (not the default `json`) is what
 // returns the detected `language`, at no extra cost, so we surface it in the echo:
@@ -850,52 +827,11 @@ function mdToHtml(src: string): string {
   return s.replace(/\u0000(\d+)\u0000/g, (_m, i) => (codes[+i] !== undefined ? codes[+i] : _m));
 }
 
-// ── Project management: "add a project" = make it MANAGED (dashboard + oracle + topic)
-const MC_CONFIG = `${OMEGA_DIR}/repos/omega-mc/config/omega-mc.yaml`;
-// Add a project's dedicated oracle to the Mission-Control roster (idempotent) so it
-// shows in the dashboard like the 14 managers + the atlas. omega-mc hot-reloads it.
+// ── Project management: "add a project" = make it MANAGED (oracle + topic)
 const projId = (name: string) => name.toLowerCase().replace(/[^a-z0-9_-]/g, "-").replace(/^-+|-+$/g, "");
-// Remove a project's oracle entry from the Mission-Control roster (idempotent).
-function mcUnregister(name: string): boolean {
-  try {
-    const id = projId(name); if (!id) return false;
-    let y = readFileSync(MC_CONFIG, "utf8");
-    // Strip the `  <id>:` block up to (but not including) the next top-level-2-space key.
-    const re = new RegExp(`\\n  ${id}:\\n(?: {4,}.*\\n|\\n)*`, "g");
-    if (!re.test(y)) return false;
-    y = y.replace(re, "\n");
-    writeFileSync(MC_CONFIG, y);
-    return true;
-  } catch { return false; }
-}
-function mcRegister(name: string): "added" | "exists" | "skip" {
-  try {
-    const id = projId(name);
-    if (!id) return "skip";
-    let y = readFileSync(MC_CONFIG, "utf8");
-    if (new RegExp(`\\n  ${id}:\\s`).test(y)) return "exists";
-    const entry =
-`  ${id}:
-    description: "Project oracle for ${name} — dedicated orchestrator (multi-session); Atlas dispatches this project's missions here."
-    model: "claude-opus-5"
-    image: "omega-mc-agent:latest"
-    workspace: ${id}
-    claude_md: "${id}/CLAUDE.md"
-    nix_enabled: true
-    allowed_tools: [Read, Write, Edit, Bash, Glob, Grep, WebSearch, WebFetch]
-    env:
-      EDITOR: vim
-`;
-    if (!/\nagents:\n/.test(y)) return "skip";
-    y = y.replace(/\nagents:\n/, `\nagents:\n${entry}\n`);
-    writeFileSync(MC_CONFIG, y);
-    return "added";
-  } catch { return "skip"; }
-}
-// Register a project as managed: dashboard entry + a Telegram topic (if the hub is a
+// Register a project as managed: a Telegram topic (if the hub is a
 // forum supergroup and the bot is admin) + confirm its dedicated oracle is dispatchable.
 async function addProject(name: string, dir?: string): Promise<string> {
-  const dash = mcRegister(name);
   const pdir = dir || repoPath(name) || "";
   recordProject(name, pdir, pdir.split("/Station/")[1]?.split("/")[0] || "");
   const g = loadGroups();
@@ -905,19 +841,17 @@ async function addProject(name: string, dir?: string): Promise<string> {
     if (r.ok) { g.topics ||= {}; g.topics[String(r.result.message_thread_id)] = name; saveGroups(g); recordProject(name, pdir, undefined, r.result.message_thread_id); topicLine = "✅ Telegram topic created in the group."; }
     else topicLine = `⚠️ Topic not created: <i>${esc(r.description || "error")}</i>.${/rights/i.test(r.description || "") ? " Enable the <b>“Manage Topics”</b> permission for the bot (group admin)." : ""}`;
   }
-  const dashLine = dash === "added" ? "added ✅" : dash === "exists" ? "already present ✅" : "not written ⚠️ (omega-mc config not found)";
   await refreshCommands().catch(() => {}); // publish its /{project} command
   return card("PROJECT MANAGED",
     ` 📁 <b>${esc(name)}</b>\n\n` +
     `• Dedicated oracle (multi-session): <code>omega dispatch ${esc(name)}</code> ✅\n` +
-    `• Mission Control dashboard: ${dashLine}\n` +
     `• ${topicLine}`,
     `<i>Talk about the project in its topic (or here) — Atlas knows the context and directs its oracle.</i>`);
 }
 
 // Import an existing GitHub repo as a managed project: clone it into
-// ~/Station/<category>/<name>, then wire the full OmegaOS setup (dashboard agent +
-// shared registry + Telegram topic + /{project} command) — same footprint as a New
+// ~/Station/<category>/<name>, then wire the full OmegaOS setup (shared
+// registry + Telegram topic + /{project} command) — same footprint as a New
 // project, minus the scaffold (the code comes from GitHub). `repoArg` accepts a full
 // URL (https/ssh) or an `owner/repo` slug; cloning uses `gh` (operator auth) so
 // private repos work too.
@@ -936,9 +870,8 @@ async function importFromGithub(category: string, repoArg: string): Promise<stri
     return card("IMPORT — FAILED", ` ❌ <b>${esc(name)}</b>\nClone failed:\n<pre>${esc((cl.stdout.toString() + cl.stderr.toString()).trim().slice(0, 400))}</pre>\n\nGive a public URL, <code>owner/repo</code>, or ensure <code>gh</code> can access a private repo.`);
   }
   const steps: string[] = [`📁 Cloned <code>${esc(slug || arg)}</code> → <code>${esc(dir)}</code> ✅`];
-  const dash = mcRegister(name);
   recordProject(name, dir, category);
-  steps.push(`🤖 Oracle agent (dashboard): ${dash === "added" ? "created ✅" : dash === "exists" ? "already there ✅" : "⚠️ (omega-mc config not found)"}`);
+  steps.push("🤖 Dedicated oracle: dispatchable ✅");
   const g = loadGroups();
   if (g.hub && g.isForum) {
     const r = await tg("createForumTopic", { chat_id: g.hub, name: name.slice(0, 128) });
@@ -1152,7 +1085,7 @@ async function removeProjectTopic(name: string): Promise<"deleted" | "none" | st
   return r.description || "failed";
 }
 // Delete a managed project. Three CUMULATIVE scopes (escalating):
-//   "omega" — remove from OmegaOS view only: Telegram topic + dashboard roster +
+//   "omega" — remove from OmegaOS view only: Telegram topic +
 //             agent-bot + registry. The code (local folder + GitHub) stays.
 //   "local" — omega + kill the oracle session + delete the LOCAL FOLDER (rm -rf,
 //             off the VPS disk). GitHub repo is kept (your code stays on GitHub).
@@ -1171,9 +1104,7 @@ async function deleteProject(name: string, mode: "omega" | "local" | "all"): Pro
   // 1. Telegram topic
   const topic = await removeProjectTopic(name);
   steps.push(topic === "deleted" ? "💬 Telegram topic: deleted ✅" : topic === "none" ? "💬 Topic: (none)" : `💬 Topic: ⚠️ ${esc(topic)}`);
-  // 2. Dashboard roster
-  steps.push(mcUnregister(name) ? "🤖 Dashboard agent: removed ✅" : "🤖 Dashboard agent: (absent)");
-  // 3. Agent-bot service (if one was associated)
+  // 2. Agent-bot service (if one was associated)
   const bots = loadAgentBots();
   if (bots[id] || bots[name]) {
     updateAgentBots(latest => { delete latest[id]; delete latest[name]; });
@@ -1212,7 +1143,7 @@ async function deleteProject(name: string, mode: "omega" | "local" | "all"): Pro
 // /delete command. Three escalating tiers, in order (omega → local → all).
 function projDeleteMenu(name: string): { text: string; markup: any } {
   return {
-    text: card("DELETE PROJECT", ` 🗑 <b>${esc(name)}</b> — choose how far to go:\n\n1️⃣ <b>Remove from OmegaOS</b> — Telegram topic, dashboard agent, agent-bot, registry. <i>Local folder + GitHub stay.</i>\n2️⃣ <b>Delete local machine</b> — that <b>+ deletes the local folder</b> off the VPS (irreversible). GitHub kept.\n3️⃣ <b>Delete all (+ GitHub)</b> — that <b>+ deletes the GitHub repo</b> (irreversible). Nothing remains.`),
+    text: card("DELETE PROJECT", ` 🗑 <b>${esc(name)}</b> — choose how far to go:\n\n1️⃣ <b>Remove from OmegaOS</b> — Telegram topic, agent-bot, registry. <i>Local folder + GitHub stay.</i>\n2️⃣ <b>Delete local machine</b> — that <b>+ deletes the local folder</b> off the VPS (irreversible). GitHub kept.\n3️⃣ <b>Delete all (+ GitHub)</b> — that <b>+ deletes the GitHub repo</b> (irreversible). Nothing remains.`),
     markup: kb([
       [{ text: "1️⃣ Remove from OmegaOS", callback_data: `proj:delomega:${name}`.slice(0, 64) }],
       [{ text: "2️⃣ Delete local machine", callback_data: `proj:dellocal:${name}`.slice(0, 64) }],
@@ -1232,7 +1163,7 @@ function stationCategories(): string[] {
   return cats.length ? cats : ["Clients", "SideBusiness", "Lab", "LifeStyle"];
 }
 
-// New project end-to-end: folder + git + README, dashboard oracle agent, managed
+// New project end-to-end: folder + git + README, managed
 // registry, and a Telegram topic (when the group is a forum + the bot is admin).
 async function createProject(category: string, name: string, desc: string): Promise<{ dir: string; report: string }> {
   const safe = name.replace(/[^A-Za-z0-9._-]/g, "-").replace(/^-+|-+$/g, "") || "project";
@@ -1240,9 +1171,8 @@ async function createProject(category: string, name: string, desc: string): Prom
   const steps: string[] = [];
   const mk = Bun.spawnSync(["bash", "-lc", `mkdir -p ${dir} && cd ${dir} && (git rev-parse --git-dir >/dev/null 2>&1 || git init -q) && printf '# %s\\n\\n%s\\n' ${JSON.stringify(safe)} ${JSON.stringify(desc)} > README.md && git add -A 2>/dev/null; echo ok`]);
   steps.push(mk.stdout.toString().includes("ok") ? `📁 Folder + git: <code>${dir}</code>` : `📁 Folder: ⚠️ ${esc(mk.stderr.toString().slice(0, 120))}`);
-  const dash = mcRegister(safe);
   recordProject(safe, dir, category);
-  steps.push(`🤖 Oracle agent (dashboard): ${dash === "added" ? "created ✅" : dash === "exists" ? "already there ✅" : "⚠️"}`);
+  steps.push("🤖 Dedicated oracle: dispatchable ✅");
   const g = loadGroups();
   if (g.hub && g.isForum) {
     const r = await tg("createForumTopic", { chat_id: g.hub, name: safe.slice(0, 128) });
@@ -2891,14 +2821,6 @@ async function abortCodexLogin(chat: number, msgId: number, pid: string) {
     kb([[{ text: "🔄 Re-login", callback_data: "acct:codex" }], [back("account")]]));
 }
 
-function dashboardURL(): { url: string; pw: string } {
-  const mc = readKV(MC_ENV, /^([A-Z_]+)=(.*)$/);
-  const host = mc.HOSTNAME?.trim();
-  const ip = (process.env.OMEGA_PUBLIC_IP || "").trim();
-  // Only return a button-able URL when we actually have a host/IP (never http://:8080).
-  const url = host ? `https://${host}` : (ip ? `http://${ip}:8080` : "");
-  return { url, pw: mc.OMEGA_MC_WEB_PASSWORD || "" };
-}
 async function resolvePublicIP(): Promise<void> {
   if (process.env.OMEGA_PUBLIC_IP) return;
   for (const u of ["https://ifconfig.me/ip", "https://icanhazip.com", "https://api.ipify.org"]) {
@@ -2935,15 +2857,25 @@ async function auditIds(): Promise<string[]> {
   return [...new Set(ids)];
 }
 
-// ── command menu (setMyCommands list) ────────────────────────────────────────
-// OmegaMC dashboard API (read agents). Web password from omega-mc .env.
-const MC_PW = readKV(MC_ENV, /^([A-Z_]+)=(.*)$/).OMEGA_MC_WEB_PASSWORD || "";
-async function mcAgents(): Promise<{ id: string; description?: string }[]> {
-  try {
-    const r = await fetch("http://localhost:8080/api/agents/definitions", { headers: { authorization: "Basic " + Buffer.from(":" + MC_PW).toString("base64") } });
-    const j = await r.json(); return Array.isArray(j) ? j : (j.agents || []);
-  } catch { return []; }
-}
+// Native AISB roster — same 15 Matrix roles as omega_core::aisb_agents.
+const AISB_ROSTER: { id: string; description: string }[] = [
+  { id: "oracle", description: "Router · Intent classifier · Pipeline coordinator" },
+  { id: "morpheus", description: "Executor · Code writer · Workhorse" },
+  { id: "seraph", description: "Auditor · Skeptical reviewer · 6-phase quality gate" },
+  { id: "keymaker", description: "Planner · Mission decomposer · DAG builder" },
+  { id: "smith", description: "Self-improver · Pattern extractor · Evolution" },
+  { id: "niobe", description: "Researcher · Web & codebase investigator" },
+  { id: "architect", description: "System designer · Design-doc author" },
+  { id: "merovingian", description: "Cross-project knowledge broker" },
+  { id: "neo", description: "Health monitor · Stall detector" },
+  { id: "zion", description: "Metrics dashboard · Cost reporter" },
+  { id: "link", description: "Telegram notifier · External comms" },
+  { id: "construct", description: "UI component lookup · shadcn/Radix" },
+  { id: "pythia", description: "Docs watcher · Weekly Anthropic releases" },
+  { id: "council", description: "Multi-model deliberation · Convener · President-synthesizer" },
+  { id: "trinity", description: "White-hat security operator · Offensive + defensive · Pentest / AI red-team" },
+];
+function aisbAgents(): { id: string; description?: string }[] { return AISB_ROSTER; }
 
 const MENU: [string, string][] = [
   ["start", "Welcome + quick status"],
@@ -2952,7 +2884,6 @@ const MENU: [string, string][] = [
   ["commands", "Show available commands"],
   ["agents", "List the AISB agents (talk via the agents bot)"],
   ["council", "Convene @council — judge panel for a high-stakes/contested decision"],
-  ["dashboard", "Open the Mission Control dashboard (link)"],
   ["status", "Live system status"],
   ["sessions", "Active sessions — Status / Kill"],
   ["projects", "Projects — list / new / add"],
@@ -2972,7 +2903,7 @@ const MENU: [string, string][] = [
 ];
 // Commands with a dedicated button view/handler. Anything NOT here is routed to
 // the AISB Master brain instead of falling back to the menu (intelligent commands).
-const KNOWN = new Set<string>([...MENU.map(([c]) => c), "setupgroup", "sync", "dispatch", "zernio"]);
+const KNOWN = new Set<string>([...MENU.map(([c]) => c), "setupgroup", "sync", "dispatch", "zernio", "dashboard"]);
 function menuKb() {
   // The NOVA OS row controls the operator-built omega-novaos.service — only
   // show it where that unit exists (on a fresh install it was an always-broken
@@ -2980,12 +2911,11 @@ function menuKb() {
   const hasNovaOS = existsSync(`${homedir()}/.config/systemd/user/omega-novaos.service`);
   return kb([
     [{ text: "📖 Guide — how it works", callback_data: "nav:guide" }],
-    [{ text: "🤖 Agents", callback_data: "nav:agents" }, { text: "🖥 Dashboard", callback_data: "nav:dashboard" }],
-    [{ text: "📊 Status", callback_data: "nav:status" }, { text: "🗂 Sessions", callback_data: "nav:sessions" }],
-    [{ text: "📁 Projects", callback_data: "nav:projects" }, { text: "🔍 Audits", callback_data: "nav:audits" }],
-    [{ text: "💳 Account", callback_data: "nav:account" }, { text: "🧠 Model", callback_data: "nav:model" }],
-    [{ text: "🧩 Skills", callback_data: "nav:skills" }, { text: "🚀 Dispatch", callback_data: "nav:dispatch" }],
-    [{ text: "🌀 Zernio — publish", callback_data: "nav:zernio" }],
+    [{ text: "🤖 Agents", callback_data: "nav:agents" }, { text: "🗂 Sessions", callback_data: "nav:sessions" }],
+    [{ text: "📊 Status", callback_data: "nav:status" }, { text: "🔍 Audits", callback_data: "nav:audits" }],
+    [{ text: "📁 Projects", callback_data: "nav:projects" }, { text: "💳 Account", callback_data: "nav:account" }],
+    [{ text: "🧠 Model", callback_data: "nav:model" }, { text: "🧩 Skills", callback_data: "nav:skills" }],
+    [{ text: "🚀 Dispatch", callback_data: "nav:dispatch" }, { text: "🌀 Zernio — publish", callback_data: "nav:zernio" }],
     [{ text: "🚀 Marketing", callback_data: "nav:marketing" }],
     [{ text: "👥 Group hub", callback_data: "nav:setupgroup" }, { text: "🧹 Clean", callback_data: "nav:clean" }],
     ...(hasNovaOS ? [[{ text: "🤖 NOVA OS (status / kill-switch)", callback_data: "nav:novaos" }]] : []),
@@ -3034,8 +2964,7 @@ async function guideCard(): Promise<string> {
     ` 🔍 <b>Audits</b> — Quality Arsenal: 23 forensic audits\n` +
     ` 💳 <b>Account</b> — Claude login (one shared credential) + usage\n` +
     ` 🧠 <b>Model</b> — pick the AI provider + model\n` +
-    ` 🤖 <b>Agents</b> — a dedicated bot per project oracle\n` +
-    ` 🖥 <b>Dashboard</b> — Mission Control (web)\n` +
+    ` 🤖 <b>Agents</b> — AISB roster + dedicated bots (Nova / Trinity / Alexandria)\n` +
     ` 🚀 <b>Dispatch</b> — fire a mission at an oracle\n` +
     ` 👥 <b>Group hub</b> — supergroup: 1 topic = 1 project</blockquote>`);
 }
@@ -3083,8 +3012,7 @@ function statusCard(raw: string): string {
 // ── model picker: provider → model, all clickable. Canonical lists come from the
 // Rust SSOT (`omega config models [provider]`); a mirror of providers.rs::models_for
 // is the fallback for binaries predating that subcommand. Selecting writes
-// providers.toml (omega sessions) and, for claude, the omega-mc dashboard fallback
-// (defaults.model only — the per-agent opus/sonnet split is preserved).
+// providers.toml (omega sessions).
 const PROVIDER_FALLBACK = [
   "claude", "codex", "gemini", "antigravity", "glm",
   "openrouter", "pi", "hermes", "kimi",
@@ -3104,9 +3032,6 @@ const PROVIDER_ICON: Record<string, string> = {
   claude: "🟣", codex: "🟢", gemini: "🔵", antigravity: "🚀",
   glm: "🟡", openrouter: "🌐", pi: "π", hermes: "⚕", kimi: "🌙",
 };
-// Claude alias → full model id the omega-mc yaml uses (mirror of dispatch.rs + the
-// dashboard's model convention). Anything not aliased is passed through verbatim.
-const CLAUDE_FULL_ID: Record<string, string> = { opus: "claude-opus-5", sonnet: "claude-sonnet-5", haiku: "claude-haiku-4-5" };
 async function listProviders(): Promise<string[]> {
   const out = await omega(["config", "models"]);
   const ps = out.split("\n").map(s => s.trim()).filter(s => /^[a-z]+$/.test(s));
@@ -3120,18 +3045,6 @@ async function listModels(provider: string): Promise<string[]> {
 async function currentModel(provider: string): Promise<string> {
   const v = (await omega(["config", "get", `${provider}.model`])).trim().split("\n")[0] || "";
   return /error|unknown|no output/i.test(v) ? "" : v;
-}
-// Update the dashboard's defaults.model (the FIRST `model:` in the yaml = the
-// defaults block, before any agent). Per-agent models are untouched. Returns the
-// full id written, or "" on no-op. omega-mc hot-reloads the file within ~3s.
-function mcSetDefaultModel(fullId: string): string {
-  try {
-    const y = readFileSync(MC_CONFIG, "utf8");
-    const next = y.replace(/(\n\s*model:\s*)"[^"]*"/, `$1"${fullId}"`);
-    if (next === y) return "";
-    writeFileSync(MC_CONFIG, next);
-    return fullId;
-  } catch { return ""; }
 }
 // Render the model list for a provider with the current pick marked ✓.
 // Is a provider's API key set? (omega() returns "(no output…" for an empty value.)
@@ -3291,33 +3204,16 @@ async function view(name: string): Promise<{ text: string; markup: any }> {
     case "menu": case "help": case "commands": return { text: menuText, markup: menuKb() };
     case "start": case "guide": return { text: await guideCard(), markup: kb([[{ text: "📋 Open menu", callback_data: "nav:menu" }], [{ text: "🚀 Dispatch", callback_data: "nav:dispatch" }, { text: "💳 Account", callback_data: "nav:account" }]]) };
     case "agents": {
-      // The companion (Nova) link lives HERE — it is the only flow that creates
-      // a kind:"companion" agent-bot entry, so it must not depend on the
-      // optional MC dashboard being up.
       const novaRow: Btn[] = [{ text: "💞 Link your companion (Nova)", callback_data: "agent:tglink:nova" }];
-      // Like Nova, the security operator (Trinity) binds to its own bot from here —
-      // its own kind:"security" entry, independent of the optional MC dashboard.
       const trinityRow: Btn[] = [{ text: "🛡 Link your security agent (Trinity)", callback_data: "agent:tglink:trinity" }];
-      // Like Nova/Trinity, the Librarian (Alexandria) binds its own bot from here —
-      // a kind:"persona" entry pointing at the shipped ALEXANDRIA OS system prompt.
       const libRow: Btn[] = [{ text: "📚 Link your librarian (Alexandria)", callback_data: "agent:tglink:librarian" }];
-      const ags = await mcAgents();
-      if (!ags.length) return { text: card("AISB AGENTS", " ⚠️ Dashboard unreachable. Start it: <code>omega-mc-up</code>.\n\n 💞 You can still link your personal companion bot (Nova), 🛡 security agent (Trinity) and 📚 librarian (Alexandria) below."), markup: kb([novaRow, trinityRow, libRow, [back()]]) };
+      const ags = aisbAgents();
       const rows: Btn[][] = [];
       for (let i = 0; i < ags.length; i += 2) rows.push(ags.slice(i, i + 2).map(a => ({ text: a.id.slice(0, 28), callback_data: `agent:info:${a.id}`.slice(0, 64) })));
-      return { text: card(`AISB AGENTS — ${ags.length}`, " Tap an agent for its role. To talk to it, use its dedicated bot (see /dashboard).\n 💞 “Link your companion” wires Nova — your personal assistant on her own bot.\n 🛡 “Link your security agent” wires Trinity — a white-hat pentest operator on its own bot.\n 📚 “Link your librarian” wires Alexandria — turns any book or idea into understanding, memory and action."), markup: kb([...rows, novaRow, trinityRow, libRow, [back()]]) };
+      return { text: card(`AISB AGENTS — ${ags.length}`, " Tap an agent for its role. Link a dedicated bot to talk to it directly.\n 💞 “Link your companion” wires Nova — your personal assistant on her own bot.\n 🛡 “Link your security agent” wires Trinity — a white-hat pentest operator on its own bot.\n 📚 “Link your librarian” wires Alexandria — turns any book or idea into understanding, memory and action."), markup: kb([...rows, novaRow, trinityRow, libRow, [back()]]) };
     }
     case "dashboard": {
-      await resolvePublicIP();
-      const { url } = dashboardURL();
-      const rows: Btn[][] = [];
-      if (url) rows.push([{ text: "👉 Tap here to open", url }]);
-      rows.push([{ text: "🔑 Reveal the password", callback_data: "dash:pw" }]);
-      rows.push([back()]);
-      const body = url
-        ? ` <code>${esc(url)}</code>\n\n Tap “👉 Open” for the dashboard, then “🔑 Reveal” for the password.`
-        : ` ⚠️ Public IP not resolved — try again, or enable Tailscale for secure access.`;
-      return { text: card("MISSION CONTROL", body), markup: kb(rows) };
+      return { text: card("MISSION CONTROL", " Retired. Phone control is this Telegram bot — use /menu. No separate web dashboard."), markup: kb([[back()]]) };
     }
     case "status": return { text: statusCard(await omega(["doctor"])), markup: kb([[{ text: "🛠 Fix it", callback_data: "status:fix" }, { text: "🔄 Refresh", callback_data: "nav:status" }], [back()]]) };
     case "sessions": {
@@ -3474,23 +3370,9 @@ async function onCallback(data: string, chat: number, msgId: number, from: numbe
     const i = arg.indexOf(":"); const provider = arg.slice(0, i); const model = arg.slice(i + 1);
     const res = await omega(["config", "activate", provider, model]);
     const okOmega = /^\[\+\] Active provider/m.test(res);
-    let dash = "";
-    if (provider === "claude") {
-      const full = CLAUDE_FULL_ID[model] || model;
-      const wrote = mcSetDefaultModel(full);
-      dash = `\n 🖥 Dashboard defaults: ${wrote ? `<code>${esc(full)}</code> ✅ <i>(hot-reload ~3s)</i>` : "unchanged"}`;
-    }
-    const banner = ` ${okOmega ? "✅" : "⚠️"} <b>${esc(provider)}</b> → <code>${esc(model)}</code>\n ⚙️ global default for new sessions: ${okOmega ? "✅" : "⚠️ " + esc(res.slice(0, 80))}${dash}`;
+    const banner = ` ${okOmega ? "✅" : "⚠️"} <b>${esc(provider)}</b> → <code>${esc(model)}</code>\n ⚙️ global default for new sessions: ${okOmega ? "✅" : "⚠️ " + esc(res.slice(0, 80))}`;
     const v = await modelProviderView(provider, banner);
     return edit(chat, msgId, v.text, v.markup);
-  }
-  if (ns === "dash" && action === "pw") {
-    const { pw } = dashboardURL();
-    if (!pw) return;
-    // Reveal in a copyable code block, then auto-delete after 30s (so it never lingers in chat history).
-    const m = await tg("sendMessage", { chat_id: chat, parse_mode: "HTML", text: `🔑 <b>Dashboard password</b>\n(tap it to copy — disappears in 30s)\n\n<code>${esc(pw)}</code>` });
-    if (m.ok) setTimeout(() => tg("deleteMessage", { chat_id: chat, message_id: m.result.message_id }), 30000);
-    return;
   }
   if (ns === "sess" && action === "status") return edit(chat, msgId, pre(`Session ${arg}`, await omega(["capture", arg])), kb([[{ text: "🔄 Refresh", callback_data: `sess:status:${arg}`.slice(0, 64) }, back("sessions")]]));
   if (ns === "sess" && action === "kill") return edit(chat, msgId, pre(`Kill ${arg}`, await omega(["kill", arg])), kb([[back("sessions")]]));
@@ -3688,7 +3570,7 @@ async function onCallback(data: string, chat: number, msgId: number, from: numbe
     for (let i = 0; i < 12; i++) { await Bun.sleep(600); try { const t = readFileSync(outf, "utf8"); if (t.trim().length > 40) { out = t; break; } } catch {} }
     return edit(chat, msgId, pre("💾 Purge RAM — terminé", out || "⏳ déclenché — résultat indisponible (helper agentik-ramflush actif ?)"), kb([[back("clean")]]));
   }
-  if (ns === "agent" && action === "info") { const a = (await mcAgents()).find(x => x.id === arg); return edit(chat, msgId, `<b>🤖 ${esc(arg)}</b>\n${esc(a?.description || "(no description)")}\n\n<i>Link a dedicated Telegram bot to this agent — you'll talk to it directly (scoped to its project).</i>`, kb([[{ text: "🔗 Link Telegram", callback_data: `agent:tglink:${arg}`.slice(0, 64) }], [back("agents")]])); }
+  if (ns === "agent" && action === "info") { const a = aisbAgents().find(x => x.id === arg); return edit(chat, msgId, `<b>🤖 ${esc(arg)}</b>\n${esc(a?.description || "(no description)")}\n\n<i>Link a dedicated Telegram bot to this agent — you'll talk to it directly (scoped to its project).</i>`, kb([[{ text: "🔗 Link Telegram", callback_data: `agent:tglink:${arg}`.slice(0, 64) }], [back("agents")]])); }
   if (ns === "agent" && action === "tglink") {
     setPending(from, "tg-link", arg);
     const body = /^(nova|companion)$/i.test(arg)

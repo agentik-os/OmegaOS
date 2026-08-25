@@ -8425,7 +8425,7 @@ async fn cmd_spawn_worker(
     dir: Option<&str>,
     project: Option<&str>,
     files: Option<Vec<String>>,
-    force: bool,
+    _force: bool,
     worktree: bool,
     agent_override: Option<&str>,
 ) -> Result<()> {
@@ -8443,12 +8443,7 @@ async fn cmd_spawn_worker(
     // oracle. Resolve the real name by asking rmux to expand #{session_name} for
     // our pane ($RMUX_PANE).
     let oracle_session = current_session_name().filter(|s| s.starts_with("oracle-"));
-    let prompt_owned = if oracle_session.is_some() {
-        omega_core::lab::ensure_oracle_worker_rubric(prompt, task)
-    } else {
-        prompt.to_string()
-    };
-    let prompt = prompt_owned.as_str();
+    omega_core::lab::require_worker_rubric(prompt).map_err(anyhow::Error::msg)?;
 
     let project_name = match project {
         Some(p) => Some(p.to_string()),
@@ -8485,27 +8480,7 @@ async fn cmd_spawn_worker(
         None => format!("worker-{}", task),
     });
 
-    // Worker-prompt completeness gate (cheap, no LLM): the brief MUST carry both a
-    // Done-criteria signal AND a Verify-command signal. Checked BEFORE the scope
-    // claim so a rejected dispatch never leaves a file lock behind.
-    let prompt_lc = prompt.to_lowercase();
-    let has_done = prompt_lc.contains("done criteria")
-        || prompt_lc.contains("done:")
-        || prompt_lc.contains("done-criteria");
-    let has_verify = prompt_lc.contains("verify");
-    if !(has_done && has_verify) {
-        let missing = match (has_done, has_verify) {
-            (false, false) => "Done Criteria + Verify Command",
-            (false, true) => "Done Criteria",
-            (true, false) => "Verify Command",
-            (true, true) => unreachable!(),
-        };
-        anyhow::bail!(
-            "worker prompt missing {missing}. Add explicit \"Done Criteria:\" and a \"Verify Command:\" \
-             when you write the prompt (rule R-RUBRIC). --force does not skip this{}.",
-            if force { " (ignored)" } else { "" }
-        );
-    }
+    // R-RUBRIC already refused missing/unsafe briefs above. --force does not skip it.
 
     let agent = match agent_override {
         Some(name) => {

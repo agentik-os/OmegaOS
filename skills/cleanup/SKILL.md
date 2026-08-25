@@ -42,7 +42,7 @@ claude/rmux.
 - Sessions / sockets actifs : `claude-*`, `rmux-*`, `tmux-*`, `rx-socketna-*`, `cloudflared`, la worktree d'un build en cours.
 
 ## Déroulé
-0. **Fermeture des tunnels/mosh détachés** (si demandé) : `scripts/close-sessions.sh` ferme les tunnels cloudflared + serveurs mosh détachés de `vibe`/`lab` — et RIEN d'autre : claude et rmux sont hors périmètre par la Règle absolue ci-dessus (le script refuse ces pids en dur). **Protège toujours** la connexion courante (root) et l'infra (omega-mc, bots, daemons sécurité, tailscale, sshd). Tester d'abord avec `--dry`.
+0. **Fermeture des tunnels/mosh détachés** (si demandé) : `scripts/close-sessions.sh` ferme les tunnels cloudflared + serveurs mosh détachés de `vibe`/`lab` — et RIEN d'autre : claude et rmux sont hors périmètre par la Règle absolue ci-dessus (le script refuse ces pids en dur). **Protège toujours** la connexion courante (root) et l'infra (Telegram bots, daemons sécurité, tailscale, sshd). Tester d'abord avec `--dry`.
 1. **Garde-fou** : `scripts/idle-check.sh`. Si occupé → rapport + stop.
 2. **Analyse** : `scripts/analyze.sh` → df, top du `/home` `/tmp` `/var`, `docker system df`.
 3. **Purge auto-sûre** : `scripts/safe-clean.sh` → `docker builder prune`, `apt-get clean`, `journalctl --vacuum-size=100M`. (rien de Station, rien de doc.)

@@ -83,7 +83,7 @@ sessions through a unified configuration and orchestration layer.
 │   ├── audit-gather/             per-audit gatherers (.sh + -summarize.py)
 │   └── safe-npm-build.sh         build mutex
 ├── bin/                          audit-notify.sh + helper binaries
-├── repos/                        ← cloned GitHub repos (repos/omega-mc = dashboard)
+├── repos/                        ← cloned GitHub repos (repos/Agentik-Skills = skills library)
 ├── tools/                        ← third-party tools an agent installs
 ├── prompts/                      runtime prompt scratch (oracle/worker dispatch)
 │
