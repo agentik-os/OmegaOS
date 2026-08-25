@@ -183,7 +183,7 @@ impl Agent {
             Agent::Gemini => "Gemini (Google)",
             Agent::Antigravity => "Antigravity (Google)",
             Agent::Pi => "Pi (earendil-works)",
-            Agent::OpenRouter => "OpenRouter (via Pi)",
+            Agent::OpenRouter => "OpenRouter",
             Agent::Hermes => "Hermes (Nous Research)",
             Agent::Glm => "GLM (Z.AI / Zhipu)",
             Agent::Kimi => "Kimi (Moonshot AI)",
@@ -418,17 +418,19 @@ impl Agent {
                 ));
                 selected
             }
-            // Pi and Hermes both route through OpenRouter — they need the
-            // OpenRouter key/base-url. Pi additionally honors its own api_key
-            // (stored as pi.api_key) as the OpenRouter key when set.
+            // Pi is standalone. Only inject OpenRouter credentials when the
+            // operator explicitly set `pi.provider = "openrouter"`.
             Agent::Pi => {
-                let mut s = pick(&["OPENROUTER_API_KEY", "OPENROUTER_BASE_URL"]);
-                if !cfg.pi.api_key.is_empty() {
-                    // pi.api_key wins as the OpenRouter credential for the Pi pane.
-                    s.retain(|(key, _)| key != "OPENROUTER_API_KEY");
-                    s.push(("OPENROUTER_API_KEY".to_string(), cfg.pi.api_key.clone()));
+                if cfg.pi.provider.trim() == "openrouter" {
+                    let mut s = pick(&["OPENROUTER_API_KEY", "OPENROUTER_BASE_URL"]);
+                    if !cfg.pi.api_key.is_empty() {
+                        s.retain(|(key, _)| key != "OPENROUTER_API_KEY");
+                        s.push(("OPENROUTER_API_KEY".to_string(), cfg.pi.api_key.clone()));
+                    }
+                    s
+                } else {
+                    Vec::new()
                 }
-                s
             }
             Agent::OpenRouter => pick(&["OPENROUTER_API_KEY", "OPENROUTER_BASE_URL"]),
             Agent::Hermes => {
@@ -501,7 +503,18 @@ impl Agent {
         // dispatched oracle drops to a bare shell instead of running its mission.
         // Prepend the user bin dirs so every launched agent + tool always resolves.
         let path_prefix = format!("{home}/.local/bin:{home}/.bun/bin:{home}/.npm-global/bin");
-        let env_prefix = format!("export PATH={}:$PATH; ", shell_quote(&path_prefix));
+        // Cursor (and other agent hosts) start the rmux daemon with
+        // NO_COLOR=1 FORCE_COLOR=0. Every pane inherits that, and Claude /
+        // Codex / Hermes then emit dim/bold only — no 38;2. Measured
+        // 2026-08-25: a live Codex oracle had 62 SGR and 0 color codes;
+        // the same Claude splash after FORCE_COLOR=1 emitted 68 truecolor
+        // spans. `unset` is required: Node's supports-color treats any
+        // *presence* of NO_COLOR as off, and rmux set-environment cannot
+        // delete an OS-inherited variable from the daemon process.
+        let env_prefix = format!(
+            "export PATH={}:$PATH; unset NO_COLOR; export FORCE_COLOR=1 COLORTERM=truecolor; ",
+            shell_quote(&path_prefix)
+        );
 
         let command = match self {
             Agent::Claude => {
@@ -747,23 +760,12 @@ impl Agent {
                 }
             }
             Agent::Pi => {
-                // (b) Use the CONFIGURED pi.provider + pi.model; fall back to the
-                // catalog defaults only when unset (was hardcoded
-                // `--provider openrouter --model anthropic/claude-sonnet-4.6`).
-                let provider = if providers.pi.provider.is_empty() {
-                    "openrouter"
-                } else {
-                    providers.pi.provider.as_str()
-                };
-                let model = if providers.pi.model.is_empty() {
-                    ProvidersConfig::default_model("pi").to_string()
-                } else {
-                    providers.pi.model.clone()
-                };
-                let pi_args = format!(
-                    "--provider {} --model {}",
-                    shell_quote(provider),
-                    shell_quote(&model)
+                // Standalone Pi. Empty provider/model → omit the flags so the
+                // CLI uses its own default (Google, `pi --help`). Never pin
+                // OpenRouter onto Pi; that lane is Agent::OpenRouter.
+                let pi_args = pi_provider_model_flags(
+                    providers.pi.provider.trim(),
+                    providers.pi.model.trim(),
                 );
                 let resume_arg = if opts.resume_conversation {
                     " --continue"
@@ -1008,6 +1010,19 @@ fn nonempty(value: &str) -> Option<&str> {
     (!value.trim().is_empty()).then_some(value)
 }
 
+/// Pi / OpenRouter share the `pi` binary, but the flags must not leak
+/// across. Empty provider or model is omitted (Pi's native defaults).
+fn pi_provider_model_flags(provider: &str, model: &str) -> String {
+    let mut args = String::new();
+    if !provider.is_empty() {
+        args.push_str(&format!(" --provider {}", shell_quote(provider)));
+    }
+    if !model.is_empty() {
+        args.push_str(&format!(" --model {}", shell_quote(model)));
+    }
+    args
+}
+
 fn claude_permission_args(requested: Option<&str>, explicit_bypass: bool) -> Result<String> {
     let mode = requested.unwrap_or(if explicit_bypass {
         "bypassPermissions"
@@ -1195,11 +1210,15 @@ mod tests {
     #[test]
     fn codex_launch_keeps_color_but_stays_terminal_safe() {
         let cmd = launch(Agent::Codex, None, LaunchOptions::default());
-        // Color is preserved (no NO_COLOR); a dark-terminal hint keeps Codex's
-        // band readable (light-on-dark) instead of black-on-black; inline render.
+        // Color is preserved (inherited NO_COLOR is unset; never NO_COLOR=1);
+        // a dark-terminal hint keeps Codex's band readable (light-on-dark)
+        // instead of black-on-black; inline render.
         // Never pair --sandbox with --approve-for-me (Codex 0.149 dies).
         assert!(
-            !cmd.contains("NO_COLOR")
+            cmd.contains("unset NO_COLOR")
+                && !cmd.contains("NO_COLOR=1")
+                && cmd.contains("FORCE_COLOR=1")
+                && cmd.contains("COLORTERM=truecolor")
                 && cmd.contains("COLORFGBG=")
                 && cmd.contains("15;0")
                 && cmd.contains("codex --strict-config")
@@ -1286,6 +1305,51 @@ mod tests {
             !hermes_prompt.contains("inspect the repository"),
             "hermes chat has no positional prompt (unrecognized arguments): {hermes_prompt}"
         );
+    }
+
+    #[test]
+    fn pi_home_is_standalone_and_openrouter_is_its_own_lane() {
+        let pi = launch(Agent::Pi, None, LaunchOptions::default());
+        assert!(
+            !pi.contains("--provider openrouter"),
+            "Pi must not inherit the OpenRouter provider: {pi}"
+        );
+        assert!(
+            !pi.contains("anthropic/claude-opus-5"),
+            "Pi must not pin an OpenRouter model by default: {pi}"
+        );
+        let openrouter = launch(Agent::OpenRouter, None, LaunchOptions::default());
+        assert!(
+            openrouter.contains("--provider openrouter"),
+            "OpenRouter Home must pin its own provider: {openrouter}"
+        );
+        assert!(
+            Agent::OpenRouter.display_name() == "OpenRouter"
+                && !Agent::OpenRouter.display_name().contains("via Pi"),
+            "{}",
+            Agent::OpenRouter.display_name()
+        );
+    }
+
+    #[test]
+    fn every_agent_pane_unsets_inherited_no_color() {
+        // Live 2026-08-25: rmux daemon started from Cursor with NO_COLOR=1
+        // FORCE_COLOR=0. Codex oracle capture had 62 SGR and 0 color codes.
+        for agent in Agent::all()
+            .iter()
+            .copied()
+            .filter(|agent| *agent != Agent::Shell)
+        {
+            let cmd = launch(agent, None, LaunchOptions::default());
+            assert!(
+                cmd.contains("unset NO_COLOR")
+                    && cmd.contains("FORCE_COLOR=1")
+                    && cmd.contains("COLORTERM=truecolor")
+                    && !cmd.contains("NO_COLOR=1"),
+                "{} must strip inherited NO_COLOR: {cmd}",
+                agent.name()
+            );
+        }
     }
 
     #[test]

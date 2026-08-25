@@ -1340,9 +1340,7 @@ fn rule_matches_mission(rule: &Rule, mission_lower: &str) -> bool {
 
 /// Provider-neutral, role and mission-scoped context for dispatched agents.
 pub fn agent_context_block_for_mission(scope: RuleScope, mission: &str) -> String {
-    compile_rule_context(scope, Some(mission))
-        .map(|compiled| compiled.markdown)
-        .unwrap_or_else(compile_error_block)
+    agent_context_for_provider(scope, Some(mission), ProviderFamily::Neutral)
 }
 
 /// Render the COMPLETE doctrine — every Law and every Rule, unscoped, full
@@ -1384,9 +1382,63 @@ pub fn full_doctrine_markdown() -> String {
 
 /// Compact provider-neutral baseline for an unclassified mission.
 pub fn agent_context_block(scope: RuleScope) -> String {
-    compile_rule_context(scope, None)
+    agent_context_for_provider(scope, None, ProviderFamily::Neutral)
+}
+
+/// Provider-neutral worker identity. The session name is an rmux + Omega
+/// state key. Resume flags are provider-specific and must not be invented.
+pub fn worker_session_identity_block(session: &str) -> String {
+    format!(
+        "\n\n## SESSION IDENTITY\nYou are worker `{session}` — this exact string is your \
+         rmux session name and the key for `~/.omega/state/` (`omega done {session}`, \
+         `omega progress {session}`). Use it verbatim. Resume with THIS provider's native \
+         resume if it has one. Never invent another harness's resume flag or plan tool.\n"
+    )
+}
+
+/// Harness overlay. The law/rule kernel is identical for every provider
+/// (`compile_rule_context_for_provider`); this paragraph is the only thing
+/// that names native tools so a Codex session does not chase TaskCreate
+/// and an OpenCode/Hermes session does not chase `/goal`.
+pub fn provider_harness_block(provider: ProviderFamily) -> String {
+    let body = match provider {
+        ProviderFamily::Claude => {
+            "You are on **Claude Code** (GLM uses the same CLI). Plan with Claude's \
+             task tools. `/goal` and `--continue` / `claude --resume <session>` are \
+             legal here. Do not invent Codex `update_plan`."
+        }
+        ProviderFamily::Codex => {
+            "You are on **Codex**. Plan with `update_plan`. There is no Claude \
+             `/goal`, Claude task tools, Workflow, or `claude --resume`. Stay in this pane; \
+             durable state is `omega progress` / `omega done`."
+        }
+        ProviderFamily::Gemini => {
+            "You are on **Gemini / Antigravity**. Follow GEMINI.md. There is no \
+             Claude task list and no Codex `update_plan`. Durable state is \
+             `omega progress` / `omega done`."
+        }
+        ProviderFamily::Neutral | ProviderFamily::Other => {
+            "You are on a **non-Claude / non-Codex** harness (Hermes, OpenCode, Pi, \
+             Kimi, OpenRouter, or a plain shell). Use THIS CLI's native plan/todo \
+             tool if it has one. Never invent Claude task tools, `/goal`, Workflow, \
+             or Codex `update_plan`. Durable mission state is always \
+             `omega progress` / `omega done`."
+        }
+    };
+    format!("\n## Provider harness\n{body}\n")
+}
+
+/// Single dispatch funnel: identical law/rule kernel + the harness overlay
+/// for this provider.
+pub fn agent_context_for_provider(
+    scope: RuleScope,
+    mission: Option<&str>,
+    provider: ProviderFamily,
+) -> String {
+    let kernel = compile_rule_context_for_provider(scope, mission, provider)
         .map(|compiled| compiled.markdown)
-        .unwrap_or_else(compile_error_block)
+        .unwrap_or_else(compile_error_block);
+    format!("{}{}", kernel, provider_harness_block(provider))
 }
 
 pub fn rules_for_agent(agent: AisbAgent) -> Vec<Rule> {
@@ -1894,6 +1946,29 @@ mod tests {
                 r.id
             );
         }
+    }
+
+    #[test]
+    fn harness_overlay_names_the_right_native_tools() {
+        let claude = provider_harness_block(ProviderFamily::Claude);
+        let codex = provider_harness_block(ProviderFamily::Codex);
+        let other = provider_harness_block(ProviderFamily::Other);
+        assert!(claude.contains("Claude Code") && claude.contains("Do not invent Codex"));
+        assert!(codex.contains("update_plan") && codex.contains("no Claude"));
+        assert!(other.contains("OpenCode") && other.contains("Hermes"));
+        assert!(!codex.contains("TaskCreate"));
+        let via = agent_context_for_provider(
+            RuleScope::Worker,
+            Some("run the work"),
+            ProviderFamily::Codex,
+        );
+        assert!(via.contains("[L0]"));
+        assert!(via.contains("Provider harness"));
+        assert!(via.contains("update_plan"));
+        assert!(
+            worker_session_identity_block("w1").contains("omega done w1")
+                && !worker_session_identity_block("w1").contains("claude --resume")
+        );
     }
 
     #[test]

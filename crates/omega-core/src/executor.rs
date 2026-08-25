@@ -879,11 +879,9 @@ impl WorkerRuntime for RmuxRuntime<'_> {
         // wait_done() blocks forever and the ENTIRE plan stalls at this step. The
         // `omega done <session> …` invocation (with the exact session baked in) is the
         // signal the engine polls for. This is the #1 reason a build "never finishes".
+        full_brief.push_str(&crate::rules::worker_session_identity_block(&session));
         full_brief.push_str(&format!(
-            "\n\n## SESSION IDENTITY\nYou are worker `{session}` — this exact string is your rmux \
-             session name, your Claude conversation name (resumable via `claude --resume {session}`), \
-             and the key for your state files in ~/.omega/state/. Use it verbatim in every omega call.\n\
-             \n## SIGNAL COMPLETION — REQUIRED (the build engine BLOCKS until you do this)\n\
+            "\n## SIGNAL COMPLETION — REQUIRED (the build engine BLOCKS until you do this)\n\
              This is an AUTOMATED build step. As your VERY LAST action, after your Verify \
              command passes, you MUST run exactly:\n  \
              omega done {session} done_clean \"<one-line summary of what you changed>\"\n\
@@ -893,9 +891,10 @@ impl WorkerRuntime for RmuxRuntime<'_> {
              the whole plan halts on this step until `omega done {session} …` runs. No exceptions.",
             session = session
         ));
-        let ctx = crate::rules::agent_context_block_for_mission(
+        let ctx = crate::orchestration::policy_context_for_agent(
             crate::rules::RuleScope::Worker,
             &full_brief,
+            self.agent,
         );
         if !ctx.is_empty() {
             full_brief.push_str("\n\n");

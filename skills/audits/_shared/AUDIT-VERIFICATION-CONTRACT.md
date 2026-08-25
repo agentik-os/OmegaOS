@@ -108,7 +108,7 @@ Before touching ANY file, capture the current functional state of EVERYTHING the
 ```
 For each file/resource about to be modified:
   1. Identify direct dependents: who calls this? who reads this? who executes this?
-     Command: grep -rln "path/or/name" ~/.claude ~/.aisb ~/VibeCoding/work 2>/dev/null
+     Command: grep -rln "path/or/name" ~/.omega ~/.claude 2>/dev/null
              | grep -v ".backup" | grep -v "/file-history/" | grep -v ".jsonl"
   2. For each dependent, capture a "works check":
      - Script: bash -n SCRIPT  (syntax check)
@@ -195,7 +195,7 @@ After all fixes applied, run a full breakage scan:
 # Find ALL stale references to moved/deleted paths
 echo "=== STALE REFERENCES CHECK ==="
 for old_path in "${MOVED_OR_DELETED[@]}"; do
-  BROKEN=$(grep -rln "$old_path" ~/.claude ~/.aisb ~/VibeCoding/work 2>/dev/null \
+  BROKEN=$(grep -rln "$old_path" ~/.omega ~/.claude 2>/dev/null \
            | grep -v ".backup" | grep -v "/file-history/" | grep -v ".jsonl" \
            | grep -v "audits/.<audit-id>/" | head -20)
   if [ -n "$BROKEN" ]; then

@@ -44,8 +44,13 @@ When invoked, ZION reads from real data sources, formats them into dashboard pan
 ### Planner scan directories
 
 ```bash
-# Scan all projects for active plans
-find $HOME/VibeCoding/{work,clients,1-life}/*/.planner/tracker.json 2>/dev/null
+# Scan configured projects for active plans (never hardcode ~/VibeCoding)
+PROJECTS_DIR="$HOME/projects"
+if [ -f "$HOME/.omega/config.toml" ]; then
+  _pd=$(awk -F'"' '/^projects_dir[[:space:]]*=/ {print $2; exit}' "$HOME/.omega/config.toml")
+  [ -n "$_pd" ] && PROJECTS_DIR="$_pd"
+fi
+find "$PROJECTS_DIR" -name tracker.json -path '*/.planner/tracker.json' 2>/dev/null
 ```
 
 ---
@@ -134,8 +139,8 @@ Source: `aisb-nerve check`
 
 | Owns | Responsibility | How |
 |---|---|---|
-| **R-27 registry analytics** | Read the outcomes registry (`outcomes.db`) for cross-mission stats, convergence rates, cost breakdowns | query the outcomes registry directly |
-| **R-28 cost surface** | Surface per-mission token cost, daily/weekly aggregates, EXPENSIVE alerts | aggregate per-mission cost from the outcomes registry |
+| **Registry analytics** | Read the outcomes registry (`outcomes.db`) for cross-mission stats, convergence rates, cost breakdowns | query the outcomes registry directly |
+| **R-BUDGET cost surface** | Surface per-mission token cost, daily/weekly aggregates, EXPENSIVE alerts | aggregate per-mission cost from the outcomes registry |
 | **Health digest (daily)** | Generate Markdown dashboard: active oracles, in-flight workers, recent done.json, registry stats | scan live oracle/worker state + the outcomes registry |
 
 ### Dashboard sections (markdown output)
@@ -152,7 +157,7 @@ Source: `aisb-nerve check`
 ## Last 10 missions (registry)
 | Oracle | Verdict | Iter | Cost (tokens) | Duration |
 
-## R-27 analytics this week
+## Registry analytics this week
 - Convergence rate: N% (verdict=satisfied)
 - Avg iterations: X.Y
 - Avg cost per mission: K tokens
@@ -160,8 +165,8 @@ Source: `aisb-nerve check`
 
 ## Quality gate health
 - Adversarial pass rate: N%
-- Confidence demotions (R-29): N
-- Regressions detected (R-22): N
+- Confidence demotions: N
+- Regressions detected: N
 ```
 
 ### Read-only contract
@@ -171,4 +176,4 @@ Never spawns workers. Never modifies projects. Pure dashboard.
 
 ---
 
-*ZION — Metrics Dashboard | AISB v7.0 (Omega-integrated, R-27+R-28 surface)*
+*ZION — Metrics Dashboard | AISB v7.0 (Omega-integrated, R-BUDGET surface)*

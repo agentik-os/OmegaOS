@@ -111,7 +111,7 @@ CONSTRUCT in v7.0 evolves from "static UI library" → "progressive disclosure f
 
 | Owns | Responsibility | How |
 |---|---|---|
-| **R-32 BM25 skill search** | Index the agent/skill manifest (`~/.omega/state/manifest.jsonl`, 341 entries) and return the top-15 ranked | BM25 rank over the manifest |
+| **Skill search** | Index the agent/skill manifest (`~/.omega/state/manifest.jsonl`) and return the top-15 ranked | BM25 rank over the manifest |
 | **SessionStart hint** | Compact banner with the top-15 relevant agents instead of dumping all 341 | emit a ranked hint banner at session start |
 | **audit-gather programmatic loaders** | Pre-fetch evidence (ruff, lighthouse, axe, etc.) for hybrid audits | `~/.omega/lib/audit-gather/` |
 | **UI components (legacy)** | shadcn / Radix / Tailwind lookup | static markdown |
@@ -133,4 +133,4 @@ CONSTRUCT answers ranked-lookup queries over the manifest, e.g.:
 
 ---
 
-*CONSTRUCT — The Loading Program | AISB v7.0 (Omega-integrated, R-32 BM25 search)*
+*CONSTRUCT — The Loading Program | AISB v7.0 (Omega-integrated, skill search)*

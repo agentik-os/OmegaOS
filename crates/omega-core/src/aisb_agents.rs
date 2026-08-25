@@ -61,6 +61,16 @@ pub struct AgentDef {
     pub prompt: &'static str,
 }
 
+macro_rules! aisb_prompt {
+    ($file:literal) => {
+        concat!(
+            include_str!("../../../agents/aisb/_quality-kernel.md"),
+            "\n",
+            include_str!(concat!("../../../agents/aisb/", $file))
+        )
+    };
+}
+
 impl AisbAgent {
     pub fn all() -> &'static [AisbAgent] {
         &[
@@ -98,7 +108,7 @@ impl AisbAgent {
                     "Verify outcomes before reporting back",
                     "NEVER writes code itself — pure routing/decision",
                 ],
-                prompt: include_str!("../../../agents/aisb/oracle.md"),
+                prompt: aisb_prompt!("oracle.md"),
             },
             AisbAgent::Morpheus => AgentDef {
                 agent: *self,
@@ -109,11 +119,11 @@ impl AisbAgent {
                 tools: &["Read", "Write", "Edit", "Bash", "Glob", "Grep", "Agent"],
                 responsibilities: &[
                     "Implements features, fixes bugs, edits code",
-                    "Dispatches sub-workers via R-18 hybrid dispatch",
+                    "Dispatches sub-workers via R-GRAPH + omega spawn-worker (R-RUBRIC)",
                     "Verifies own work before reporting done",
                     "Owns the change — refactors only what was asked",
                 ],
-                prompt: include_str!("../../../agents/aisb/morpheus.md"),
+                prompt: aisb_prompt!("morpheus.md"),
             },
             AisbAgent::Seraph => AgentDef {
                 agent: *self,
@@ -128,7 +138,7 @@ impl AisbAgent {
                     "AUTOMATIC FAIL triggers for known footguns",
                     "Cites file:line for every finding",
                 ],
-                prompt: include_str!("../../../agents/aisb/seraph.md"),
+                prompt: aisb_prompt!("seraph.md"),
             },
             AisbAgent::Keymaker => AgentDef {
                 agent: *self,
@@ -143,7 +153,7 @@ impl AisbAgent {
                     "Maps tasks to milestones and acceptance criteria",
                     "Refuses to over-plan SIMPLE tasks",
                 ],
-                prompt: include_str!("../../../agents/aisb/keymaker.md"),
+                prompt: aisb_prompt!("keymaker.md"),
             },
             AisbAgent::Smith => AgentDef {
                 agent: *self,
@@ -157,7 +167,7 @@ impl AisbAgent {
                     "Updates lessons-learned for the system to evolve",
                     "Proposes rule additions when same bug class hits 3×",
                 ],
-                prompt: include_str!("../../../agents/aisb/smith.md"),
+                prompt: aisb_prompt!("smith.md"),
             },
             AisbAgent::Niobe => AgentDef {
                 agent: *self,
@@ -172,7 +182,7 @@ impl AisbAgent {
                     "Cites every source",
                     "Routed to first for RESEARCH-only requests",
                 ],
-                prompt: include_str!("../../../agents/aisb/niobe.md"),
+                prompt: aisb_prompt!("niobe.md"),
             },
             AisbAgent::Architect => AgentDef {
                 agent: *self,
@@ -186,7 +196,7 @@ impl AisbAgent {
                     "Evaluates structural impact of changes",
                     "Flags over-engineering and missing abstractions",
                 ],
-                prompt: include_str!("../../../agents/aisb/architect.md"),
+                prompt: aisb_prompt!("architect.md"),
             },
             AisbAgent::Merovingian => AgentDef {
                 agent: *self,
@@ -200,7 +210,7 @@ impl AisbAgent {
                     "Indexes lessons across the agent ecosystem",
                     "Fast, low-cost lookups (Haiku tier)",
                 ],
-                prompt: include_str!("../../../agents/aisb/merovingian.md"),
+                prompt: aisb_prompt!("merovingian.md"),
             },
             AisbAgent::Neo => AgentDef {
                 agent: *self,
@@ -214,7 +224,7 @@ impl AisbAgent {
                     "Detects worker_died, spinner-stuck, oom conditions",
                     "Posts to the oracle inbox when health degrades",
                 ],
-                prompt: include_str!("../../../agents/aisb/neo.md"),
+                prompt: aisb_prompt!("neo.md"),
             },
             AisbAgent::Zion => AgentDef {
                 agent: *self,
@@ -227,7 +237,7 @@ impl AisbAgent {
                     "Compiles cost / token / progress dashboards",
                     "Reports session counts, billing %, latencies",
                 ],
-                prompt: include_str!("../../../agents/aisb/zion.md"),
+                prompt: aisb_prompt!("zion.md"),
             },
             AisbAgent::Link => AgentDef {
                 agent: *self,
@@ -241,7 +251,7 @@ impl AisbAgent {
                     "Posts done.json digests to the human",
                     "Handles webhook deliveries",
                 ],
-                prompt: include_str!("../../../agents/aisb/link.md"),
+                prompt: aisb_prompt!("link.md"),
             },
             AisbAgent::Construct => AgentDef {
                 agent: *self,
@@ -254,7 +264,7 @@ impl AisbAgent {
                     "Looks up UI components (shadcn, Radix, etc.)",
                     "Pulls examples and props for the implementer agents",
                 ],
-                prompt: include_str!("../../../agents/aisb/construct.md"),
+                prompt: aisb_prompt!("construct.md"),
             },
             AisbAgent::Pythia => AgentDef {
                 agent: *self,
@@ -268,7 +278,7 @@ impl AisbAgent {
                     "Posts a weekly digest of what's new",
                     "Triggers SMITH when a release breaks an assumption",
                 ],
-                prompt: include_str!("../../../agents/aisb/pythia.md"),
+                prompt: aisb_prompt!("pythia.md"),
             },
             AisbAgent::Council => AgentDef {
                 agent: *self,
@@ -284,7 +294,7 @@ impl AisbAgent {
                     "AUTO on irreversible / prod-wide / architecture / cross-project calls + conflicting verification verdicts",
                     "100% Claude Code-native via the Workflow primitive — no API keys; DECIDES/ADVISES, never edits code",
                 ],
-                prompt: include_str!("../../../agents/aisb/council.md"),
+                prompt: aisb_prompt!("council.md"),
             },
             AisbAgent::Trinity => AgentDef {
                 agent: *self,
@@ -300,7 +310,7 @@ impl AisbAgent {
                     "Hard limits are non-negotiable: no third-party attack without scope, no destructive prod, no mass/supply-chain/malware, no harm to people",
                     "Teaches as it goes (the 'why', the exact command, the bank-grade remediation)",
                 ],
-                prompt: include_str!("../../../agents/aisb/trinity.md"),
+                prompt: aisb_prompt!("trinity.md"),
             },
         }
     }
@@ -329,6 +339,11 @@ mod tests {
         for a in AisbAgent::all() {
             let def = a.definition();
             assert!(!def.prompt.is_empty(), "{} has empty prompt", def.name);
+            assert!(
+                def.prompt.contains("R-RUBRIC") && def.prompt.contains("Never cite R-18"),
+                "{} must carry the current quality kernel, not retired R-18 IDs",
+                def.name
+            );
             assert!(!def.tools.is_empty(), "{} has no tools", def.name);
             assert!(
                 !def.responsibilities.is_empty(),

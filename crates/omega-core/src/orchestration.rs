@@ -66,6 +66,27 @@ pub fn provider_family_for_agent(agent: Agent) -> crate::rules::ProviderFamily {
     }
 }
 
+/// Same map, plus harness names that are not (yet) first-class `Agent`s —
+/// OpenCode is Home-only today but still needs the Other overlay.
+pub fn provider_family_from_name(name: &str) -> crate::rules::ProviderFamily {
+    if let Some(agent) = Agent::from_name(name) {
+        return provider_family_for_agent(agent);
+    }
+    match name.to_ascii_lowercase().as_str() {
+        "opencode" | "open-code" | "open_code" => crate::rules::ProviderFamily::Other,
+        _ => crate::rules::ProviderFamily::Other,
+    }
+}
+
+/// Single policy funnel used by dispatch / orchestrate / workers / teams.
+pub fn policy_context_for_agent(
+    scope: crate::rules::RuleScope,
+    mission: &str,
+    agent: Agent,
+) -> String {
+    crate::rules::agent_context_for_provider(scope, Some(mission), provider_family_for_agent(agent))
+}
+
 /// Error type for orchestration operations.
 #[derive(Debug, thiserror::Error)]
 pub enum OrchestrationError {
@@ -2490,22 +2511,10 @@ impl Orchestrator {
             crate::rules::RuleScope::Worker
         };
         let mut full_prompt = task.prompt.clone();
-        let compiled = crate::rules::compile_rule_context_for_provider(
-            scope,
-            Some(&full_prompt),
-            provider_family_for_agent(agent),
-        )
-        .map_err(|error| {
-            anyhow::anyhow!(
-                "cannot compile policy context for {} task {}: {}",
-                agent.name(),
-                task.id,
-                error
-            )
-        })?;
-        if !compiled.markdown.is_empty() {
+        let compiled = policy_context_for_agent(scope, &full_prompt, agent);
+        if !compiled.is_empty() {
             full_prompt.push_str("\n\n");
-            full_prompt.push_str(&compiled.markdown);
+            full_prompt.push_str(&compiled);
         }
 
         self.mgr
@@ -3265,6 +3274,38 @@ impl Orchestrator {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    #[test]
+    fn provider_family_maps_first_class_and_opencode_aliases() {
+        assert_eq!(
+            provider_family_for_agent(Agent::Claude),
+            crate::rules::ProviderFamily::Claude
+        );
+        assert_eq!(
+            provider_family_for_agent(Agent::Codex),
+            crate::rules::ProviderFamily::Codex
+        );
+        assert_eq!(
+            provider_family_for_agent(Agent::Hermes),
+            crate::rules::ProviderFamily::Other
+        );
+        assert_eq!(
+            provider_family_from_name("opencode"),
+            crate::rules::ProviderFamily::Other
+        );
+        assert_eq!(
+            provider_family_from_name("open-code"),
+            crate::rules::ProviderFamily::Other
+        );
+        let ctx = policy_context_for_agent(
+            crate::rules::RuleScope::Worker,
+            "ship the fix",
+            Agent::Codex,
+        );
+        assert!(ctx.contains("[L0]"));
+        assert!(ctx.contains("update_plan"));
+        assert!(ctx.contains("Provider harness"));
+    }
 
     #[test]
     fn mission_id_generates_unique_ids() {

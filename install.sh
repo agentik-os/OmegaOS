@@ -1387,11 +1387,14 @@ else
     ok "Clock follows system timezone: $SYS_TZ (override with 'timezone =' in config.toml)"
 fi
 
-# Install agent templates (Master AISB system prompt + the 13 agent prompts)
+# Install agent templates (Atlas + 15 Matrix prompts + quality kernel + protocols)
 AGENTS_DIR="$OMEGA_DIR/agents"
-mkdir -p "$AGENTS_DIR/aisb"
+mkdir -p "$AGENTS_DIR/aisb/protocols"
 cp agents/*.md "$AGENTS_DIR/" 2>/dev/null || true
 cp -r agents/aisb/*.md "$AGENTS_DIR/aisb/" 2>/dev/null || true
+if [[ -d agents/aisb/protocols ]]; then
+    cp -r agents/aisb/protocols/*.md "$AGENTS_DIR/aisb/protocols/" 2>/dev/null || true
+fi
 ok "Agent templates installed to $AGENTS_DIR/"
 
 # Install PDF generator (templates + engine — deps installed on first use).
@@ -2964,11 +2967,11 @@ else
     info "Agentic Engineering Lab skill not found — skipping"
 fi
 
-# Install the OmegaOS pipeline skills (vision, prd, brand-identity) the new-project
-# flow delegates to — shipped as /omg-* so a FRESH install is self-contained (the
-# pipeline no longer depends on the user's personal /vision /prd /brand-identity
-# existing). Does NOT touch any pre-existing ones the user may already have.
-for psk in vision prd brand-identity; do
+# Install the OmegaOS pipeline skills (vision, prd, brand-identity,
+# product-development-system) the new-project flow delegates to — shipped as
+# /omg-* so a FRESH install is self-contained. Does NOT touch any pre-existing
+# ones the user may already have.
+for psk in vision prd brand-identity product-development-system; do
     PSK_SRC="$OMEGA_SRC/skills/$psk"
     PSK_DST="$OMEGA_DIR/skills/$psk"
     if [[ -d "$PSK_SRC" ]]; then

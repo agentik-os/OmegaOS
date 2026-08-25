@@ -211,6 +211,36 @@ fn rmux_socket_path() -> Option<std::path::PathBuf> {
     None
 }
 
+fn check_rmux_color_env() -> Check {
+    let output = match std::process::Command::new("rmux")
+        .args(["show-environment", "-g"])
+        .output()
+    {
+        Ok(output) if output.status.success() => output,
+        _ => {
+            return Check::warn("rmux color", "could not read rmux environment");
+        }
+    };
+    let text = String::from_utf8_lossy(&output.stdout);
+    let no_color = text
+        .lines()
+        .any(|line| line == "NO_COLOR" || line.starts_with("NO_COLOR=") && line != "NO_COLOR=");
+    let force_off = text
+        .lines()
+        .any(|line| line == "FORCE_COLOR=0" || line.eq_ignore_ascii_case("FORCE_COLOR=false"));
+    if no_color || force_off {
+        Check::warn(
+            "rmux color",
+            "daemon inherited NO_COLOR/FORCE_COLOR=0 — existing panes stay grayscale until relaunch (Menu → R). New panes are sanitized.",
+        )
+    } else {
+        Check::ok(
+            "rmux color",
+            "FORCE_COLOR=1, NO_COLOR unset (agent panes keep color)",
+        )
+    }
+}
+
 /// Claude/Codex hooks: scripts present under `~/.omega/hooks` and registered
 /// on both provider surfaces.
 fn check_hooks(config: &OmegaConfig) -> Check {
@@ -614,6 +644,12 @@ pub async fn run_all(config: &OmegaConfig) -> Vec<Check> {
             "no socket under /tmp/rmux-*/ or $RMUX_SOCKET (daemon down?)",
         )),
     }
+
+    // 2c. Color env. Cursor/CI start rmux with NO_COLOR=1 FORCE_COLOR=0;
+    // every pane inherits it and Claude/Codex go grayscale. connect() now
+    // sanitizes the daemon session env; this check still fires if that
+    // failed, so a gray board is never reported as healthy.
+    checks.push(check_rmux_color_env());
 
     // 3. Doctrine integrity — a FLOOR, not an exact count.
     //

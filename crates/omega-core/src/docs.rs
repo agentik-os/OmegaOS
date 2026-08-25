@@ -95,9 +95,37 @@ fn collect(root: &Path, dir: &Path, out: &mut Vec<DocEntry>, depth: usize) {
             continue;
         }
         if let Some(doc) = parse_entry(root, &path) {
-            out.push(doc);
+            if is_operator_manual(&doc.rel_path) {
+                out.push(doc);
+            }
         }
     }
+}
+
+/// The System-tab manual is OmegaOS only. Drop internal plans, personal
+/// machine paths, and side-project notes so a fresh install does not show
+/// Gareth/Station/Instagram leftovers as if they were the product docs.
+fn is_operator_manual(rel_path: &str) -> bool {
+    let rel = rel_path.replace('\\', "/");
+    let deny_prefix = [
+        "superpowers/plans/",
+        "superpowers/specs/",
+        "plans/",
+        "specs/",
+        "migrations/",
+    ];
+    if deny_prefix.iter().any(|prefix| rel.starts_with(prefix)) {
+        return false;
+    }
+    let file = rel.rsplit('/').next().unwrap_or(&rel);
+    !matches!(
+        file,
+        "INSTAGRAM-PUBLIC-ACCESS.md"
+            | "MENU-AUDIT.md"
+            | "0RA-SIM-BRIDGE.md"
+            | "marketing-mastery-alignment.md"
+            | "ADR-lab-three-backends.md"
+    )
 }
 
 fn parse_entry(root: &Path, path: &Path) -> Option<DocEntry> {
@@ -290,5 +318,15 @@ mod tests {
     #[test]
     fn missing_root_is_empty_not_a_panic() {
         assert!(discover_in(Path::new("/nonexistent/omega/docs")).is_empty());
+    }
+
+    #[test]
+    fn operator_manual_drops_internal_and_personal_pages() {
+        assert!(!is_operator_manual("superpowers/plans/foo.md"));
+        assert!(!is_operator_manual("INSTAGRAM-PUBLIC-ACCESS.md"));
+        assert!(!is_operator_manual("MENU-AUDIT.md"));
+        assert!(is_operator_manual("GETTING-STARTED.md"));
+        assert!(is_operator_manual("reference/09-cmd.md"));
+        assert!(is_operator_manual("THEMES.md"));
     }
 }

@@ -109,18 +109,18 @@ payload: { proposals: [{rule_id, classification, evidence_url, ...}] }
 
 NIOBE receives → classifies risk → handoff to ARCHITECT for design review →
 ARCHITECT outputs ADOPT / DEFER / SKIP verdict via the proposal template
-(see `~/.claude/agents/AISB/architect.md`).
+(see `~/.omega/agents/aisb/architect.md`).
 
 ---
 
 ## Bias toward conservation
 
-Omega is at v7.0 with R-18 → R-35 shipped. Default for any new Anthropic
+Omega is at v7.0 with named rules (R-RUBRIC, R-VERIFY, R-GRAPH) shipped. Default for any new Anthropic
 primitive: **SKIP unless clear net win**. Conservation > adoption when:
 
 - The primitive duplicates something Omega already does (often Omega's
-  version is more powerful — multi-grader R-21 vs MA single grader,
-  mission DAG R-26 vs MA sequential outcomes, etc.)
+  version is more powerful — multi-grader R-VERIFY vs MA single grader,
+  mission DAG R-GRAPH vs MA sequential outcomes, etc.)
 - Adoption would touch the multi-account flow (`/account` `/billing`)
 - Adoption would conflict with `46-no-time-panic` (any "streamlined" /
   "quick" / "low-effort" version)
@@ -149,4 +149,4 @@ PYTHIA supports the following on-demand modes (in addition to the scheduled week
 ---
 
 *"I knew you would. Don't worry about the vase."*
-*PYTHIA — Oracle of Delphi | AISB v7.0 (read-only docs watcher, R-31 dreams collaboration)*
+*PYTHIA — Oracle of Delphi | AISB v7.0 (read-only docs watcher, dreams collaboration)*

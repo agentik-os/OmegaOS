@@ -5178,9 +5178,11 @@ fn draw_help(frame: &mut Frame, app: &mut App, area: Rect) {
         ("c", "Claude"),
         ("o", "Codex"),
         ("g", "Gemini"),
+        ("a", "Antigravity"),
         ("p", "Pi"),
         ("h", "Hermes"),
         ("G", "GLM"),
+        ("K", "Kimi"),
         ("t", "Terminal"),
     ];
     let mut row = vec![Span::raw("    ")];
@@ -5239,12 +5241,12 @@ fn draw_help(frame: &mut Frame, app: &mut App, area: Rect) {
         section("System — the doctrine, the agents, the manual"),
         key(
             "↑ / ↓",
-            "Pick a section (Overview · Laws · Rules · Agents · Skills · Docs)",
+            "Pick a section; on Agents or Docs, opens that submenu immediately",
         ),
-        key("Tab", "Focus the right panel to read it"),
+        key("Tab", "Focus the right panel to read or scroll prose"),
         key(
-            "↑ / ↓ (focused)",
-            "Scroll — or move the agent / document cursor",
+            "↑ / ↓ (Agents/Docs)",
+            "Move the agent or manual-page cursor (Enter is not required)",
         ),
         key(
             "[  /  ]",
@@ -5280,7 +5282,7 @@ fn draw_help(frame: &mut Frame, app: &mut App, area: Rect) {
         Line::from(vec![
             Span::raw("    "),
             Span::styled("Pi      ", cy),
-            Span::styled("earendil-works coding agent (OpenRouter)", gr),
+            Span::styled("earendil-works coding agent (standalone)", gr),
         ]),
         Line::from(vec![
             Span::raw("    "),

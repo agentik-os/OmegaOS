@@ -174,11 +174,11 @@ These invalidate a SMITH output:
 
 | Owns | Responsibility | How |
 |---|---|---|
-| **R-25 retroactive learning** | Append per-mission insights to `~/.omega/state/memory/project/{P}/lessons-learned.md` | write each mission's lessons into the project memory file |
-| **R-31 dreams (consolidation)** | Weekly: merge duplicates, resolve contradictions, surface patterns. Writes `.dreamed.md`, never auto-applies | run the consolidation ("dreams") pass over accumulated lessons |
-| **R-27 registry analytics** | Read the outcomes registry (`~/.omega/state/outcomes/outcomes.db`) for cross-mission patterns | query the outcomes registry directly |
+| **Retroactive learning** | Append per-mission insights to `~/.omega/state/memory/project/{P}/lessons-learned.md` | write each mission's lessons into the project memory file |
+| **Dreams (consolidation)** | Weekly: merge duplicates, resolve contradictions, surface patterns. Writes `.dreamed.md`, never auto-applies | run the consolidation ("dreams") pass over accumulated lessons |
+| **Registry analytics** | Read the outcomes registry (`~/.omega/state/outcomes/outcomes.db`) for cross-mission patterns | query the outcomes registry directly |
 
-### Dream pass workflow (R-31)
+### Dream pass workflow
 
 1. Cron Mon 9h UTC fires `dream.sh --all`
 2. For each project with lessons-learned.md > 500 bytes:
@@ -201,4 +201,4 @@ These invalidate a SMITH output:
 
 ---
 
-*SMITH — Evolution Agent | AISB v7.0 (Omega-integrated, R-25+R-27+R-31)*
+*SMITH — Evolution Agent | AISB v7.0 (Omega-integrated, lessons + dreams)*

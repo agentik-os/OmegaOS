@@ -90,8 +90,9 @@ pub struct PiConfig {
     pub provider: String,
     #[serde(default)]
     pub model: String,
-    /// Pi routes through OpenRouter; this key is injected as OPENROUTER_API_KEY
-    /// into the Pi pane through the typed rmux process environment.
+    /// Optional extra key. Injected as OPENROUTER_API_KEY only when
+    /// `pi.provider = "openrouter"`. Pi's own default provider is Google
+    /// (`pi --help`); an empty provider leaves that default alone.
     #[serde(default)]
     pub api_key: String,
     // NOTE: a `pi.extension` field was removed (2026-06) — it was an orphan with
@@ -550,7 +551,10 @@ impl ProvidersConfig {
             "glm" => "glm-5.3",
             // Operator directive 2026-07-24: Claude Opus 5 is THE default brain
             // everywhere a tier has not been deliberately pinned (R-MODEL).
-            "openrouter" | "pi" | "hermes" => "anthropic/claude-opus-5",
+            "openrouter" | "hermes" => "anthropic/claude-opus-5",
+            // Empty = omit `--model` and let the Pi CLI pick (default provider
+            // is Google). Do not pin an OpenRouter id onto a standalone Pi.
+            "pi" => "",
             "kimi" => "kimi-for-coding",
             "shell" => "",
             _ => "",
@@ -594,10 +598,11 @@ impl ProvidersConfig {
             // OmegaOS. Empty means UI callers offer a free-text field.
             "antigravity" => vec![],
             "glm" => vec!["glm-5.3", "glm-5-turbo", "glm-4.7"],
-            // Pi and Hermes both route through OpenRouter, so they share the
-            // same curated OpenRouter model IDs — this gives them an arrow-key
-            // picker (no typing) instead of the free-text fallback.
-            "pi" | "hermes" | "openrouter" => vec![
+            // Pi is standalone (CLI default: Google). Empty catalog = free-text
+            // / `pi auth`. OpenRouter models live on the OpenRouter picker.
+            "pi" => vec![],
+            // Hermes can pin OpenRouter; OpenRouter is its own provider.
+            "hermes" | "openrouter" => vec![
                 "anthropic/claude-opus-5",
                 "anthropic/claude-sonnet-5",
                 "anthropic/claude-sonnet-4.6",
@@ -999,21 +1004,24 @@ mod provider_capability_tests {
 
     #[test]
     fn openrouter_catalog_offers_ox_alpha_without_moving_the_default() {
-        // One curated list backs three pickers (openrouter/pi/hermes), so the
-        // stealth lane has to be reachable from all three...
-        for provider in ["openrouter", "pi", "hermes"] {
+        // OpenRouter and Hermes share the curated OpenRouter catalog.
+        // Pi is standalone and must not inherit that default.
+        for provider in ["openrouter", "hermes"] {
             assert!(
                 ProvidersConfig::models_for(provider).contains(&"stealth/ox-alpha"),
                 "{provider} is missing stealth/ox-alpha"
             );
-            // ...and the catalog is an OFFER, never a default: an unpinned
-            // session must keep landing on the tier R-MODEL chose for it.
             assert_eq!(
                 ProvidersConfig::default_model(provider),
                 "anthropic/claude-opus-5",
                 "{provider}"
             );
         }
+        assert!(
+            ProvidersConfig::models_for("pi").is_empty(),
+            "Pi picker must not be the OpenRouter catalog"
+        );
+        assert_eq!(ProvidersConfig::default_model("pi"), "");
     }
 
     #[test]
