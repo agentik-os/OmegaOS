@@ -28,6 +28,12 @@ then `agy` once to authenticate). Google ended Gemini CLI service for free,
 AI Pro, and Ultra individual accounts in June 2026; `gemini` remains supported
 for Gemini Code Assist Standard/Enterprise and paid API-key users.
 
+The installer also provisions **Hermes as the Home stream** (`omega new --agent
+hermes`). `omega sync` wires `~/.hermes` (SOUL.md pointer, AGENTS.md, curated
+skills, `/omegaos` bundle). Hermes is not a dispatch writer — oracles and
+workers stay on Codex/Claude. After install, run `hermes setup` or
+`omega config set hermes.api_key …` if the CLI has no credentials yet.
+
 ## Step 2 — Telegram remote control (recommended)
 
 Drive everything from your phone: dispatch missions, get reports, briefings
@@ -148,7 +154,8 @@ local chat), and `omega attach -t <session>` (jump into any live agent).
 ## Optional extras
 
 - **More CLI agents**:
-  `omega install claude|antigravity|gemini|openrouter|pi|hermes|glm|kimi`
+  `omega install claude|antigravity|gemini|openrouter|pi|glm|kimi`
+  (Hermes Home is already installed by `./install.sh`.)
   (or
   Settings → Install agents in the TUI). All install user-space, no root.
 - **Global keybindings**: `omega install-bindings` (Ctrl+Space popup).

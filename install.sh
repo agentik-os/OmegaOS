@@ -418,13 +418,18 @@ fi
 ok "git found"
 
 # Check for an AI agent CLI (optional, warn if missing)
+if command -v hermes &>/dev/null \
+    || [[ -x "${HOME}/.local/bin/hermes" ]] \
+    || [[ -x "${HOME}/.hermes/bin/hermes" ]]; then
+    ok "Hermes CLI found (Home stream)"
+fi
 if command -v claude &>/dev/null; then
     ok "Claude Code CLI found"
 elif command -v codex &>/dev/null; then
     ok "Codex CLI found"
 else
-    info "No AI agent CLI found (claude/codex). You can add one later."
-    info "Set agent_command in ~/.omega/config.toml"
+    info "No writer CLI found yet (codex/claude). Hermes Home is installed in Phase 6.5."
+    info "Writers: set agent_command in ~/.omega/config.toml or run omega install codex"
 fi
 
 # ─── Phase 2.5: Prebuilt binaries (fast path) ────────────────────────────────
@@ -3157,7 +3162,7 @@ ok "Agent prompts installed"
 # visible (same constraint as rules export above — no silent empty sync).
 info "Syncing to LLM config directories..."
 if "$INSTALL_DIR/omega" sync 2>/dev/null; then
-    ok "LLM configs synced (Claude, Gemini, Codex)"
+    ok "LLM configs synced (Claude, Gemini, Codex, OpenCode, Hermes)"
 else
     warn "omega sync failed — LLM configs NOT synced (re-run later: omega sync)"
 fi
@@ -3497,6 +3502,15 @@ if ! command -v claude >/dev/null 2>&1; then
     info "Claude Code CLI absent — installing the supported Claude/Telegram runtime..."
     omega_timeout 180 "$INSTALL_DIR/omega" install claude 2>/dev/null || info "Run 'omega install claude' (or install Claude Code manually), then authenticate with 'claude'."
 fi
+if ! command -v hermes >/dev/null 2>&1 \
+    && [[ ! -x "${HOME}/.local/bin/hermes" ]] \
+    && [[ ! -x "${HOME}/.hermes/bin/hermes" ]]; then
+    info "Hermes CLI absent — installing the Home stream runtime..."
+    omega_timeout 360 "$INSTALL_DIR/omega" install hermes 2>/dev/null \
+        || info "Run 'omega install hermes', then 'hermes setup' or 'omega config set hermes.api_key …'"
+else
+    ok "Hermes CLI present (Home stream: omega new --agent hermes)"
+fi
 
 # (e+f) Browser stack (Xvfb + Playwright + Chromium) for PDF generation and the
 # visual Quality Arsenal audits (uiux/flow/a11y/perf, browser-tester) + CDP.
@@ -3548,17 +3562,16 @@ else
 fi
 
 # ─── Phase 6.91: Third-party skill collections (superpowers + gstack) ───────
-# Two MIT skill packs, pinned to reviewed SHAs, ALWAYS-ON (opt-out
-# OMEGA_SKIP_THIRD_PARTY=1): obra/superpowers (14 process skills + SessionStart
-# hook, additively merged into ~/.claude/settings.json) and garrytan/gstack
-# (50+ gstack-* namespaced skills + the browse binary, built by its own setup).
-# Best-effort: a network/chromium failure warns and never aborts the install.
-# Update path + doctrine: docs/third-party-skills.md.
+# Two MIT skill packs, pinned to reviewed SHAs, OPT-IN
+# (OMEGA_WITH_THIRD_PARTY=1). Opt-out OMEGA_SKIP_THIRD_PARTY=1 still wins if
+# both are set. obra/superpowers (14 process skills + SessionStart hook) and
+# garrytan/gstack (50+ gstack-* skills + browse). Best-effort: a network
+# failure warns and never aborts. Doctrine: docs/third-party-skills.md.
 step "Phase 6.91: Third-party skill collections (superpowers + gstack)"
-if [[ "${OMEGA_SKIP_THIRD_PARTY:-0}" != "1" && -f "$OMEGA_SRC/scripts/install-third-party-skills.sh" ]]; then
+if [[ "${OMEGA_WITH_THIRD_PARTY:-0}" == "1" && "${OMEGA_SKIP_THIRD_PARTY:-0}" != "1" && -f "$OMEGA_SRC/scripts/install-third-party-skills.sh" ]]; then
     bash "$OMEGA_SRC/scripts/install-third-party-skills.sh" || info "third-party skills step had warnings (non-fatal)"
 else
-    info "Third-party skill collections skipped (OMEGA_SKIP_THIRD_PARTY=1 or script missing)"
+    info "Third-party skill collections deferred (superpowers + gstack). Add: OMEGA_WITH_THIRD_PARTY=1 ./install.sh"
 fi
 
 # ─── Phase 6.915: Skill Atlas — discover every skill + how to run it ──────────

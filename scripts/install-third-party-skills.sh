@@ -21,8 +21,10 @@
 #   then re-run `bash scripts/install-third-party-skills.sh` (or ./install.sh).
 #   Full doctrine + removal steps: docs/third-party-skills.md.
 #
-# OPT-OUT
-#   OMEGA_SKIP_THIRD_PARTY=1 skips the whole step.
+# OPT-IN / OPT-OUT
+#   install.sh only runs this script when OMEGA_WITH_THIRD_PARTY=1.
+#   OMEGA_SKIP_THIRD_PARTY=1 skips the whole step (wins if both are set).
+#   Running this script directly still installs (unless SKIP is set).
 #
 # ADDITIVE GUARANTEES (zero regression on existing skills/hooks)
 #   - Never overwrites an existing non-superpowers skill dir (collision → skip).

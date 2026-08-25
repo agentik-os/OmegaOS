@@ -17056,37 +17056,6 @@ fn link_policy_kernel(dest: &std::path::Path, src: &std::path::Path, label: &str
     Ok(())
 }
 
-fn upsert_marked_file(path: &std::path::Path, begin: &str, end: &str, body: &str) -> Result<()> {
-    let block = format!("{begin}\n{body}\n{end}");
-    let existing = std::fs::read_to_string(path).unwrap_or_default();
-    let updated = match (existing.find(begin), existing.find(end)) {
-        (Some(start), Some(finish)) if finish > start => {
-            let mut out = String::with_capacity(existing.len() + block.len());
-            out.push_str(&existing[..start]);
-            out.push_str(&block);
-            out.push_str(&existing[finish + end.len()..]);
-            out
-        }
-        _ => {
-            let mut out = existing;
-            if !out.is_empty() && !out.ends_with('\n') {
-                out.push('\n');
-            }
-            if !out.is_empty() {
-                out.push('\n');
-            }
-            out.push_str(&block);
-            out.push('\n');
-            out
-        }
-    };
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    std::fs::write(path, updated)?;
-    Ok(())
-}
-
 fn cmd_sync() -> Result<()> {
     let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/tmp"));
     let omega_dir = omega_core::config::omega_dir();
@@ -17383,19 +17352,15 @@ fn cmd_sync() -> Result<()> {
         "OpenCode",
     )?;
 
-    // Hermes loads AGENTS.md from CWD, not ~/.hermes/. Stamp a pointer into
-    // SOUL.md (identity slot) so Home Hermes still sees OmegaOS doctrine.
-    let hermes_home = home.join(".hermes");
-    if hermes_home.is_dir() {
-        upsert_marked_file(
-            &hermes_home.join("SOUL.md"),
-            "<!-- OMEGAOS-KERNEL:START -->",
-            "<!-- OMEGAOS-KERNEL:END -->",
-            "You run under OmegaOS. Follow `~/.omega/AGENTS.md` (Laws L0–L6 + named rules). \
-             Durable state is `omega progress` / `omega done`. Use Hermes native tools — \
-             do not invent Claude TaskCreate, `/goal`, or Codex `update_plan`.",
-        )?;
-        println!("[+] Hermes: OmegaOS kernel pointer in ~/.hermes/SOUL.md");
+    // Hermes Home: create ~/.hermes if missing, stamp SOUL.md, link AGENTS.md,
+    // point skills.external_dirs at ~/.omega/skills, write /omegaos bundle.
+    match omega_core::hermes_sync::sync_hermes_home(&home, &omega_dir, &agents_full_dst) {
+        Ok(report) => println!(
+            "[+] Hermes: SOUL + AGENTS.md + {} core skills + /omegaos bundle → {}",
+            report.skills_linked,
+            report.home.display()
+        ),
+        Err(error) => println!("[!] Hermes sync skipped: {error}"),
     }
 
     // Pi / Kimi / OpenRouter Home panes pick up project AGENTS.md or the

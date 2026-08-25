@@ -7,6 +7,15 @@ for [semantic versioning](https://semver.org) once it reaches 1.0. Until then,
 
 ## [Unreleased]
 
+- Hermes is a first-class Home stream: `install.sh` runs `omega install hermes`
+  (non-interactive: `--skip-setup --skip-browser --skip-computer-use`), and
+  `omega sync` always creates `~/.hermes` with a SOUL.md kernel pointer,
+  AGENTS.md link, curated skill links, `skills.external_dirs`, and the
+  `/omegaos` bundle. Home panes export `HERMES_HOME` and prepend Hermes bins
+  on PATH. Hermes stays Home-only — never a dispatch writer.
+- Superpowers + gstack third-party packs are opt-in (`OMEGA_WITH_THIRD_PARTY=1`)
+  instead of always-on. `OMEGA_SKIP_THIRD_PARTY=1` still skips.
+
 - Restored agent-pane colors when rmux inherits Cursor's `NO_COLOR`.
 - Separated Pi (standalone) from OpenRouter. AISB doctrine is 15 agents
   including Trinity, with named rules (`R-RUBRIC` / `R-VERIFY` / `R-CITE`)

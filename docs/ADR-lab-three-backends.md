@@ -80,7 +80,8 @@ codex --sandbox workspace-write --ask-for-approval never
 Invalid: `--approve-for-me` together with `--sandbox` (CLI or
 `~/.codex/config.toml` `sandbox_mode`).
 
-Hermes Home: `hermes chat --yolo` (and `HERMES_YOLO_MODE=1`). Never `-q`
+Hermes Home: `hermes chat --yolo` (and `HERMES_YOLO_MODE=1` + `HERMES_HOME`).
+`install.sh` installs the CLI; `omega sync` wires `~/.hermes`. Never `-q`
 for a pane launch.
 
 ## Follow-up
