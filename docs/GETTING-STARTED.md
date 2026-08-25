@@ -114,7 +114,7 @@ Pick any of:
 - **TUI**: `omega` → Projects → **[N] New Project** (guided: vision → PRD →
   plan → build) or add an existing folder.
 - **Telegram**: Projects menu → **Import from GitHub** (clones + wires
-  dashboard agent + topic + `/project` command in one go).
+  dedicated oracle + topic + `/project` command in one go).
 - **CLI**: drop a repo under `~/Station/<Category>/<Name>` — it's
   auto-discovered; `omega dispatch <Name> "<mission>"` just works.
 
@@ -147,8 +147,6 @@ local chat), and `omega attach -t <session>` (jump into any live agent).
 
 ## Optional extras
 
-- **Mission Control dashboard** (web UI, one container per agent — needs
-  Docker): `omega-mc-up`, then open `http://<host>:8080`.
 - **More CLI agents**:
   `omega install claude|antigravity|gemini|openrouter|pi|hermes|glm|kimi`
   (or

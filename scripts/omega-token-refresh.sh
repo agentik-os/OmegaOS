@@ -20,7 +20,7 @@ stamp() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 
 exp=$(python3 -c "import json,sys;d=json.load(open('$CRED'));o=d.get('claudeAiOauth',d);print(int(o['expiresAt'])//1000)" 2>/dev/null) || exit 0
 [ -z "${exp:-}" ] && exit 0
-now=$(date +$s); left=$((exp - now))
+now=$(date +%s); left=$((exp - now))
 
 if [ "$left" -ge "$THRESHOLD" ]; then
     echo "$(stamp) token healthy (${left}s left) — no action"

@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Ferme les tunnels cloudflared + serveurs mosh détachés des users de dev (vibe, lab).
-# PROTÈGE toujours : la connexion courante (root), l'infra (omega-mc, bots Telegram,
+# PROTÈGE toujours : la connexion courante (root), l'infra (Telegram bots,
 # daemons sécurité agentik-*, tailscaled, sshd, systemd). Usage: close-sessions.sh [--dry]
 #
-# ═══ RÈGLE ABSOLUE (opérateur, 2026-08-11, après incident) ═════════════════════
+# ═══ RÈGLE ABSOLUE (opérateur, 2026-08-11, après incident) ═════════════════════════════════════════
 # Ce script ne touche JAMAIS un process `claude` ni un daemon/session rmux.
 # "Détaché" ≠ "mort" : une session rmux détachée porte des agents en plein
 # travail, et tuer le daemon rmux tue TOUTES les sessions d'un coup — c'est
@@ -12,7 +12,7 @@
 # un geste de l'OPÉRATEUR (`omega kill <name>` / `rmux kill-server`), jamais
 # d'un script de ménage. Le garde-fou ci-dessous refuse même un pid passé par
 # erreur dont la commande correspond à claude/rmux.
-# ═══════════════════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════════════════
 set -uo pipefail
 DRY="${1:-}"
 
@@ -39,4 +39,4 @@ for p in $(pgrep -x cloudflared 2>/dev/null); do act "$p"; done
 echo "== Serveurs mosh détachés (vibe + lab ; root/connexion courante protégés) =="
 for p in $(pgrep -x mosh-server -U vibe 2>/dev/null; pgrep -x mosh-server -U lab 2>/dev/null); do act "$p"; done
 
-echo "(claude, rmux, root, infra omega-mc/bots/sécurité/tailscale/sshd : JAMAIS touchés)"
+echo "(claude, rmux, root, infra bots/sécurité/tailscale/sshd : JAMAIS touchés)"
