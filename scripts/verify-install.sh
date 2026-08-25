@@ -411,10 +411,14 @@ if grep -q 'omega install hermes' install.sh \
    && grep -q 'HERMES_HOME=' crates/omega-core/src/agents.rs \
    && grep -q '.hermes/bin' crates/omega-core/src/agents.rs \
    && grep -q 'pub fn sync_hermes_home' crates/omega-core/src/hermes_sync.rs \
-   && grep -q 'skill-bundles' crates/omega-core/src/hermes_sync.rs; then
-  ok "Hermes Home is installed by install.sh and fully synced (SOUL + skills + /omegaos bundle)"
+   && grep -q 'skill-bundles' crates/omega-core/src/hermes_sync.rs \
+   && grep -q 'hermes-gateway' crates/omega-cli/src/main.rs \
+   && grep -q 'hermes-gateway install' install.sh \
+   && grep -q 'fn hermes_gateway_check' crates/omega-core/src/doctor.rs \
+   && grep -q 'telegram_collision' crates/omega-core/src/hermes_gateway.rs; then
+  ok "Hermes Home + messaging gateway are installed, synced, and isolated from Atlas Telegram"
 else
-  bad "Hermes install/sync/stream wiring missing from install.sh or omega-core"
+  bad "Hermes install/sync/gateway wiring missing from install.sh or omega-core"
 fi
 aisb_dead_ids=$(grep -RlnE '\*\*R-(18|19|21|28|35)\*\*|owns R-(18|19|21|28|35)' agents/aisb --include='*.md' | grep -v '_quality-kernel.md' | grep -v 'protocols/shared-protocol.md' | grep -v 'CLAUDE.md' || true)
 if [ -z "$aisb_dead_ids" ]; then

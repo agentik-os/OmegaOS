@@ -7,6 +7,10 @@ for [semantic versioning](https://semver.org) once it reaches 1.0. Until then,
 
 ## [Unreleased]
 
+- Hermes messaging gateway is wired into OmegaOS: `omega hermes-gateway`
+  (install/setup/start/status), systemd PATH drop-in so `omega` is visible,
+  `omega doctor` health + `--fix` start, and a hard fail if Hermes reuses the
+  Atlas Telegram token. `install.sh` installs the unit after the Hermes CLI.
 - Hermes is a first-class Home stream: `install.sh` runs `omega install hermes`
   (non-interactive: `--skip-setup --skip-browser --skip-computer-use`), and
   `omega sync` always creates `~/.hermes` with a SOUL.md kernel pointer,

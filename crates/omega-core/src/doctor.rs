@@ -315,6 +315,45 @@ fn check_hooks(config: &OmegaConfig) -> Check {
     )
 }
 
+fn hermes_gateway_check() -> Check {
+    let Some(home) = dirs::home_dir() else {
+        return Check::warn("hermes gateway", "HOME unavailable");
+    };
+    let report = crate::hermes_gateway::inspect(&home);
+    if report.cli.is_none() {
+        return Check::warn(
+            "hermes gateway",
+            "hermes CLI missing — optional Home stream: omega install hermes",
+        );
+    }
+    if report.telegram_collision {
+        return Check::fail(
+            "hermes gateway",
+            "TELEGRAM_BOT_TOKEN equals the Omega Atlas bot — create a second @BotFather token",
+        );
+    }
+    if !report.configured() {
+        return Check::ok(
+            "hermes gateway",
+            "idle (omega hermes-gateway setup to connect Telegram/Discord)",
+        );
+    }
+    let platforms = report.platforms.join(", ");
+    match report.service {
+        crate::hermes_gateway::GatewayService::Running => {
+            Check::ok("hermes gateway", format!("running ({platforms})"))
+        }
+        crate::hermes_gateway::GatewayService::Stopped => Check::warn(
+            "hermes gateway",
+            format!("{platforms} configured but stopped — omega hermes-gateway start"),
+        ),
+        crate::hermes_gateway::GatewayService::Missing => Check::warn(
+            "hermes gateway",
+            format!("{platforms} configured but unit missing — omega hermes-gateway install"),
+        ),
+    }
+}
+
 fn effective_containment(
     config: &OmegaConfig,
     providers: &crate::providers::ProvidersConfig,
@@ -887,6 +926,10 @@ pub async fn run_all(config: &OmegaConfig) -> Vec<Check> {
             "user service not found (optional)",
         )),
     }
+
+    // 6a. Hermes messaging gateway (optional). Idle is fine; a shared
+    // Telegram token with Atlas is a hard fail.
+    checks.push(hermes_gateway_check());
 
     // 6b. Claude Code hooks installed + registered.
     checks.push(check_hooks(config));
@@ -1522,6 +1565,20 @@ fn fix_restart_tg_service() -> Vec<String> {
     }
 }
 
+fn fix_hermes_gateway() -> Vec<String> {
+    let Some(home) = dirs::home_dir() else {
+        return Vec::new();
+    };
+    let report = crate::hermes_gateway::inspect(&home);
+    if report.telegram_collision || !report.configured() {
+        return Vec::new();
+    }
+    match crate::hermes_gateway::start(&home) {
+        Ok(()) => vec!["started hermes messaging gateway".into()],
+        Err(_) => Vec::new(),
+    }
+}
+
 fn fix_refresh_usage() -> Vec<String> {
     let exe = std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("omega"));
     let ok = std::process::Command::new(exe)
@@ -1566,6 +1623,7 @@ pub fn auto_fix(checks: &[Check]) -> Vec<String> {
         match c.name.as_str() {
             "telegram poller" => log.extend(fix_duplicate_pollers()),
             "telegram service" => log.extend(fix_restart_tg_service()),
+            "hermes gateway" => log.extend(fix_hermes_gateway()),
             "usage cache" => log.extend(fix_refresh_usage()),
             "claude oauth" => log.extend(fix_refresh_oauth()),
             _ => {}

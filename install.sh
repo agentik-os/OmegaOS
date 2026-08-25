@@ -3511,6 +3511,15 @@ if ! command -v hermes >/dev/null 2>&1 \
 else
     ok "Hermes CLI present (Home stream: omega new --agent hermes)"
 fi
+if command -v hermes >/dev/null 2>&1 \
+    || [[ -x "${HOME}/.local/bin/hermes" ]] \
+    || [[ -x "${HOME}/.hermes/bin/hermes" ]]; then
+    if [[ -x "$INSTALL_DIR/omega" ]]; then
+        omega_timeout 60 "$INSTALL_DIR/omega" hermes-gateway install 2>/dev/null \
+            && ok "Hermes messaging gateway unit installed (setup: omega hermes-gateway setup)" \
+            || info "Hermes gateway unit later: omega hermes-gateway install && omega hermes-gateway setup"
+    fi
+fi
 
 # (e+f) Browser stack (Xvfb + Playwright + Chromium) for PDF generation and the
 # visual Quality Arsenal audits (uiux/flow/a11y/perf, browser-tester) + CDP.

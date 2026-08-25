@@ -31,10 +31,12 @@ pub const CORE_SKILLS: &[&str] = &[
     "product-development-system",
 ];
 
-const SOUL_BODY: &str =
-    "You run under OmegaOS. Follow `~/.omega/AGENTS.md` (Laws L0–L6 + named rules). \
-Durable state is `omega progress` / `omega done`. Use Hermes native tools — \
-do not invent Claude TaskCreate, `/goal`, or Codex `update_plan`.";
+const SOUL_BODY: &str = "You run under OmegaOS — Home TUI (`omega new --agent hermes`) and the \
+messaging gateway (`hermes gateway`) share this soul. Follow `~/.omega/AGENTS.md` \
+(Laws L0–L6 + named rules). Durable state is `omega progress` / `omega done` \
+(`omega` is on PATH). Use Hermes native tools — do not invent Claude TaskCreate, \
+`/goal`, or Codex `update_plan`. You are not the Omega Telegram Atlas bot; \
+never reuse its BotFather token.";
 
 const BUNDLE_YAML: &str = "name: omegaos\n\
 description: OmegaOS Home loop — plan, build, verify, report.\n\
@@ -94,6 +96,7 @@ pub fn sync_hermes_home(
     std::fs::write(home.join("skill-bundles").join("omegaos.yaml"), BUNDLE_YAML)?;
 
     let linked = link_core_skills(&home, &omega_skills)?;
+    let _ = crate::hermes_gateway::write_path_dropin(user_home);
 
     Ok(HermesSyncReport {
         home,

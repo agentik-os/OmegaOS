@@ -58,9 +58,12 @@ omega dispatch MyProject "mission" --agent codex
 ```
 
 Hermes is Home. `./install.sh` installs the Hermes CLI when missing, then
-`omega sync` creates `~/.hermes` even before the first `hermes chat`. Cloud
-(Cursor Cloud Agent) is the Cursor-side writer for OmegaOS itself — it is
-not `omega dispatch`. See `docs/ADR-lab-three-backends.md`.
+`omega sync` creates `~/.hermes` even before the first `hermes chat`. The
+messaging gateway (`hermes gateway`) is a user service managed by
+`omega hermes-gateway {install,setup,start,status}`. It must not share a
+Telegram bot token with Omega Atlas. Cloud (Cursor Cloud Agent) is the
+Cursor-side writer for OmegaOS itself — it is not `omega dispatch`. See
+`docs/ADR-lab-three-backends.md`.
 
 The active global selection is mirrored in
 `~/.omega/state/active-model.json`. A mission-level `--agent` override takes
