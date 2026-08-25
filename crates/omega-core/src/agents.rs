@@ -501,7 +501,18 @@ impl Agent {
         // dispatched oracle drops to a bare shell instead of running its mission.
         // Prepend the user bin dirs so every launched agent + tool always resolves.
         let path_prefix = format!("{home}/.local/bin:{home}/.bun/bin:{home}/.npm-global/bin");
-        let env_prefix = format!("export PATH={}:$PATH; ", shell_quote(&path_prefix));
+        // Cursor (and other agent hosts) start the rmux daemon with
+        // NO_COLOR=1 FORCE_COLOR=0. Every pane inherits that, and Claude /
+        // Codex / Hermes then emit dim/bold only — no 38;2. Measured
+        // 2026-08-25: a live Codex oracle had 62 SGR and 0 color codes;
+        // the same Claude splash after FORCE_COLOR=1 emitted 68 truecolor
+        // spans. `unset` is required: Node's supports-color treats any
+        // *presence* of NO_COLOR as off, and rmux set-environment cannot
+        // delete an OS-inherited variable from the daemon process.
+        let env_prefix = format!(
+            "export PATH={}:$PATH; unset NO_COLOR; export FORCE_COLOR=1 COLORTERM=truecolor; ",
+            shell_quote(&path_prefix)
+        );
 
         let command = match self {
             Agent::Claude => {
@@ -1195,11 +1206,15 @@ mod tests {
     #[test]
     fn codex_launch_keeps_color_but_stays_terminal_safe() {
         let cmd = launch(Agent::Codex, None, LaunchOptions::default());
-        // Color is preserved (no NO_COLOR); a dark-terminal hint keeps Codex's
-        // band readable (light-on-dark) instead of black-on-black; inline render.
+        // Color is preserved (inherited NO_COLOR is unset; never NO_COLOR=1);
+        // a dark-terminal hint keeps Codex's band readable (light-on-dark)
+        // instead of black-on-black; inline render.
         // Never pair --sandbox with --approve-for-me (Codex 0.149 dies).
         assert!(
-            !cmd.contains("NO_COLOR")
+            cmd.contains("unset NO_COLOR")
+                && !cmd.contains("NO_COLOR=1")
+                && cmd.contains("FORCE_COLOR=1")
+                && cmd.contains("COLORTERM=truecolor")
                 && cmd.contains("COLORFGBG=")
                 && cmd.contains("15;0")
                 && cmd.contains("codex --strict-config")
@@ -1286,6 +1301,27 @@ mod tests {
             !hermes_prompt.contains("inspect the repository"),
             "hermes chat has no positional prompt (unrecognized arguments): {hermes_prompt}"
         );
+    }
+
+    #[test]
+    fn every_agent_pane_unsets_inherited_no_color() {
+        // Live 2026-08-25: rmux daemon started from Cursor with NO_COLOR=1
+        // FORCE_COLOR=0. Codex oracle capture had 62 SGR and 0 color codes.
+        for agent in Agent::all()
+            .iter()
+            .copied()
+            .filter(|agent| *agent != Agent::Shell)
+        {
+            let cmd = launch(agent, None, LaunchOptions::default());
+            assert!(
+                cmd.contains("unset NO_COLOR")
+                    && cmd.contains("FORCE_COLOR=1")
+                    && cmd.contains("COLORTERM=truecolor")
+                    && !cmd.contains("NO_COLOR=1"),
+                "{} must strip inherited NO_COLOR: {cmd}",
+                agent.name()
+            );
+        }
     }
 
     #[test]

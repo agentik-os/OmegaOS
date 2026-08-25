@@ -16,6 +16,46 @@ use std::time::Duration;
 /// (longest prefix today is `stop_workers:` = 13 bytes; 13 + 48 = 61 < 64).
 pub const MAX_SESSION_NAME_LEN: usize = 48;
 const TYPED_AGENT_SESSION_POLICY: EnsureSessionPolicy = EnsureSessionPolicy::CreateOnly;
+
+/// Strip the host-shell color killers before rmux can inherit them.
+/// Cursor agent terminals set `NO_COLOR=1` and `FORCE_COLOR=0`; if the
+/// daemon starts from that process, every Claude/Codex pane goes grayscale.
+pub fn sanitize_host_color_env() {
+    std::env::remove_var("NO_COLOR");
+    match std::env::var("FORCE_COLOR") {
+        Ok(value) if value == "0" || value.eq_ignore_ascii_case("false") || value.is_empty() => {
+            std::env::set_var("FORCE_COLOR", "1");
+        }
+        Err(_) => std::env::set_var("FORCE_COLOR", "1"),
+        Ok(_) => {}
+    }
+    if std::env::var("COLORTERM").as_deref().unwrap_or("") != "truecolor" {
+        std::env::set_var("COLORTERM", "truecolor");
+    }
+}
+
+/// Best-effort: force color onto an already-running daemon's session env.
+/// Does not rewrite a live agent process — those keep the env they started
+/// with until relaunch.
+async fn apply_rmux_pane_color_env() {
+    for args in [
+        ["set-environment", "-g", "FORCE_COLOR", "1"].as_slice(),
+        ["set-environment", "-g", "COLORTERM", "truecolor"].as_slice(),
+        ["set-option", "-sa", "terminal-features", ",*:RGB"].as_slice(),
+    ] {
+        let _ = tokio::process::Command::new("rmux")
+            .args(args)
+            .output()
+            .await;
+    }
+    // Prefer unset. rmux 0.3.1 rejects a valueless assignment; `-u` is the
+    // documented form and is ignored if the name is already absent.
+    let _ = tokio::process::Command::new("rmux")
+        .args(["set-environment", "-gu", "NO_COLOR"])
+        .output()
+        .await;
+}
+
 pub const SESSION_DISPATCH_AUTHORITY_SCHEMA_VERSION: u32 = 1;
 pub const DISPATCH_GENERATION_ENV: &str = "OMEGA_DISPATCH_GENERATION";
 pub const SCOPE_CLAIM_ID_ENV: &str = "OMEGA_SCOPE_CLAIM_ID";
@@ -456,11 +496,16 @@ static CACHED_MANAGER: tokio::sync::RwLock<Option<SessionManager>> =
 
 impl SessionManager {
     pub async fn connect() -> Result<Self> {
+        // Must run BEFORE connect_or_start: a missing daemon is spawned from
+        // this process, and Cursor/CI shells start us with NO_COLOR=1
+        // FORCE_COLOR=0. That grayscale env then becomes every pane's env.
+        sanitize_host_color_env();
         let rmux = Rmux::builder()
             .default_timeout(Duration::from_secs(10))
             .connect_or_start()
             .await
             .context("Failed to connect to rmux daemon")?;
+        apply_rmux_pane_color_env().await;
         Ok(Self {
             rmux: Arc::new(rmux),
             pane_cache: Arc::new(tokio::sync::Mutex::new(HashMap::new())),

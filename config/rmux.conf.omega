@@ -88,6 +88,14 @@ set -g escape-time 10
 # is a server option (-s), appended (-a) so we don't clobber existing entries.
 set -sa terminal-features ",*:RGB"
 
+# Cursor/CI agent shells start the rmux daemon with NO_COLOR=1 FORCE_COLOR=0.
+# Every pane inherits that and Claude/Codex emit dim/bold only. Force color
+# back on for new panes. A live agent process keeps the env it started with
+# until relaunch (Menu → R). `unset NO_COLOR` also lives in the agent launch
+# prefix because rmux cannot delete an OS-inherited variable from the daemon.
+set-environment -g COLORTERM truecolor
+set-environment -g FORCE_COLOR 1
+
 # Mouse/trackpad scroll: `mouse on` (above) only takes effect if rmux tells the
 # OUTER terminal to emit mouse events — which it gates on a TERM-family allowlist
 # (xterm*/kitty/iterm/foot/wezterm/ghostty) with NO fallback. On any other TERM

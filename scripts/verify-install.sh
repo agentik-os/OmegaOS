@@ -103,7 +103,18 @@ set -g allow-passthrough on
 set -g escape-time 10
 set -sa terminal-features ",*:RGB"
 set -g focus-events on
+set-environment -g COLORTERM truecolor
+set-environment -g FORCE_COLOR 1
 OPTS
+
+# 4e-bis. Agent panes must unset inherited NO_COLOR. Cursor starts the rmux
+#     daemon with NO_COLOR=1; without this, Claude/Codex splash is grayscale.
+if grep -qF 'unset NO_COLOR; export FORCE_COLOR=1 COLORTERM=truecolor' crates/omega-core/src/agents.rs \
+   && ! grep -qE 'export NO_COLOR=|NO_COLOR=1 exec' crates/omega-core/src/agents.rs; then
+  ok "agent launch unsets inherited NO_COLOR (keeps pane color)"
+else
+  bad "agent launch does not strip inherited NO_COLOR — Claude/Codex go grayscale"
+fi
 
 # 4f. Optional low-latency SSH (mosh) bootstrapped best-effort by install.sh.
 #     Predictive local echo + UDP diffs → lag-free typing/streaming on a far VPS.
